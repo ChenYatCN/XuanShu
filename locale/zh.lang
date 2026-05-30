@@ -95,10 +95,10 @@ school=系别
 crit=暴击
 view_stats=查看状态
 copy_stats=复制状态
-no_client_selected=未选择客户端。
+no_client_selected=未选择客户端
 swap_members=交换成员
 swap_sides=交换阵营
-not_in_combat=当前选择的客户端未处于战斗中。
+not_in_combat=当前选择的客户端未处于战斗中
 
 # 飞行路径
 import_flythrough=导入飞行路径
