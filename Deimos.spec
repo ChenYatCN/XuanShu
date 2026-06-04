@@ -2,18 +2,16 @@
 
 from pathlib import Path
 import sys
+import importlib.util
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 ROOT = Path.cwd()
 
-# Let PyInstaller and collect_submodules see the local workspace libraries.
+# 只保留项目目录，不再加入 libs
 LIB_PATHS = [
     ROOT,
     ROOT / "src",
-    ROOT / "libs" / "wizwalker",
-    ROOT / "libs" / "wizsprinter",
-    ROOT / "libs" / "wizlaunch",
 ]
 
 for path in reversed(LIB_PATHS):
@@ -42,28 +40,39 @@ def add_data_if_exists(datas_list, source, target):
         datas_list.append((str(source_path), target))
 
 
+def get_package_dir(package_name: str) -> Path:
+    spec = importlib.util.find_spec(package_name)
+    if spec is None or spec.origin is None:
+        raise ModuleNotFoundError(f"Package not found in current venv: {package_name}")
+
+    if spec.submodule_search_locations:
+        return Path(list(spec.submodule_search_locations)[0])
+
+    return Path(spec.origin).parent
+
+
 hiddenimports = []
 
-# Core local packages.
+# 从当前虚拟环境收集，不再从 libs 收集
 hiddenimports += safe_collect_submodules("wizwalker")
-hiddenimports += safe_collect_submodules("wizsprinter")
-hiddenimports += safe_collect_submodules("wizlaunch")
-hiddenimports += safe_collect_submodules("lark")
-
-# wizsprinter may be exposed either as a direct package or under wizwalker.extensions.
 hiddenimports += safe_collect_submodules("wizwalker.extensions")
 hiddenimports += safe_collect_submodules("wizwalker.extensions.wizsprinter")
 hiddenimports += safe_collect_submodules("wizwalker.extensions.wizsprinter.combat_backends")
-hiddenimports += safe_collect_submodules("wizsprinter.combat_backends")
+hiddenimports += safe_collect_submodules("lark")
 
-# Explicit imports used by Deimos.
+# 如果你的 venv 里确实有独立的 wizsprinter / wizlaunch，也可以保留
+hiddenimports += safe_collect_submodules("wizsprinter")
+hiddenimports += safe_collect_submodules("wizsprinter.combat_backends")
+hiddenimports += safe_collect_submodules("wizlaunch")
+
 hiddenimports += [
     "wizwalker",
     "wizwalker.extensions",
-    "wizsprinter",
-    "wizsprinter.wiz_navigator",
-    "wizsprinter.sprinty_combat",
-    "wizsprinter.combat_backends",
+    "wizwalker.extensions.wizsprinter",
+    "wizwalker.extensions.wizsprinter.sprinty_combat",
+    "wizwalker.extensions.wizsprinter.wiz_navigator",
+    "wizwalker.extensions.wizsprinter.combat_backends",
+    "lark",
     "wizlaunch",
 ]
 
@@ -73,33 +82,22 @@ add_data_if_exists(datas, "Deimos-logo.ico", ".")
 add_data_if_exists(datas, "Deimos-logo.png", ".")
 add_data_if_exists(datas, "locale", "locale")
 
-# Collect package data where available.
+# 从当前虚拟环境收集 package data
 datas += safe_collect_data_files("wizwalker")
-datas += safe_collect_data_files("wizsprinter")
-datas += safe_collect_data_files("wizlaunch")
-
 datas += safe_collect_data_files("wizwalker.extensions")
 datas += safe_collect_data_files("wizwalker.extensions.wizsprinter")
 datas += safe_collect_data_files("wizwalker.extensions.wizsprinter.combat_backends")
-datas += safe_collect_data_files("wizsprinter.combat_backends")
 
-# Also collect .py files for packages that may become on-disk namespace packages.
+datas += safe_collect_data_files("wizsprinter")
+datas += safe_collect_data_files("wizsprinter.combat_backends")
+datas += safe_collect_data_files("wizlaunch")
+
 datas += safe_collect_data_files("wizwalker.extensions.wizsprinter", include_py_files=True)
 datas += safe_collect_data_files("wizwalker.extensions.wizsprinter.combat_backends", include_py_files=True)
-datas += safe_collect_data_files("wizsprinter", include_py_files=True)
-datas += safe_collect_data_files("wizsprinter.combat_backends", include_py_files=True)
 
-# Package wizsprinter traversalData from your actual local path:
-# libs\wizsprinter\wizwalker\extensions\wizsprinter\traversalData
-traversal_src = (
-    ROOT
-    / "libs"
-    / "wizsprinter"
-    / "wizwalker"
-    / "extensions"
-    / "wizsprinter"
-    / "traversalData"
-)
+# 不再从 libs 取 traversalData，而是从 venv 里的包目录取
+wizsprinter_pkg_dir = get_package_dir("wizwalker.extensions.wizsprinter")
+traversal_src = wizsprinter_pkg_dir / "traversalData"
 
 if traversal_src.exists():
     for file in traversal_src.rglob("*"):
@@ -111,7 +109,7 @@ if traversal_src.exists():
             )
             datas.append((str(file), str(target_dir).replace("\\", "/")))
 else:
-    raise FileNotFoundError(f"traversalData not found: {traversal_src}")
+    raise FileNotFoundError(f"traversalData not found in venv package: {traversal_src}")
 
 runtime_hook = ROOT / "_pyi_rthook_wizsprinter.py"
 
@@ -154,8 +152,7 @@ exe = EXE(
     upx_exclude=[],
     runtime_tmpdir=None,
 
-    # Keep True while testing so errors show in the console.
-    # After confirming the exe works, you can change this to False.
+    # 测试阶段建议 True，方便看报错；确认没问题后再改 False
     console=False,
 
     disable_windowed_traceback=False,
