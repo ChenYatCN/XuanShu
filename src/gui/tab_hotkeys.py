@@ -1,26 +1,26 @@
 import os
 
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
+    QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QScrollArea,
-    QFrame,
     QSizePolicy,
-    QGraphicsOpacityEffect,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QPixmap
 
 from src.gui.commands import GUICommand, GUICommandType, GUIKeys
 from src.gui.helpers import (
     centered_label,
     repo_icon_btn,
     resource_path,
-    toggle_callback,
     teleport_callback,
+    toggle_callback,
 )
 from src.gui.widgets import HotkeyCapture, ToggleNameLabel
 
@@ -46,8 +46,8 @@ def build_hotkeys_tab(ctx):
     def friend_tp_callback():
         send_queue.put(GUICommand(GUICommandType.FriendTeleport))
 
-    # def dialogue_side_quests_callback():
-    #     send_queue.put(GUICommand(GUICommandType.ToggleDialogueSideQuests))
+    def dialogue_side_quests_callback():
+        send_queue.put(GUICommand(GUICommandType.ToggleDialogueSideQuests))
 
     # --- Left panel: Hotkey Manager ---
     hk_manager = QWidget()
@@ -103,6 +103,14 @@ def build_hotkeys_tab(ctx):
                     toggle_callback(send_queue, GUIKeys.toggle_dialogue),
                     True,
                     "Dialogue",
+                    _toggle_icons["speech"],
+                ),
+                (
+                    "toggle_dialogue_side_quests",
+                    tl("dialogue_side_quests"),
+                    dialogue_side_quests_callback,
+                    True,
+                    "SideQuestAccept",
                     _toggle_icons["speech"],
                 ),
                 (

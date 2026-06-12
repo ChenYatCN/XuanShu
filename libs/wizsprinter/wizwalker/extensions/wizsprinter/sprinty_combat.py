@@ -1571,6 +1571,36 @@ class SprintyCombat(CombatHandler):
             if single == "pass":
                 await self.pass_button()
                 return True
+            if single in ("willcast", "discard"):
+                # Handle these special actions after resolving target but before the candidates loop.
+                # Store the string and fall through to the post-loop handlers below.
+                target = await self.try_get_config_target(move_config.target)
+                if single == "willcast":
+                    if willcasted:
+                        return True
+                    spell_checkbox_windows = await self.client.root_window.get_windows_with_type("SpellCheckBox")
+                    wnd = ([x for x in spell_checkbox_windows if await x.name() == "PetCard"])[0]
+                    if await wnd.flags() - WindowFlags.disabled >= 0:
+                        return True
+                    card = CombatCard(self, wnd)
+                    if await card.is_castable():
+                        await card.cast(target)
+                        await asyncio.sleep(self.config.cast_time*2)
+                        return (True, True)
+                    return True
+                if single == "discard":
+                    if type(target) is list:
+                        for card in target:
+                            combat_card = await self.try_get_spell(card, castable=False)
+                            if combat_card is not None:
+                                await self.disc_on_target(combat_card)
+                                await asyncio.sleep(self.config.cast_time*2)
+                    else:
+                        combat_card = await self.try_get_spell(target, castable=False)
+                        if combat_card is not None:
+                            await self.disc_on_target(combat_card)
+                            await asyncio.sleep(self.config.cast_time*2)
+                    return True
             candidates = [single]
 
         target = await self.try_get_config_target(move_config.target)

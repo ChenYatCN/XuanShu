@@ -3,7 +3,6 @@ import os
 import shutil
 from pathlib import Path
 
-
 DEFAULT_THEME = {
     "bg_color": "#1e1e1e",
     "alt_bg": "#2d2d2d",
@@ -66,7 +65,10 @@ _INI_SETTINGS_MAP = {
     ("sigil", "client_to_follow"): ("client_to_follow", str),
     ("questing", "client_to_boost"): ("client_to_boost", str),
     ("questing", "friend_teleport"): ("friend_teleport", bool),
-    ("questing", "gear_switching_in_solo_zones"): ("gear_switching_in_solo_zones", bool),
+    ("questing", "gear_switching_in_solo_zones"): (
+        "gear_switching_in_solo_zones",
+        bool,
+    ),
     ("questing", "hitter_client"): ("hitter_client", str),
     ("auto pet", "ignore_pet_level_up"): ("ignore_pet_level_up", bool),
     ("auto pet", "only_play_dance_game"): ("only_play_dance_game", bool),
@@ -80,7 +82,7 @@ DEFAULT_HOTKEYS = {
     "toggle_speed": {"key": "F5", "modifiers": []},
     "toggle_combat": {"key": "NINE", "modifiers": []},
     "toggle_dialogue": {"key": "F4", "modifiers": []},
-    # "toggle_dialogue_side_quests": {"key": "F4", "modifiers": ["SHIFT"]},
+    "toggle_dialogue_side_quests": {"key": "F4", "modifiers": ["SHIFT"]},
     "toggle_sigil": {"key": "F2", "modifiers": []},
     "toggle_questing": {"key": "F3", "modifiers": []},
     "toggle_freecam": {"key": "F1", "modifiers": []},
@@ -309,7 +311,10 @@ class DeimosSettings:
                 # Special case: dialogue also has shift variant
                 if action_id == "toggle_dialogue":
                     hotkeys["toggle_dialogue"] = {"key": value, "modifiers": []}
-                    # hotkeys["toggle_dialogue_side_quests"] = {"key": value, "modifiers": ["SHIFT"]}
+                    hotkeys["toggle_dialogue_side_quests"] = {
+                        "key": value,
+                        "modifiers": ["SHIFT"],
+                    }
                 elif action_id == "toggle_freecam":
                     hotkeys["toggle_freecam"] = {"key": value, "modifiers": []}
                     hotkeys["freecam_tp"] = {"key": value, "modifiers": ["SHIFT"]}

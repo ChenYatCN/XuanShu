@@ -68,7 +68,12 @@ echo.
 echo 正在安装字体...
 
 if exist "%SOURCE_DIR%%FONT_FILE%" (
+    if not exist "%USER_FONT_DIR%\%FONT_FILE%" (
     copy /Y "%SOURCE_DIR%%FONT_FILE%" "%USER_FONT_DIR%\%FONT_FILE%" >nul
+    echo 已复制字体文件
+) else (
+    echo 字体文件已存在，跳过复制
+)
 
     reg add "%FONT_REG_KEY%" /v "Dream Han Sans CN W21 (TrueType)" /t REG_SZ /d "%USER_FONT_DIR%\%FONT_FILE%" /f >nul
 
