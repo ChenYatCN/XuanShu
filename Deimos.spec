@@ -82,6 +82,13 @@ add_data_if_exists(datas, "Deimos-logo.ico", ".")
 add_data_if_exists(datas, "Deimos-logo.png", ".")
 add_data_if_exists(datas, "locale", "locale")
 
+font_file = ROOT / "assets" / "fonts" / "DreamHanSansCN-W21.ttf"
+
+if font_file.exists():
+    datas.append((str(font_file), "assets/fonts"))
+else:
+    raise FileNotFoundError(f"font file not found: {font_file}")
+
 # 从当前虚拟环境收集 package data
 datas += safe_collect_data_files("wizwalker")
 datas += safe_collect_data_files("wizwalker.extensions")
@@ -112,9 +119,13 @@ else:
     raise FileNotFoundError(f"traversalData not found in venv package: {traversal_src}")
 
 runtime_hook = ROOT / "_pyi_rthook_wizsprinter.py"
+font_runtime_hook = ROOT / "_pyi_rthook_font.py"
 
 if not runtime_hook.exists():
     raise FileNotFoundError(f"runtime hook not found: {runtime_hook}")
+
+if not font_runtime_hook.exists():
+    raise FileNotFoundError(f"font runtime hook not found: {font_runtime_hook}")
 
 icon_file = ROOT / "Deimos-logo.ico"
 version_file = ROOT / "version_info.txt"
@@ -129,6 +140,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[
+        str(font_runtime_hook),
         str(runtime_hook),
     ],
     excludes=[],
