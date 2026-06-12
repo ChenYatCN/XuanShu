@@ -1,23 +1,41 @@
-import os
 import glob
-
+import os
 import shutil
 
-from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QCheckBox, QDoubleSpinBox, QSpinBox, QComboBox, QLineEdit,
-    QGroupBox, QScrollArea, QWidget, QFormLayout, QFileDialog,
-    QColorDialog, QApplication,
-)
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QColorDialog,
+    QComboBox,
+    QDialog,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
 
 from src.gui.commands import GUICommand, GUICommandType
+from src.gui.icon_manager import (
+    choose_custom_icon,
+    reset_custom_icon,
+    update_desktop_shortcut,
+)
 from src.settings_manager import DEFAULT_SETTINGS, DEFAULT_THEME, RESTART_REQUIRED_KEYS
 
 
 class _NoScrollComboBox(QComboBox):
     """QComboBox that ignores scroll wheel events to prevent accidental changes."""
+
     def wheelEvent(self, event):
         event.ignore()
 
@@ -35,21 +53,23 @@ class _NoScrollDoubleSpinBox(QDoubleSpinBox):
 def _scan_locales():
     """Scan locale/ directory for available .lang files."""
     codes = []
-    locale_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'locale')
-    for path in glob.glob(os.path.join(locale_dir, '*.lang')):
+    locale_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "locale"
+    )
+    for path in glob.glob(os.path.join(locale_dir, "*.lang")):
         codes.append(os.path.splitext(os.path.basename(path))[0])
-    return sorted(codes) if codes else ['en']
+    return sorted(codes) if codes else ["en"]
 
 
-_CLIENT_OPTIONS = ['None', 'p1', 'p2', 'p3', 'p4']
+_CLIENT_OPTIONS = ["None", "p1", "p2", "p3", "p4"]
 
 _THEME_KEYS = [
-    ('bg_color', 'setting_bg_color'),
-    ('alt_bg', 'setting_alt_bg'),
-    ('text_color', 'setting_text_color'),
-    ('button_color', 'setting_button_color'),
-    ('stroke_color', 'setting_stroke_color'),
-    ('titlebar_bg', 'setting_titlebar_bg'),
+    ("bg_color", "setting_bg_color"),
+    ("alt_bg", "setting_alt_bg"),
+    ("text_color", "setting_text_color"),
+    ("button_color", "setting_button_color"),
+    ("stroke_color", "setting_stroke_color"),
+    ("titlebar_bg", "setting_titlebar_bg"),
 ]
 
 
@@ -71,7 +91,7 @@ def show_settings_dialog(ctx):
     theme_edits = dict(current_theme)
 
     dialog = QDialog(ctx.window)
-    dialog.setWindowTitle(tl('settings_title'))
+    dialog.setWindowTitle(tl("settings_title"))
     dialog.setModal(True)
     dialog.setMinimumWidth(380)
     dialog.setStyleSheet(
@@ -111,12 +131,12 @@ def show_settings_dialog(ctx):
         combo = _NoScrollComboBox()
         combo.addItems(_CLIENT_OPTIONS)
         val = current.get(key)
-        combo.setCurrentText(str(val) if val else 'None')
+        combo.setCurrentText(str(val) if val else "None")
         form.addRow(tl(label_key), combo)
         widgets[key] = combo
 
     # ---- General ----
-    general_group = QGroupBox(tl('settings_general'))
+    general_group = QGroupBox(tl("settings_general"))
     general_form = QFormLayout(general_group)
     general_form.setSpacing(4)
 
@@ -124,20 +144,20 @@ def show_settings_dialog(ctx):
     speed_spin.setRange(0.1, 20.0)
     speed_spin.setSingleStep(0.5)
     speed_spin.setDecimals(1)
-    speed_spin.setValue(float(current.get('speed_multiplier', 5.0)))
-    general_form.addRow(tl('setting_speed_multiplier'), speed_spin)
-    widgets['speed_multiplier'] = speed_spin
+    speed_spin.setValue(float(current.get("speed_multiplier", 5.0)))
+    general_form.addRow(tl("setting_speed_multiplier"), speed_spin)
+    widgets["speed_multiplier"] = speed_spin
 
-    _add_checkbox(general_form, 'use_potions', 'setting_use_potions')
-    _add_checkbox(general_form, 'buy_potions', 'setting_buy_potions')
-    _add_checkbox(general_form, 'rich_presence', 'setting_rich_presence')
-    _add_checkbox(general_form, 'drop_logging', 'setting_drop_logging')
-    _add_checkbox(general_form, 'use_anti_afk', 'setting_use_anti_afk')
+    _add_checkbox(general_form, "use_potions", "setting_use_potions")
+    _add_checkbox(general_form, "buy_potions", "setting_buy_potions")
+    _add_checkbox(general_form, "rich_presence", "setting_rich_presence")
+    _add_checkbox(general_form, "drop_logging", "setting_drop_logging")
+    _add_checkbox(general_form, "use_anti_afk", "setting_use_anti_afk")
 
     layout.addWidget(general_group)
 
     # ---- Theme (color swatches) ----
-    theme_group = QGroupBox(tl('settings_theme'))
+    theme_group = QGroupBox(tl("settings_theme"))
     theme_form = QFormLayout(theme_group)
     theme_form.setSpacing(4)
 
@@ -165,11 +185,11 @@ def show_settings_dialog(ctx):
         pick_btn.clicked.connect(lambda checked, k=key, lk=label_key: _pick(k, lk))
 
         reset_btn = QPushButton()
-        reset_btn.setIcon(ctx.titlebar_svg_icon(ctx.svgs['reset'], 14))
+        reset_btn.setIcon(ctx.titlebar_svg_icon(ctx.svgs["reset"], 14))
         reset_btn.setFixedSize(22, 22)
         reset_btn.setStyleSheet(ctx.icon_btn_style)
         reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        reset_btn.setToolTip(tl('reset_to_default').format(DEFAULT_THEME[key]))
+        reset_btn.setToolTip(tl("reset_to_default").format(DEFAULT_THEME[key]))
 
         def _reset(k=key):
             theme_edits[k] = DEFAULT_THEME[k]
@@ -190,29 +210,34 @@ def show_settings_dialog(ctx):
     # Import/Export row
     ie_row = QHBoxLayout()
 
-    import_theme_btn = QPushButton(tl('settings_import_theme'))
+    import_theme_btn = QPushButton(tl("settings_import_theme"))
     import_theme_btn.setStyleSheet(ctx.btn_style)
     import_theme_btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def _import_theme():
-        path, _ = QFileDialog.getOpenFileName(dialog, tl('settings_import_theme'), "", "JSON files (*.json)")
+        path, _ = QFileDialog.getOpenFileName(
+            dialog, tl("settings_import_theme"), "", "JSON files (*.json)"
+        )
         if path:
             new_theme = ctx.settings.import_theme(path)
             theme_edits.update(new_theme)
             for k in swatches:
                 _update_swatch(k)
             from src.gui.theme import apply_theme
+
             apply_theme(ctx, new_theme)
 
     import_theme_btn.clicked.connect(_import_theme)
     ie_row.addWidget(import_theme_btn)
 
-    export_theme_btn = QPushButton(tl('settings_export_theme'))
+    export_theme_btn = QPushButton(tl("settings_export_theme"))
     export_theme_btn.setStyleSheet(ctx.btn_style)
     export_theme_btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def _export_theme():
-        path, _ = QFileDialog.getSaveFileName(dialog, tl('settings_export_theme'), "", "JSON files (*.json)")
+        path, _ = QFileDialog.getSaveFileName(
+            dialog, tl("settings_export_theme"), "", "JSON files (*.json)"
+        )
         if path:
             ctx.settings.export_theme(path)
 
@@ -225,28 +250,32 @@ def show_settings_dialog(ctx):
     layout.addWidget(theme_group)
 
     # ---- Appearance (font + locale) ----
-    appearance_group = QGroupBox(tl('settings_appearance'))
+    appearance_group = QGroupBox(tl("settings_appearance"))
     appearance_form = QFormLayout(appearance_group)
     appearance_form.setSpacing(4)
 
     locale_combo = _NoScrollComboBox()
     locale_combo.addItems(_scan_locales())
-    locale_combo.setCurrentText(str(current.get('locale', 'en')))
-    widgets['locale'] = locale_combo
+    locale_combo.setCurrentText(str(current.get("locale", "en")))
+    widgets["locale"] = locale_combo
 
     locale_row = QHBoxLayout()
     locale_row.addWidget(locale_combo, 1)
     import_lang_btn = QPushButton()
-    import_lang_btn.setIcon(ctx.titlebar_svg_icon(ctx.svgs['import'], 16))
+    import_lang_btn.setIcon(ctx.titlebar_svg_icon(ctx.svgs["import"], 16))
     import_lang_btn.setFixedSize(24, 24)
     import_lang_btn.setStyleSheet(ctx.icon_btn_style)
     import_lang_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    import_lang_btn.setToolTip(tl('import_lang_file'))
+    import_lang_btn.setToolTip(tl("import_lang_file"))
 
     def _import_lang():
-        path, _ = QFileDialog.getOpenFileName(dialog, tl('import_lang_title'), "", "Language files (*.lang)")
+        path, _ = QFileDialog.getOpenFileName(
+            dialog, tl("import_lang_title"), "", "Language files (*.lang)"
+        )
         if path:
-            locale_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'locale')
+            locale_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "locale"
+            )
             dest = os.path.join(locale_dir, os.path.basename(path))
             if not os.path.abspath(dest).startswith(os.path.abspath(locale_dir)):
                 return
@@ -259,100 +288,140 @@ def show_settings_dialog(ctx):
 
     import_lang_btn.clicked.connect(_import_lang)
     locale_row.addWidget(import_lang_btn)
-    appearance_form.addRow(tl('setting_locale') + ' *', locale_row)
+    appearance_form.addRow(tl("setting_locale") + " *", locale_row)
 
-    font_edit = QLineEdit(str(current.get('font', 'Segoe UI')))
-    widgets['font'] = font_edit
+    font_edit = QLineEdit(str(current.get("font", "Segoe UI")))
+    widgets["font"] = font_edit
 
     font_reset_btn = QPushButton()
-    font_reset_btn.setIcon(ctx.titlebar_svg_icon(ctx.svgs['reset'], 14))
+    font_reset_btn.setIcon(ctx.titlebar_svg_icon(ctx.svgs["reset"], 14))
     font_reset_btn.setFixedSize(22, 22)
     font_reset_btn.setStyleSheet(ctx.icon_btn_style)
     font_reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    font_reset_btn.setToolTip(tl('reset_to_default').format(DEFAULT_SETTINGS['font']))
-    font_reset_btn.clicked.connect(lambda checked: font_edit.setText(DEFAULT_SETTINGS['font']))
+    font_reset_btn.setToolTip(tl("reset_to_default").format(DEFAULT_SETTINGS["font"]))
+    font_reset_btn.clicked.connect(
+        lambda checked: font_edit.setText(DEFAULT_SETTINGS["font"])
+    )
 
     font_row = QHBoxLayout()
     font_row.addWidget(font_edit, 1)
     font_row.addWidget(font_reset_btn)
-    appearance_form.addRow(tl('setting_font'), font_row)
+    appearance_form.addRow(tl("setting_font"), font_row)
 
     font_size_spin = _NoScrollSpinBox()
     font_size_spin.setRange(6, 24)
-    font_size_spin.setValue(int(current.get('font_size', 9)))
-    widgets['font_size'] = font_size_spin
+    font_size_spin.setValue(int(current.get("font_size", 9)))
+    widgets["font_size"] = font_size_spin
 
     font_size_reset_btn = QPushButton()
-    font_size_reset_btn.setIcon(ctx.titlebar_svg_icon(ctx.svgs['reset'], 14))
+    font_size_reset_btn.setIcon(ctx.titlebar_svg_icon(ctx.svgs["reset"], 14))
     font_size_reset_btn.setFixedSize(22, 22)
     font_size_reset_btn.setStyleSheet(ctx.icon_btn_style)
     font_size_reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    font_size_reset_btn.setToolTip(tl('reset_to_default').format(DEFAULT_SETTINGS['font_size']))
-    font_size_reset_btn.clicked.connect(lambda checked: font_size_spin.setValue(DEFAULT_SETTINGS['font_size']))
+    font_size_reset_btn.setToolTip(
+        tl("reset_to_default").format(DEFAULT_SETTINGS["font_size"])
+    )
+    font_size_reset_btn.clicked.connect(
+        lambda checked: font_size_spin.setValue(DEFAULT_SETTINGS["font_size"])
+    )
 
     font_size_row = QHBoxLayout()
     font_size_row.addWidget(font_size_spin, 1)
     font_size_row.addWidget(font_size_reset_btn)
-    appearance_form.addRow(tl('setting_font_size'), font_size_row)
+    appearance_form.addRow(tl("setting_font_size"), font_size_row)
+
+    # ---- Custom App Icon ----
+    icon_row = QHBoxLayout()
+
+    change_icon_btn = QPushButton("更换软件图标")
+    change_icon_btn.setStyleSheet(ctx.btn_style)
+    change_icon_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    change_icon_btn.clicked.connect(lambda: choose_custom_icon(ctx, dialog))
+
+    reset_icon_btn = QPushButton("恢复默认图标")
+    reset_icon_btn.setStyleSheet(ctx.btn_style)
+    reset_icon_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    reset_icon_btn.clicked.connect(lambda: reset_custom_icon(ctx, dialog))
+
+    icon_row.addWidget(change_icon_btn)
+    icon_row.addWidget(reset_icon_btn)
+    icon_row.addStretch()
+
+    appearance_form.addRow("软件图标", icon_row)
+
+    shortcut_icon_btn = QPushButton("更新桌面快捷方式图标")
+    shortcut_icon_btn.setStyleSheet(ctx.btn_style)
+    shortcut_icon_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    shortcut_icon_btn.clicked.connect(
+        lambda: update_desktop_shortcut(ctx, "DeimosCN.lnk", dialog)
+    )
+
+    appearance_form.addRow("", shortcut_icon_btn)
 
     layout.addWidget(appearance_group)
 
     # ---- Sigil ----
-    sigil_group = QGroupBox(tl('settings_sigil'))
+    sigil_group = QGroupBox(tl("settings_sigil"))
     sigil_form = QFormLayout(sigil_group)
     sigil_form.setSpacing(4)
 
-    _add_checkbox(sigil_form, 'use_team_up', 'setting_use_team_up')
-    _add_client_combo(sigil_form, 'client_to_follow', 'setting_client_to_follow')
+    _add_checkbox(sigil_form, "use_team_up", "setting_use_team_up")
+    _add_client_combo(sigil_form, "client_to_follow", "setting_client_to_follow")
 
     layout.addWidget(sigil_group)
 
     # ---- Questing ----
-    questing_group = QGroupBox(tl('settings_questing'))
+    questing_group = QGroupBox(tl("settings_questing"))
     questing_form = QFormLayout(questing_group)
     questing_form.setSpacing(4)
 
-    _add_client_combo(questing_form, 'client_to_boost', 'setting_client_to_boost')
-    _add_checkbox(questing_form, 'friend_teleport', 'setting_friend_teleport')
-    _add_checkbox(questing_form, 'gear_switching_in_solo_zones', 'setting_gear_switching')
-    _add_client_combo(questing_form, 'hitter_client', 'setting_hitter_client')
+    _add_client_combo(questing_form, "client_to_boost", "setting_client_to_boost")
+    _add_checkbox(questing_form, "friend_teleport", "setting_friend_teleport")
+    _add_checkbox(
+        questing_form, "gear_switching_in_solo_zones", "setting_gear_switching"
+    )
+    _add_client_combo(questing_form, "hitter_client", "setting_hitter_client")
 
     layout.addWidget(questing_group)
 
     # ---- Auto Pet ----
-    pet_group = QGroupBox(tl('settings_auto_pet'))
+    pet_group = QGroupBox(tl("settings_auto_pet"))
     pet_form = QFormLayout(pet_group)
     pet_form.setSpacing(4)
 
-    _add_checkbox(pet_form, 'ignore_pet_level_up', 'setting_ignore_pet_level_up')
-    _add_checkbox(pet_form, 'only_play_dance_game', 'setting_only_dance_game')
+    _add_checkbox(pet_form, "ignore_pet_level_up", "setting_ignore_pet_level_up")
+    _add_checkbox(pet_form, "only_play_dance_game", "setting_only_dance_game")
 
     layout.addWidget(pet_group)
 
     # ---- Combat ----
-    combat_group = QGroupBox(tl('settings_combat'))
+    combat_group = QGroupBox(tl("settings_combat"))
     combat_form = QFormLayout(combat_group)
     combat_form.setSpacing(4)
 
-    _add_checkbox(combat_form, 'kill_minions_first', 'setting_kill_minions_first')
-    _add_checkbox(combat_form, 'automatic_team_based_combat', 'setting_auto_team_combat')
-    _add_checkbox(combat_form, 'discard_duplicate_cards', 'setting_discard_duplicates')
+    _add_checkbox(combat_form, "kill_minions_first", "setting_kill_minions_first")
+    _add_checkbox(
+        combat_form, "automatic_team_based_combat", "setting_auto_team_combat"
+    )
+    _add_checkbox(combat_form, "discard_duplicate_cards", "setting_discard_duplicates")
 
     layout.addWidget(combat_group)
 
     # ---- Launcher ----
-    launcher_group = QGroupBox(tl('settings_launcher'))
+    launcher_group = QGroupBox(tl("settings_launcher"))
     launcher_form = QFormLayout(launcher_group)
     launcher_form.setSpacing(4)
 
-    _add_checkbox(launcher_form, 'remember_chosen_clients', 'setting_remember_chosen_clients')
+    _add_checkbox(
+        launcher_form, "remember_chosen_clients", "setting_remember_chosen_clients"
+    )
 
     layout.addWidget(launcher_group)
 
     layout.addStretch()
 
     # ---- Bottom buttons ----
-    restart_label = QLabel("* " + tl('settings_restart_note'))
+    restart_label = QLabel("* " + tl("settings_restart_note"))
     restart_label.setStyleSheet("color: orange; font-style: italic;")
     restart_label.setVisible(False)
     outer_layout.addWidget(restart_label)
@@ -360,12 +429,12 @@ def show_settings_dialog(ctx):
     btn_row = QHBoxLayout()
     btn_row.addStretch()
 
-    save_btn = QPushButton(tl('settings_save'))
+    save_btn = QPushButton(tl("settings_save"))
     save_btn.setStyleSheet(ctx.btn_style)
     save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     btn_row.addWidget(save_btn)
 
-    cancel_btn = QPushButton(tl('settings_cancel'))
+    cancel_btn = QPushButton(tl("settings_cancel"))
     cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     btn_row.addWidget(cancel_btn)
 
@@ -382,8 +451,8 @@ def show_settings_dialog(ctx):
                 values[key] = w.value()
             elif isinstance(w, QComboBox):
                 text = w.currentText()
-                if key in ('client_to_follow', 'client_to_boost', 'hitter_client'):
-                    values[key] = None if text == 'None' else text
+                if key in ("client_to_follow", "client_to_boost", "hitter_client"):
+                    values[key] = None if text == "None" else text
                 else:
                     values[key] = text
             elif isinstance(w, QLineEdit):
@@ -403,16 +472,17 @@ def show_settings_dialog(ctx):
         # Handle font changes
         new_font = font_edit.text()
         new_font_size = font_size_spin.value()
-        old_font = current.get('font', 'Segoe UI')
-        old_font_size = current.get('font_size', 9)
+        old_font = current.get("font", "Segoe UI")
+        old_font_size = current.get("font_size", 9)
         if new_font != old_font or new_font_size != old_font_size:
             ctx.gui_font = new_font
             ctx.gui_font_size = new_font_size
             from src.gui.theme import compute_styles
+
             styles = compute_styles(theme_edits, new_font, new_font_size)
             app = QApplication.instance()
             if app:
-                app.setStyleSheet(styles['app_style'])
+                app.setStyleSheet(styles["app_style"])
 
         # Handle non-theme settings
         new_values = _collect_values()
@@ -438,6 +508,7 @@ def show_settings_dialog(ctx):
     def _on_cancel():
         if not saved[0] and theme_edits != original_theme:
             from src.gui.theme import apply_theme
+
             apply_theme(ctx, original_theme)
             ctx.settings.set_theme(original_theme)
         dialog.reject()

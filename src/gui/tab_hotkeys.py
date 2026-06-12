@@ -22,6 +22,7 @@ from src.gui.helpers import (
     teleport_callback,
     toggle_callback,
 )
+from src.gui.icon_manager import set_label_icon
 from src.gui.widgets import HotkeyCapture, ToggleNameLabel
 
 
@@ -522,17 +523,14 @@ def build_hotkeys_tab(ctx):
 
     info_layout.addStretch()
 
-    _logo_path = resource_path("Deimos-logo.png")
-    if os.path.exists(_logo_path):
-        logo_label = QLabel()
-        pixmap = QPixmap(_logo_path)
-        if not pixmap.isNull():
-            scaled = pixmap.scaledToHeight(
-                80, Qt.TransformationMode.SmoothTransformation
-            )
-            logo_label.setPixmap(scaled)
-            logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            info_layout.addWidget(logo_label)
+    logo_label = QLabel()
+    logo_label.setFixedSize(100, 90)
+
+    set_label_icon(logo_label, 80)
+
+    info_layout.addWidget(logo_label, alignment=Qt.AlignmentFlag.AlignCenter)
+
+    ctx.tool_info_logo_label = logo_label
 
     _changelog_url = f"https://github.com/{ctx.tool_author}/{ctx.tool_name}-Wizard101/releases/tag/{ctx.tool_version}"
     version_label = QLabel(
