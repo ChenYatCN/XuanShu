@@ -78,7 +78,7 @@ hiddenimports += [
 
 datas = []
 
-add_data_if_exists(datas, "Deimos-logo.ico", ".")
+add_data_if_exists(datas, "Winter.ico", ".")
 add_data_if_exists(datas, "Deimos-logo.png", ".")
 add_data_if_exists(datas, "locale", "locale")
 
@@ -127,7 +127,7 @@ if not runtime_hook.exists():
 if not font_runtime_hook.exists():
     raise FileNotFoundError(f"font runtime hook not found: {font_runtime_hook}")
 
-icon_file = ROOT / "Deimos-logo.ico"
+icon_file = ROOT / "Winter.ico"
 version_file = ROOT / "version_info.txt"
 manifest_file = ROOT / "app.manifest"
 

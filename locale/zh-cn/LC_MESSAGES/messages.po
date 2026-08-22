@@ -1,0 +1,378 @@
+# German translations for PROJECT.
+# Copyright (C) 2023 ORGANIZATION
+# This file is distributed under the same license as the PROJECT project.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2023.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: PROJECT VERSION\n"
+"Report-Msgid-Bugs-To: adquantum@foxmail.com\n"
+"POT-Creation-Date: 2023-02-28 20:36+0100\n"
+"PO-Revision-Date: 2026-02-02 19:56+0800\n"
+"Last-Translator: adquantum <adquantum@foxmail.com>\n"
+"Language-Team: zh-cn <subata.top>\n"
+"Language: zh_CN\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+"Generated-By: Babel 2.12.1\n"
+"X-Generator: Poedit 3.8\n"
+
+#: src/deimosgui.py:322
+msgid ""
+"SubataGod will always be free and open-source.\n"
+"By using SubataGod, you agree to the GPL v3 license agreement.\n"
+"If you bought this, you got scammed!"
+msgstr ""
+"SubataGod 永远都是免费和开源的.\n"
+"如果你使用SubatGod，你就同意了GPL v3许可协议\n"
+"如果为了这个花了钱，那你一定是被骗了!"
+
+#: src/deimosgui.py:125
+msgid "License Agreement"
+msgstr "许可协议"
+
+#: src/deimosgui.py:135
+msgid "Speedhack"
+msgstr ""
+
+#: src/deimosgui.py:350
+msgid "Combat"
+msgstr ""
+
+#: src/deimosgui.py:137
+msgid "Dialogue"
+msgstr ""
+
+#: src/deimosgui.py:138
+msgid "Sigil"
+msgstr ""
+
+#: src/deimosgui.py:139
+msgid "Questing"
+msgstr ""
+
+#: src/deimosgui.py:140
+msgid "Auto Pet"
+msgstr ""
+
+#: src/deimosgui.py:143
+msgid "Quest TP"
+msgstr "任务点传送"
+
+#: src/deimosgui.py:144
+msgid "Freecam"
+msgstr "自由视角"
+
+#: src/deimosgui.py:145
+msgid "Freecam TP"
+msgstr "自由视角传送"
+
+#: src/deimosgui.py:148
+msgid "Mass TP"
+msgstr "群体传送"
+
+#: src/deimosgui.py:149
+msgid "XYZ Sync"
+msgstr "同步坐标"
+
+#: src/deimosgui.py:150
+msgid "X Press"
+msgstr "按X"
+
+#: src/deimosgui.py:152
+msgid "Disabled"
+msgstr ""
+
+#: src/deimosgui.py:153
+msgid "Toggles"
+msgstr "切换"
+
+#: src/deimosgui.py:155 src/deimosgui.py:338
+msgid "Hotkeys"
+msgstr "热键"
+
+#: src/deimosgui.py:157
+msgid "Mass Hotkeys"
+msgstr "群体热键"
+
+#: src/deimosgui.py:159
+msgid "Client"
+msgstr "客户端"
+
+#: src/deimosgui.py:165 src/deimosgui.py:198 src/deimosgui.py:249
+msgid "Yaw"
+msgstr "偏航角"
+
+#: src/deimosgui.py:167
+msgid "Zone"
+msgstr "区域"
+
+#: src/deimosgui.py:169
+msgid "Copy Position"
+msgstr "复制当前位置"
+
+#: src/deimosgui.py:170
+msgid "Copy Zone"
+msgstr "复制当前区域"
+
+#: src/deimosgui.py:171
+msgid "Copy Rotation"
+msgstr "复制当前角度"
+
+#: src/deimosgui.py:188
+msgid "Utils"
+msgstr "工具"
+
+#: src/deimosgui.py:190
+msgid "The utils below are for advanced users and no support will be given on them."
+msgstr "下面的工具是给专业用户使用的 不提供任何帮助和教程."
+
+#: src/deimosgui.py:199
+msgid "Custom TP"
+msgstr "自定义传送"
+
+#: src/deimosgui.py:202
+msgid "Entity Name"
+msgstr "实体名称"
+
+#: src/deimosgui.py:203
+msgid "Entity TP"
+msgstr "实体传送"
+
+#: src/deimosgui.py:207
+msgid "TP Utils"
+msgstr "传送工具"
+
+#: src/deimosgui.py:212
+msgid "Copy Entity List"
+msgstr "复制实体列表"
+
+#: src/deimosgui.py:213
+msgid "Copy UI Tree"
+msgstr "复制UI树"
+
+#: src/deimosgui.py:216
+msgid "Zone Name"
+msgstr "区域名称"
+
+#: src/deimosgui.py:217
+msgid "Go To Zone"
+msgstr "前往区域"
+
+#: src/deimosgui.py:218
+msgid "Mass Go To Zone"
+msgstr "群体前往区域"
+
+#: src/deimosgui.py:221
+msgid "World Name"
+msgstr "世界名称"
+
+#: src/deimosgui.py:227
+msgid "Go To World"
+msgstr "前往世界"
+
+#: src/deimosgui.py:228
+msgid "Mass Go To World"
+msgstr "群体前往世界"
+
+#: src/deimosgui.py:231
+msgid "Go To Bazaar"
+msgstr "前往集市"
+
+#: src/deimosgui.py:232
+msgid "Mass Go To Bazaar"
+msgstr "群体前往集市"
+
+#: src/deimosgui.py:233
+msgid "Refill Potions"
+msgstr "补充药水"
+
+#: src/deimosgui.py:234
+msgid "Mass Refill Potions"
+msgstr "群体补充药水"
+
+#: src/deimosgui.py:238 src/deimosgui.py:340
+msgid "Dev Utils"
+msgstr "开发者工具"
+
+#: src/deimosgui.py:246
+msgid "Set Camera Position"
+msgstr "设置相机位置"
+
+#: src/deimosgui.py:250
+msgid "Roll"
+msgstr "滚动"
+
+#: src/deimosgui.py:251
+msgid "Pitch"
+msgstr "投"
+
+#: src/deimosgui.py:254
+msgid "Entity"
+msgstr "实体"
+
+#: src/deimosgui.py:255
+msgid "Anchor"
+msgstr "锚"
+
+#: src/deimosgui.py:256
+msgid "Toggle Camera Collision"
+msgstr "切换相机碰撞箱"
+
+#: src/deimosgui.py:259
+msgid "Distance"
+msgstr "距离"
+
+#: src/deimosgui.py:260
+msgid "Min"
+msgstr "最小"
+
+#: src/deimosgui.py:261
+msgid "Max"
+msgstr "最大"
+
+#: src/deimosgui.py:262
+msgid "Set Distance"
+msgstr "设置距离"
+
+#: src/deimosgui.py:265
+msgid "Copy Camera Position"
+msgstr "复制相机位置"
+
+#: src/deimosgui.py:266
+msgid "Copy Camera Rotation"
+msgstr "复制相机角度"
+
+#: src/deimosgui.py:270
+msgid "Camera Controls"
+msgstr "相机控制"
+
+#: src/deimosgui.py:275
+msgid "Caster/Target Indices"
+msgstr "施法者/目标"
+
+#: src/deimosgui.py:277
+msgid "Dmg"
+msgstr "伤害"
+
+#: src/deimosgui.py:278
+msgid "School"
+msgstr "学院"
+
+#: src/deimosgui.py:281
+msgid "Crit"
+msgstr "暴击"
+
+#: src/deimosgui.py:282
+msgid "View Stats"
+msgstr "查看属性"
+
+#: src/deimosgui.py:283
+msgid "Copy Stats"
+msgstr "复制属性"
+
+#: src/deimosgui.py:285
+msgid "No client has been selected."
+msgstr "没有选中客户端."
+
+#: src/deimosgui.py:287
+msgid "Swap Members"
+msgstr "交换成员"
+
+#: src/deimosgui.py:288
+msgid "Force School Damage"
+msgstr "强制本系伤害"
+
+#: src/deimosgui.py:293 src/deimosgui.py:341
+msgid "属性查看器"
+msgstr ""
+
+#: src/deimosgui.py:300
+msgid "Import Flythrough"
+msgstr "导入飞行路径"
+
+#: src/deimosgui.py:302
+msgid "Export Flythrough"
+msgstr "导出飞行路径"
+
+#: src/deimosgui.py:303
+msgid "Execute Flythrough"
+msgstr "执行飞行路径"
+
+#: src/deimosgui.py:304
+msgid "Kill Flythrough"
+msgstr "停止飞行路径"
+
+#: src/deimosgui.py:308
+msgid "Flythrough Creator"
+msgstr "飞行路径创造器"
+
+#: src/deimosgui.py:318
+msgid "Run Bot"
+msgstr "运行机器人"
+
+#: src/deimosgui.py:319
+msgid "Kill Bot"
+msgstr "停止机器人"
+
+#: src/deimosgui.py:323
+msgid "Bot Creator"
+msgstr "机器人中心"
+
+#: src/deimosgui.py:328
+msgid "Scale"
+msgstr "倍数"
+
+#: src/deimosgui.py:329
+msgid "Set Scale"
+msgstr "设置倍数"
+
+#: src/deimosgui.py:334
+msgid "Misc Utils"
+msgstr "其他工具"
+
+#: src/deimosgui.py:339
+msgid "Camera"
+msgstr "相机"
+
+#: src/deimosgui.py:342
+msgid "Flythrough"
+msgstr "飞行路径"
+
+#: src/deimosgui.py:343
+msgid "Bot"
+msgstr "机器人"
+
+#: src/deimosgui.py:344
+msgid "Misc"
+msgstr "其他"
+
+#: src/deimosgui.py:862
+msgid "SubataGod will always be a free tool. If you paid for this, you got scammed!"
+msgstr "作者: 炙逸 SubataGod工具. 如果你花钱购买了，那你被骗了!"
+
+msgid "Drop Log Settings"
+msgstr "自定义掉落设置"
+
+msgid "Specify what drops you want to be logged."
+msgstr "设定你想看到的物品名称(全称)"
+
+#: src/deimosgui.py:754
+msgid "Combat Configurator"
+msgstr "战斗配置器"
+
+#: src/deimosgui.py:804
+msgid "Debug Console"
+msgstr "调试台"
+
+#: src/deimosgui.py:853
+msgid "Console"
+msgstr "终端"
+
+msgid "Stat Viewer"
+msgstr "统计查看器"
+
+msgid "Be sure to include your logs when asking for support."
+msgstr "申请支持时请务必附上您的日志文件。"
