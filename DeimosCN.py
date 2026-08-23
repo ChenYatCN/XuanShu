@@ -75,7 +75,7 @@ from wizwalker.utils import get_all_wizard_handles, get_foreground_window
 
 cMessageBox = ctypes.windll.user32.MessageBoxW
 
-tool_version: str = "3.14.0"
+tool_version: str = "2.0.2"
 tool_name: str = "DeimosCN"
 tool_author: str = "Deimos-Wizard101"
 repo_name: str = tool_name + "-Wizard101"
@@ -768,7 +768,9 @@ async def main():
                             )
                         )
                 except Exception:
-                    logger.exception("Freecam toggle failed; keeping the GUI task alive.")
+                    logger.exception(
+                        "Freecam toggle failed; keeping the GUI task alive."
+                    )
                     gui_send_queue.put(
                         deimosgui.GUICommand(
                             deimosgui.GUICommandType.UpdateWindow,
