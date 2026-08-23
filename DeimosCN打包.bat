@@ -1,9 +1,9 @@
 @echo off
 chcp 65001 >nul
-title Deimos 打包工具
+title DeimosCN 打包工具
 
 echo ========================================
-echo        Deimos 自动打包脚本
+echo       DeimosCN 自动打包脚本
 echo ========================================
 echo.
 
@@ -89,20 +89,20 @@ if errorlevel 1 (
 echo.
 echo [4/5] 检查输出文件...
 
-if exist "dist\Deimos.exe" (
+if exist "dist\DeimosCN.exe" (
     echo.
     echo ========================================
     echo              打包成功
     echo ========================================
     echo 输出文件：
-    echo %ROOT%dist\Deimos.exe
+    echo %ROOT%dist\DeimosCN.exe
     echo.
 ) else (
     echo.
     echo [警告] 打包命令执行完成，但没有找到：
-    echo %ROOT%dist\Deimos.exe
+    echo %ROOT%dist\DeimosCN.exe
     echo.
-    echo 请检查 spec 文件里的 name 是否为 Deimos。
+    echo 请检查 spec 文件里的 name 是否为 DeimosCN。
     pause
     exit /b 1
 )

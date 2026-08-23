@@ -7,6 +7,7 @@ venv
 testbot.txt
 *.spec
 !Deimos.spec
+!DeimosCN.spec
 build/
 dist/
 *.env

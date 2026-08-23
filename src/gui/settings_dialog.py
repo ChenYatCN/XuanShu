@@ -407,6 +407,15 @@ def show_settings_dialog(ctx):
 
     layout.addWidget(combat_group)
 
+    # ---- Client ----
+    client_group = QGroupBox(tl("settings_client"))
+    client_form = QFormLayout(client_group)
+    client_form.setSpacing(4)
+
+    _add_checkbox(client_form, "client_resizing", "setting_client_resizing")
+
+    layout.addWidget(client_group)
+
     # ---- Launcher ----
     launcher_group = QGroupBox(tl("settings_launcher"))
     launcher_form = QFormLayout(launcher_group)
@@ -414,6 +423,9 @@ def show_settings_dialog(ctx):
 
     _add_checkbox(
         launcher_form, "remember_chosen_clients", "setting_remember_chosen_clients"
+    )
+    _add_checkbox(
+        launcher_form, "verify_patch_files", "setting_verify_patch_files"
     )
 
     layout.addWidget(launcher_group)

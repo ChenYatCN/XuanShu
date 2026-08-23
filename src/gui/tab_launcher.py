@@ -24,6 +24,9 @@ def build_launcher_tab(ctx):
     send_queue = ctx.send_queue
     svgs = ctx.svgs
 
+    # Amber warning icon for saved accounts whose metadata needs attention.
+    _warning_svg = svgs['triangle-alert'].replace(ctx.stroke_color, '#E0A100')
+
     _hover_rgba = "rgba(255,255,255,15)" if ctx.theme in ('black', 'dark') else "rgba(0,0,0,15)"
     _launcher_list_style = (
         "QListWidget::item {"
@@ -100,31 +103,62 @@ def build_launcher_tab(ctx):
     launcher_layout.addLayout(columns_layout, 1)
 
     # --- Account dialog and helpers ---
-    def _show_add_account_dialog():
+    def _show_account_dialog(nickname: str = None, steam: bool = False):
+        """Add an account or update its per-account launch options."""
+        editing = nickname is not None
         dlg = QDialog(ctx.window)
-        dlg.setWindowTitle(tl('add_account'))
+        dlg.setWindowTitle(tl('update_account') if editing else tl('add_account'))
         dlg.setModal(True)
         dlg_layout = QVBoxLayout(dlg)
 
-        nick_input = QLineEdit()
-        nick_input.setPlaceholderText(tl('nickname'))
         dlg_layout.addWidget(QLabel(tl('nickname')))
-        dlg_layout.addWidget(nick_input)
+        nick_input = None
+        if editing:
+            dlg_layout.addWidget(QLabel(nickname))
+        else:
+            nick_input = QLineEdit()
+            nick_input.setPlaceholderText(tl('nickname'))
+            dlg_layout.addWidget(nick_input)
+
+        steam_cb = QCheckBox(tl('steam_mode'))
+        steam_cb.setChecked(bool(steam))
+        dlg_layout.addWidget(steam_cb)
 
         save_btn = QPushButton(tl('save_account'))
         save_btn.setStyleSheet(ctx.btn_style)
+
         def _on_save():
-            nick = nick_input.text().strip()
-            if nick:
-                send_queue.put(GUICommand(GUICommandType.SaveAccount, nick))
+            steam_value = steam_cb.isChecked()
+            if editing:
+                send_queue.put(
+                    GUICommand(
+                        GUICommandType.UpdateAccount,
+                        (nickname, steam_value),
+                    )
+                )
                 dlg.accept()
+                return
+
+            nick = nick_input.text().strip()
+            if not nick:
+                return
+            send_queue.put(
+                GUICommand(GUICommandType.SaveAccount, (nick, steam_value))
+            )
+            dlg.accept()
+
         save_btn.clicked.connect(_on_save)
         dlg_layout.addWidget(save_btn)
 
         dlg.adjustSize()
         dlg.exec()
 
-    def _build_account_item_widget(nickname: str, disabled: bool = False):
+    def _build_account_item_widget(
+        nickname: str,
+        disabled: bool = False,
+        error: str = None,
+        steam: bool = None,
+    ):
         row = QWidget(account_list)
         row.setStyleSheet("background: transparent;")
         row_layout = QHBoxLayout(row)
@@ -144,6 +178,28 @@ def build_launcher_tab(ctx):
             lbl.setStyleSheet("color: rgba(255,255,255,80);" if ctx.theme in ('black', 'dark') else "color: rgba(0,0,0,80);")
             lbl.setToolTip(tl('already_active'))
 
+        if error:
+            def _edit_this():
+                _show_account_dialog(nickname=nickname, steam=bool(steam))
+
+            warning_btn = launcher_small_icon_btn(
+                ctx, _warning_svg, error, _edit_this
+            )
+            row_layout.addWidget(warning_btn)
+
+        def _window_config():
+            from src.gui.window_config_dialog import show_window_config_dialog
+
+            show_window_config_dialog(ctx, nickname)
+
+        window_btn = launcher_small_icon_btn(
+            ctx,
+            svgs['proportions'],
+            tl('window_config_tooltip'),
+            _window_config,
+        )
+        row_layout.addWidget(window_btn)
+
         def _delete_this():
             send_queue.put(GUICommand(GUICommandType.DeleteAccount, nickname))
         trash_btn = launcher_small_icon_btn(ctx, svgs['trash'], tl('remove_account'), _delete_this)
@@ -151,15 +207,28 @@ def build_launcher_tab(ctx):
 
         return row
 
-    def _populate_account_list(nicknames: list[str]):
+    def _populate_account_list(accounts: list):
         remember = ctx.settings and ctx.settings.get_setting('remember_chosen_clients')
         managed = ctx.widget_tags.get('managed_accounts', set())
         account_list.setUpdatesEnabled(False)
         account_list.clear()
-        for nick in nicknames:
+        for entry in accounts:
+            if isinstance(entry, dict):
+                nick = entry.get('nick')
+                error = entry.get('error')
+                steam = entry.get('steam')
+            else:
+                nick, error, steam = entry, None, None
+            if not nick:
+                continue
             item = QListWidgetItem()
             item.setSizeHint(QSize(0, 28))
-            row_widget = _build_account_item_widget(nick, disabled=(nick in managed and not remember))
+            row_widget = _build_account_item_widget(
+                nick,
+                disabled=(nick in managed and not remember),
+                error=error,
+                steam=steam,
+            )
             account_list.addItem(item)
             account_list.setItemWidget(item, row_widget)
         account_list.setUpdatesEnabled(True)
@@ -394,7 +463,7 @@ def build_launcher_tab(ctx):
 
     launcher_action_row = QHBoxLayout()
     launcher_action_row.addStretch()
-    launcher_action_row.addWidget(ctx.registry.action_icon_btn(svgs['add'], tl('add_account'), lambda: _show_add_account_dialog()))
+    launcher_action_row.addWidget(ctx.registry.action_icon_btn(svgs['add'], tl('add_account'), lambda: _show_account_dialog()))
     launcher_action_row.addWidget(ctx.registry.action_icon_btn(svgs['play'], tl('launch_login'), _launch_and_login))
     launcher_action_row.addWidget(ctx.registry.action_icon_btn(svgs['gear'], tl('settings'), _show_settings_dialog))
     launcher_action_row.addStretch()

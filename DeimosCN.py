@@ -25,8 +25,10 @@ from pypresence import AioPresence
 import wizwalker
 from src import discsdk
 from src import gui as deimosgui
+from src import wizpatch_runner
 from src.auto_fish_original_adapter import fish_bot
 from src.auto_pet import nomnom
+from src.client_resizing import ClientResizingManager
 from src.command_parser import execute_flythrough, parse_command
 from src.config_combat import (
     StrCombatConfigProvider,
@@ -75,7 +77,7 @@ from wizwalker.utils import get_all_wizard_handles, get_foreground_window
 
 cMessageBox = ctypes.windll.user32.MessageBoxW
 
-tool_version: str = "2.0.2"
+tool_version: str = "2.1.0"
 tool_name: str = "DeimosCN"
 tool_author: str = "Deimos-Wizard101"
 repo_name: str = tool_name + "-Wizard101"
@@ -133,6 +135,7 @@ gui_font = "Segoe UI"
 gui_font_size = 9
 use_team_up = False
 buy_potions = True
+client_resizing = True
 client_to_follow = None
 client_to_boost = None
 questing_friend_tp = False
@@ -164,6 +167,8 @@ rpc_status = _json_settings.get("rich_presence", rpc_status)
 drop_status = _json_settings.get("drop_logging", drop_status)
 anti_afk_status = _json_settings.get("use_anti_afk", anti_afk_status)
 buy_potions = _json_settings.get("buy_potions", buy_potions)
+client_resizing = _json_settings.get("client_resizing", client_resizing)
+client_resizing_manager = ClientResizingManager()
 gui_on_top = _json_settings.get("on_top", gui_on_top)
 gui_langcode = _json_settings.get("locale", gui_langcode)
 gui_font = _json_settings.get("font", gui_font)
@@ -191,6 +196,40 @@ automatic_team_based_combat = _json_settings.get(
 discard_duplicate_cards = _json_settings.get(
     "discard_duplicate_cards", discard_duplicate_cards
 )
+
+
+async def _apply_account_window_config(client, handle, nickname):
+    """Apply a saved account's window/resolution settings before hooking."""
+    try:
+        config = wizlaunch.get_window_config(nickname)
+    except Exception:
+        config = None
+    if not config:
+        return
+
+    try:
+        x, y, width, height, res_width, res_height, locked, borderless = config
+        await client_resizing_manager.apply_account_window(
+            client,
+            handle,
+            x,
+            y,
+            width,
+            height,
+            res_width,
+            res_height,
+            locked,
+            borderless,
+        )
+        logger.info(
+            f"Applied window config to '{nickname}': "
+            f"window {width}x{height}, resolution {res_width}x{res_height}."
+        )
+    except Exception as exc:
+        logger.opt(exception=exc).warning(
+            f"Window config apply failed for '{nickname}'"
+        )
+
 
 if hasattr(sys, "_MEIPASS"):
     folder_path = os.path.join(
@@ -269,6 +308,20 @@ def generate_timestamp() -> str:
     time_stamp = str(time_list[0])
     time_stamp = time_stamp.replace("/", "-").replace(":", "-")
     return time_stamp
+
+
+def build_account_list_payload() -> list[dict]:
+    """Return account rows with validation and Steam-mode metadata."""
+    payload = []
+    for nickname in wizlaunch.list_accounts():
+        payload.append(
+            {
+                "nick": nickname,
+                "error": wizlaunch.validate_account(nickname),
+                "steam": wizlaunch.get_account_steam(nickname),
+            }
+        )
+    return payload
 
 
 def _compact_coordinate(value) -> str:
@@ -476,6 +529,12 @@ async def kill_tool(debug: bool):
 
 
 async def tool_finish():
+    # Remove resolution/resize hooks while game processes are still alive.
+    try:
+        await client_resizing_manager.shutdown()
+    except Exception as exc:
+        logger.opt(exception=exc).debug("client resizing shutdown error")
+
     if not walker or len(walker.clients) == 0:
         return
 
@@ -1579,6 +1638,8 @@ async def main():
 
     # Track which window handles were launched by us, mapped to account nickname
     launched_account_map: dict[int, str] = {}
+    # Apply each account's saved window configuration once per launched window.
+    window_config_applied: set[int] = set()
     initial_setup_complete = False
     # Handles explicitly released via UnhookClient — skip in continuous detection
     released_handles: set[int] = set()
@@ -1611,6 +1672,8 @@ async def main():
         for h in stale:
             launched_account_map.pop(h)
             _hooking_in_progress.discard(h)
+            window_config_applied.discard(h)
+            client_resizing_manager.drop_keep_alive(h)
 
         hooked = []
         managed_accounts = set(launched_account_map.values())
@@ -1921,6 +1984,7 @@ async def main():
         global auto_fish_task
         global highlight_task
         global entity_stream_task
+        global client_resizing
         enemy_stats = []
         current_pos = None
         current_rotation = None
@@ -2168,6 +2232,19 @@ async def main():
                     nc.title = f"p{num}"
                     _hooking_in_progress.add(handle)
                     _send_hooked_clients_update()
+                    nickname = launched_account_map.get(handle)
+                    if (
+                        client_resizing
+                        and nickname
+                        and handle not in window_config_applied
+                    ):
+                        window_config_applied.add(handle)
+                        # Window setup can spend a few seconds waiting for the
+                        # game's video manager; do not block detection of the
+                        # remaining account windows while it runs.
+                        asyncio.create_task(
+                            _apply_account_window_config(nc, handle, nickname)
+                        )
                     try:
                         await nc.activate_hooks()
                         await _init_client_attrs(nc)
@@ -3260,23 +3337,46 @@ async def main():
                             gui_send_queue.put(
                                 deimosgui.GUICommand(
                                     deimosgui.GUICommandType.UpdateAccountList,
-                                    wizlaunch.list_accounts(),
+                                    build_account_list_payload(),
                                 )
                             )
 
                         case deimosgui.GUICommandType.SaveAccount:
-                            nickname = com.data
+                            if isinstance(com.data, (tuple, list)):
+                                nickname, steam_mode = com.data
+                            else:
+                                # Backward compatibility with older launcher UIs.
+                                nickname, steam_mode = com.data, False
                             try:
                                 await asyncio.to_thread(
                                     wizlaunch.prompt_save_account, nickname
                                 )
+                                wizlaunch.set_account_steam(nickname, bool(steam_mode))
                                 logger.info(f"Account '{nickname}' saved.")
                             except RuntimeError as e:
                                 logger.info(f"Account save cancelled or failed: {e}")
                             gui_send_queue.put(
                                 deimosgui.GUICommand(
                                     deimosgui.GUICommandType.UpdateAccountList,
-                                    wizlaunch.list_accounts(),
+                                    build_account_list_payload(),
+                                )
+                            )
+
+                        case deimosgui.GUICommandType.UpdateAccount:
+                            nickname, steam_mode = com.data
+                            try:
+                                wizlaunch.set_account_steam(nickname, bool(steam_mode))
+                                logger.info(
+                                    f"Account '{nickname}' launch mode updated."
+                                )
+                            except RuntimeError as e:
+                                logger.warning(
+                                    f"Could not update account '{nickname}': {e}"
+                                )
+                            gui_send_queue.put(
+                                deimosgui.GUICommand(
+                                    deimosgui.GUICommandType.UpdateAccountList,
+                                    build_account_list_payload(),
                                 )
                             )
 
@@ -3286,7 +3386,7 @@ async def main():
                             gui_send_queue.put(
                                 deimosgui.GUICommand(
                                     deimosgui.GUICommandType.UpdateAccountList,
-                                    wizlaunch.list_accounts(),
+                                    build_account_list_payload(),
                                 )
                             )
 
@@ -3315,6 +3415,18 @@ async def main():
                                 logger.info(
                                     f"Launching {len(nicknames)} instance(s)..."
                                 )
+                                if settings.get_setting("verify_patch_files"):
+                                    logger.info(
+                                        "Verifying official game files before launch..."
+                                    )
+                                    verified = await asyncio.to_thread(
+                                        wizpatch_runner.patch_game_files, game_path
+                                    )
+                                    if not verified:
+                                        logger.warning(
+                                            "Game-file verification did not finish successfully; "
+                                            "continuing with account launch."
+                                        )
                             # Clear any released handles so newly launched clients get auto-hooked
                             released_handles.clear()
                             gui_send_queue.put(
@@ -3355,6 +3467,10 @@ async def main():
                             handle = com.data
                             for c in walker.clients[:]:
                                 if c.window_handle == handle:
+                                    await client_resizing_manager.teardown_client(
+                                        handle
+                                    )
+                                    window_config_applied.discard(handle)
                                     try:
                                         c.title = "Wizard101"
                                         await c.close()
@@ -3428,6 +3544,8 @@ async def main():
 
                         case deimosgui.GUICommandType.KillClient:
                             handle = com.data
+                            await client_resizing_manager.teardown_client(handle)
+                            window_config_applied.discard(handle)
                             # If handle belongs to a hooked client, unhook first
                             for c in walker.clients[:]:
                                 if c.window_handle == handle:
@@ -3452,6 +3570,8 @@ async def main():
 
                         case deimosgui.GUICommandType.RelaunchClient:
                             handle, nickname = com.data
+                            await client_resizing_manager.teardown_client(handle)
+                            window_config_applied.discard(handle)
                             # Unhook the hooked client
                             for c in walker.clients[:]:
                                 if c.window_handle == handle:
@@ -3527,6 +3647,8 @@ async def main():
                                         ignore_pet_level_up = value
                                     case "only_play_dance_game":
                                         only_play_dance_game = value
+                                    case "client_resizing":
+                                        client_resizing = bool(value)
                                     case "fish_chest_only":
                                         fish_chest_only = bool(value)
                                     case "fish_school":
@@ -3759,6 +3881,17 @@ async def main():
         # Auto potion usage on a per client basis.
         await asyncio.gather(*[logging_loop(p) for p in walker.clients])
 
+    async def client_resizing_loop():
+        """Keep hooked game windows resizable and their render aspect correct."""
+        while True:
+            try:
+                await client_resizing_manager.tick(walker.clients, client_resizing)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.opt(exception=e).debug("Client resizing maintenance failed.")
+            await asyncio.sleep(0.3)
+
     async def zone_check_loop():
         zone_blacklist = ["Raids", "Battlegrounds"]
 
@@ -3947,6 +4080,7 @@ async def main():
         all_tasks["potion_usage_loop"] = asyncio.create_task(potion_usage_loop())
         all_tasks["rpc_loop"] = asyncio.create_task(rpc_loop())
         all_tasks["drop_logging_loop"] = asyncio.create_task(drop_logging_loop())
+        all_tasks["client_resizing_loop"] = asyncio.create_task(client_resizing_loop())
         all_tasks["zone_check_loop"] = asyncio.create_task(zone_check_loop())
         all_tasks["anti_afk_questing_loop"] = asyncio.create_task(
             anti_afk_questing_loop()

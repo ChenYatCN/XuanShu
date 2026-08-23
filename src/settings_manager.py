@@ -47,8 +47,12 @@ DEFAULT_SETTINGS = {
     "kill_minions_first": False,
     "automatic_team_based_combat": False,
     "discard_duplicate_cards": True,
+    # [client]
+    "client_resizing": True,
     # [launcher]
     "remember_chosen_clients": False,
+    # Only contacts the official game patch service when explicitly enabled.
+    "verify_patch_files": False,
 }
 
 RESTART_REQUIRED_KEYS = {"locale"}
