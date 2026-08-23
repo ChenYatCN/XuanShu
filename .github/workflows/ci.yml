@@ -32,7 +32,7 @@ jobs:
 
     - name: Compile check
       shell: bash
-      run: uv run --group dev python -m compileall -q Deimos.py src
+      run: uv run --group dev python -m compileall -q DeimosCN.py src
 
     - name: Record Rust version
       id: rust

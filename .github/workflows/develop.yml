@@ -18,23 +18,23 @@ jobs:
       with:
         fetch-depth: 0  # Full history for changelog
 
-    - name: Extract version from Deimos.py
+    - name: Extract version from DeimosCN.py
       id: version
       shell: bash
       run: |
-        echo "Extracting version from Deimos.py..."
+        echo "Extracting version from DeimosCN.py..."
 
-        # Check if Deimos.py exists
-        if [ ! -f "Deimos.py" ]; then
-          echo "ERROR: Deimos.py not found in repository root"
+        # Check if DeimosCN.py exists
+        if [ ! -f "DeimosCN.py" ]; then
+          echo "ERROR: DeimosCN.py not found in repository root"
           exit 1
         fi
 
         # Extract version using grep and sed
-        VERSION_LINE=$(grep -n "tool_version: str = " Deimos.py | head -1)
+        VERSION_LINE=$(grep -n "tool_version: str = " DeimosCN.py | head -1)
 
         if [ -z "$VERSION_LINE" ]; then
-          echo "ERROR: Could not find 'tool_version: str = ' in Deimos.py"
+          echo "ERROR: Could not find 'tool_version: str = ' in DeimosCN.py"
           echo "Make sure the version is defined as: tool_version: str = 'x.x.x'"
           exit 1
         fi
@@ -73,7 +73,7 @@ jobs:
 
     - name: Compile check
       shell: bash
-      run: uv run --group dev python -m compileall -q Deimos.py src
+      run: uv run --group dev python -m compileall -q DeimosCN.py src
 
     # The Rust helpers are built explicitly, mirroring release.yml. Deimos.spec
     # also invokes cargo, but tolerates a failure so local builds still work --
