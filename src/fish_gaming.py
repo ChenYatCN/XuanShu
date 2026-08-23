@@ -11,14 +11,13 @@ from typing import Union, List
 
 
 
-
 # Specifications ####################################
-IS_CHEST = True                                     #
+IS_CHEST = True                         #
 SCHOOL = "Any" # "Any" means you don't care         #
 RANK = 0  # 0 means you don't care                  #
 ID = 0 # 0 means you don't care                     #
 SIZE_MIN = 0 # 0 means you don't care               #
-SIZE_MAX = 0 # big number means you don't care      #
+SIZE_MAX = 999 # big number means you don't care    #
 #####################################################
 
 
@@ -26,8 +25,8 @@ SIZE_MAX = 0 # big number means you don't care      #
 
 
 async def patch(client:Client) -> List[tuple[int, bytes]]:
-    async def readbytes_writebytes(pattern:bytes, write_bytes:int) -> tuple[int, bytes]:
-        add = await reader.pattern_scan(pattern, return_multiple=False)
+    async def readbytes_writebytes(pattern:bytes, write_bytes:bytes, offset: int = 0) -> tuple[int, bytes]:
+        add = await reader.pattern_scan(pattern, return_multiple=False, module="WizardGraphicalClient.exe") + offset
         old_bytes = await reader.read_bytes(add, len(write_bytes))
         await reader.write_bytes(add, write_bytes)
         return (add, old_bytes)
@@ -36,10 +35,8 @@ async def patch(client:Client) -> List[tuple[int, bytes]]:
     reader = MemoryReader(client._pymem)
     
     async def scare_fish_patch():
-        # scare fish patch
-        num_nops = 5
-        write_bytes = b"\x90" * num_nops
-        pattern = rb"\xE8....\xEB.\x83\xF9\x04\x75.\xC7\x87" # E8 ?? ?? ?? ?? EB ?? 83 F9 04 75 ?? C7 87
+        write_bytes = b"\x44\x0f\x2f\xc0\xe9\x82\x04\x00\x00\x90"
+        pattern = rb"\x44\x0F\x2F\xC0\x0F\x82....\x44\x89\xB3\xC8\x00\x00\x00\x41\xB1\x01" # 44 0F 2F C0 0F 82 ?? ?? ?? ?? 44 89 B3 C8 00 00 00 41 B1 01
         address_oldbytes.append(await readbytes_writebytes(pattern, write_bytes))
     
     async def bobber_submerison_rng_patch():
@@ -60,7 +57,7 @@ async def patch(client:Client) -> List[tuple[int, bytes]]:
         # patch instant fish
         num_nops = 2
         write_bytes = b"\x90" * num_nops
-        pattern = rb"\x74\x63\x48\x8B\xCF\xE8....\x0F" #74 63 48 8B CF E8 ?? ?? ?? ?? 0F
+        pattern = rb"\x74\x64\x48\x8B\xCF\xE8....\x44\x0F" #74 64 48 8B CF E8 ?? ?? ?? ?? 44 0F
         address_oldbytes.append(await readbytes_writebytes(pattern, write_bytes))
     
     async def instant_fish_2():
@@ -121,8 +118,8 @@ async def patch(client:Client) -> List[tuple[int, bytes]]:
     
     async def skip_bobbing_patch():
         # skipping bobbing animation
-        pattern = rb"\x0F\x82....\xF3\x0F\x11\x87" #0F 82 ?? ?? ?? ?? F3 0F 11 87
-        write_bytes = b"\xE9\x79\x05\x00\x00\x90"
+        pattern = rb"\x0F\x82....\xF3\x0F\x11\x97" #0F 82 ?? ?? ?? ?? F3 0F 11 97
+        write_bytes = b"\xE9\xBA\x05\x00\x00\x90"
         address_oldbytes.append(await readbytes_writebytes(pattern, write_bytes))
 
     async def skip_catch_animation():
@@ -133,8 +130,30 @@ async def patch(client:Client) -> List[tuple[int, bytes]]:
     async def skip_struggle():
         num_nops = 6
         write_bytes = b"\x90" * num_nops
-        pattern = rb"\x0F\x82....\x44..\xE4\x02\x00\x00\x48..\xC8\x02\x00\x00" # 0F 82 ?? ?? ?? ?? 44 ?? ?? E4 02 00 00 48 ?? ?? C8 02 00 00
+        pattern = rb"\x0F\x82....\x89\xB7\xE4\x02\x00\x00\x48..\xC8\x02\x00\x00" # 0F 82 ?? ?? ?? ?? 89 B7 E4 02 00 00 48 ?? ?? C8 02 00 00
         address_oldbytes.append(await readbytes_writebytes(pattern, write_bytes))
+
+    async def skip_summon_animation():
+        num_nops = 5
+        write_bytes = b"\x90" * num_nops
+        pattern = rb"\x8B\x54\x24.\x48\x8B\xCF\xE8....\x90\x48\x8B\x5E.\x48\x85\xDB\x74\x2E\xBF....\x8B\xC7\xF0\x0F\xC1\x43.\x83\xF8.\x75\x1D\x48\x8B\x03\x48\x8B\xCB\xFF\x50.\xF0\x0F\xC1\x7B.\x83\xFF.\x75\x0A\x48\x8B\x03\x48\x8B\xCB\xFF\x50.\x90\x48\x8B\x5C\x24.\x48\x8B\x74\x24.\x48\x83\xC4.\x5F\xC3"
+        address_oldbytes.append(await readbytes_writebytes(pattern, write_bytes, offset=7))
+    
+    async def skip_caught_fish_window():
+        num_nops = 5
+        write_bytes = b"\x90" * num_nops
+        pattern = rb"\x0F\x28\xD6.\x8B\xD7\x48\x8B\xCF\xE8....\x90"
+        address_oldbytes.append(await readbytes_writebytes(pattern, write_bytes, offset=9))
+
+    async def zero_casting_timer():
+        write_bytes = b"\x00\x00\x00\x00"
+        pattern = rb"\x49\x8D\x8E\xD0\x00\x00\x00\x48\x8B\x01\xBA\x14\x05\x00\x00\xFF\x50\x18"
+        address_oldbytes.append(await readbytes_writebytes(pattern, write_bytes, offset=11))
+
+    async def zero_summon_timer():
+        write_bytes = b"\x00\x00\x00\x00"
+        pattern = rb"\x48\x8D.\xA0\x00\x00\x00\x48\x8B\x01\xBA\x14\x05\x00\x00\xFF\x50\x18"
+        address_oldbytes.append(await readbytes_writebytes(pattern, write_bytes, offset=11))
 
     patches = [
         scare_fish_patch(),
@@ -152,6 +171,10 @@ async def patch(client:Client) -> List[tuple[int, bytes]]:
         skip_bobbing_patch(),
         skip_catch_animation(),
         skip_struggle(),
+        skip_summon_animation(),
+        #skip_caught_fish_window(),
+        zero_casting_timer(),
+        zero_summon_timer(),
     ]
 
     await asyncio.gather(*patches)
@@ -179,15 +202,26 @@ async def wait_for_window(client, window_name, *, timeout=10, check_if_visible=T
 async def wait_to_click_window_with_name(client: Client, window_name: str, *, timeout=10, check_if_visible=True):
     await wait_for_window(client, window_name, timeout=timeout, check_if_visible=check_if_visible)
     await asyncio.sleep(0.1)
-    await client.mouse_handler.click_window_with_name(window_name)
+    async with client.mouse_handler:
+        await client.mouse_handler.click_window_with_name(window_name)
 
 async def sell_basket(client: Client):
     await client.send_key(Keycode.V)
     while await window_exists(client, "Trash", check_if_visible=True):
         while not (await window_exists(client, "centerButton")):
-            await wait_to_click_window_with_name(client, "Trash")
+            try:
+                async with client.mouse_handler:
+                    await client.mouse_handler.click_window_with_name("Trash")
+            except ValueError:
+                await asyncio.sleep(0.1)
 
-        await wait_to_click_window_with_name(client, "centerButton")
+        while await window_exists(client, "centerButton"):
+            try:
+                async with client.mouse_handler:
+                    await client.mouse_handler.click_window_with_name("centerButton")
+            except ValueError:
+                await asyncio.sleep(0.1)
+
     await client.send_key(Keycode.V)
 
 async def fetch_fish_list(fishing_manager):
@@ -195,13 +229,14 @@ async def fetch_fish_list(fishing_manager):
         try:
             return await fishing_manager.fish_list()
         except RuntimeError:
-            pass
+            await asyncio.sleep(0.1)
 
 async def banish_config(fishing_manager):
     kept_fish = []
     for fish in await fetch_fish_list(fishing_manager):
         fish_temp = await fish.template()
         fish_is_accepted = True
+        fish_size = await fish.size()
         if (await fish.is_chest()) != IS_CHEST:
             fish_is_accepted = False
 
@@ -214,6 +249,9 @@ async def banish_config(fishing_manager):
         if (ID != 0) and (await fish.template_id() != ID):
             fish_is_accepted = False
 
+        if fish_size < SIZE_MIN or fish_size > SIZE_MAX:
+            fish_is_accepted = False
+
         if not fish_is_accepted:
             await fish.write_status_code(FishStatusCode.escaped)
         else:
@@ -221,24 +259,27 @@ async def banish_config(fishing_manager):
     return kept_fish
 
 async def refresh_pond(client, fishing_manager):
-    fish_list = await fetch_fish_list(fishing_manager)
+    fish_list = await banish_config(fishing_manager)
     while len(fish_list) == 0:
         fish_windows = await client.root_window.get_windows_with_name("FishingWindow")
         while len(fish_windows) == 0:
-            await client.mouse_handler.click_window_with_name("OpenFishingButton")
+            async with client.mouse_handler:
+                await client.mouse_handler.click_window_with_name("OpenFishingButton")
             fish_windows = await client.root_window.get_windows_with_name("FishingWindow")
+            await asyncio.sleep(0.2)
         fish_window: Window = fish_windows[0]
         fish_sub_window = await fish_window.get_child_by_name("FishingSubWindow")
         bottomframe = await fish_sub_window.get_child_by_name("BottomFrame")
         icon2 = await bottomframe.get_child_by_name("Icon2")
-        await client.mouse_handler.click_window(icon2)
+        async with client.mouse_handler:
+            await client.mouse_handler.click_window(icon2)
 
         while True:
             try:
                 if len(await fetch_fish_list(fishing_manager)) > 0:
                     break
             except RuntimeError:
-                pass
+                await asyncio.sleep(0.1)
         await asyncio.sleep(.5)
         fish_list = await banish_config(fishing_manager)
 
@@ -249,7 +290,7 @@ async def main():
     try:
         print("Preparing")
         await client.activate_hooks()
-        await client.mouse_handler.activate_mouseless()
+        #await client.mouse_handler.activate_mouseless()
         address_bytes = await patch(client)
         print("Ready for Fish")
 
@@ -258,7 +299,6 @@ async def main():
         total = time()
         while True:
             start = time()
-            await banish_config(fishing_manager)
             await refresh_pond(client, fishing_manager)
             fish_list = await fetch_fish_list(fishing_manager)
 
@@ -267,26 +307,29 @@ async def main():
             fish_windows = await client.root_window.get_windows_with_name("FishingWindow")
 
             while len(fish_windows) == 0:
-                await client.mouse_handler.click_window_with_name("OpenFishingButton")
+                async with client.mouse_handler:
+                    await client.mouse_handler.click_window_with_name("OpenFishingButton")
                 fish_windows = await client.root_window.get_windows_with_name("FishingWindow")
 
             fish_window: Window = fish_windows[0]
             fish_sub_window = await fish_window.get_child_by_name("FishingSubWindow")
             bottomframe = await fish_sub_window.get_child_by_name("BottomFrame")
             icon1 = await bottomframe.get_child_by_name("Icon1")
-            await client.mouse_handler.click_window(icon1)
-
-            await asyncio.sleep(0.5)
-
-            if await window_exists(client, "MessageBoxModalWindow"):
-                await wait_to_click_window_with_name(client, "rightButton")
-                await sell_basket(client)
-                continue
-            
+            async with client.mouse_handler:
+                await client.mouse_handler.click_window(icon1)
+        
+        
 
             # Check if fish hooked
             is_hooked = False
+            basket_full = False
             while not is_hooked:
+                if await window_exists(client, "MessageBoxModalWindow"):
+                    await wait_to_click_window_with_name(client, "rightButton")
+                    await sell_basket(client)
+                    basket_full = False
+                    break
+
                 fish_list = await fetch_fish_list(fishing_manager)
                 statuses = await asyncio.gather(*[fish.status_code() for fish in fish_list])
                 for status in statuses:
@@ -294,6 +337,9 @@ async def main():
                         is_hooked = True
                         break
             
+            if basket_full:
+                continue
+
             # Invoke
             await client.send_key(Keycode.SPACEBAR)
 
@@ -310,10 +356,12 @@ async def main():
                 continue
 
             while len(await client.root_window.get_windows_with_name("CaughtFishModalWindow")) > 0:
-                caught_window: Window = (await client.root_window.get_windows_with_name("CaughtFishModalWindow"))[0]
-                caught_fish = await caught_window.get_child_by_name("CaughtFish")
-                exit_button = await caught_fish.get_child_by_name("exit")
-                await client.mouse_handler.click_window(exit_button)
+                #caught_window: Window = (await client.root_window.get_windows_with_name("CaughtFishModalWindow"))[0]
+                #caught_fish = await caught_window.get_child_by_name("CaughtFish")
+                #exit_button = await caught_fish.get_child_by_name("exit")
+                #async with client.mouse_handler:
+                #    await client.mouse_handler.click_window(exit_button)
+                await client.send_key(Keycode.SPACEBAR)
                 await asyncio.sleep(0.1)
 
             fish_caught += 1

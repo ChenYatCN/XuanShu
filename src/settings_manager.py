@@ -36,6 +36,13 @@ DEFAULT_SETTINGS = {
     # [auto pet]
     "ignore_pet_level_up": False,
     "only_play_dance_game": False,
+    # [auto fish]
+    "fish_chest_only": False,
+    "fish_school": "Any",
+    "fish_rank": 0,
+    "fish_id": 0,
+    "fish_size_min": 0.0,
+    "fish_size_max": 999.0,
     # [combat]
     "kill_minions_first": False,
     "automatic_team_based_combat": False,

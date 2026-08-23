@@ -26,7 +26,7 @@ class GameClient(MemoryObject):
             rb"\x20\x02\x00\x48\x8B\x07\x33\xD2\x48\x8B\xCF",
             3,
             "elastic_camera_controller",
-            0x22240
+            0x222C8
         )
 
         addr = await self.read_value_from_offset(offset, Primitive.uint64)
@@ -42,7 +42,7 @@ class GameClient(MemoryObject):
             rb"\x41\xB8\x01\x00\x00\x00\x48\x8B\xCB\x48\x3B\xFA\x75",
             3,
             "free_camera_controller",
-            0x22250
+            0x222D8
         )
 
         addr = await self.read_value_from_offset(offset, Primitive.uint64)
@@ -62,7 +62,7 @@ class GameClient(MemoryObject):
             rb"....\x90\x48\x8B\x4C\x24",
             3,
             "selected_camera_controller",
-            0x22270
+            0x222F8
         )
 
         addr = await self.read_value_from_offset(offset, Primitive.uint64)
@@ -85,7 +85,7 @@ class GameClient(MemoryObject):
             rb"....\x90\x48\x8B\x4C\x24",
             3,
             "selected_camera_controller",
-            0x22270
+            0x222F8
         )
 
         await self.write_value_to_offset(offset, selected_camera_controller, Primitive.uint64)
@@ -100,7 +100,7 @@ class GameClient(MemoryObject):
             rb"\x55\xE0\x48\x8B\xCB\xE8",
             3,
             "is_freecam",
-            0x22288
+            0x22310
         )
         return await self.read_value_from_offset(offset, Primitive.bool)
 
@@ -114,7 +114,7 @@ class GameClient(MemoryObject):
             rb"\x55\xE0\x48\x8B\xCB\xE8",
             3,
             "is_freecam",
-            0x22288
+            0x22310
         )
         await self.write_value_to_offset(offset, is_freecam, Primitive.bool)
 
@@ -174,6 +174,13 @@ class GameClient(MemoryObject):
             0x211B8
         )
         await self.write_value_to_offset(offset, shutdown_signal, Primitive.int32)
+
+    async def user_id(self) -> int:
+        """Return the account UserID using this client build's memory layout."""
+        # The newer bundled wizwalker layout moved the following fields by
+        # 0x88 bytes. This older hook-compatible layout therefore stores the
+        # newer 0x21258 UserID field at 0x211D0.
+        return await self.read_value_from_offset(0x211D0, Primitive.uint64)
 
     async def character_registry(self) -> Optional[DynamicCharacterRegistry]:
         """
@@ -247,8 +254,16 @@ class GameClient(MemoryObject):
         return DynamicGamebryoPresenter(self.hook_handler, addr)
 
     async def fishing_manager(self) -> FishingManager:
-        addr = await self.read_value_from_offset(0x23120, Primitive.uint64)
-        return FishingManager(self.hook_handler, addr)
+        # Wizard101 builds using the legacy AUTOBOT signature exist with both
+        # layouts in the wild.  Prefer the current offset, but retain the old
+        # one for older clients instead of constructing an object at a tiny,
+        # invalid address (commonly 0x1C1 / decimal 449).
+        for offset in (0x231A8, 0x23120):
+            addr = await self.read_value_from_offset(offset, Primitive.uint64)
+            if 0x10000 <= addr <= 0x00007FFFFFFFFFFF:
+                return FishingManager(self.hook_handler, addr)
+
+        raise RuntimeError("Could not resolve a valid FishingManager address")
 
 class CurrentGameClient(GameClient):
     _base_address = None

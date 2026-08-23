@@ -394,3 +394,11 @@ class MinionType(Enum):
 class StatusEffect(Enum):
     stunned = 0
     confused = 1
+
+
+class UnlockTriggerState(Enum):
+    """State of a guild unlock trigger."""
+
+    locked = 0
+    in_progress = 1
+    completed = 2

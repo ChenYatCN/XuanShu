@@ -42,6 +42,7 @@ from src.gui.tab_actions import build_bot_tab, build_combat_tab, build_flythroug
 from src.gui.tab_camera import build_camera_tab
 from src.gui.tab_dev_utils import build_dev_utils_tab
 from src.gui.tab_hotkeys import build_hotkeys_tab
+from src.gui.tab_fishing import build_fishing_tab
 from src.gui.tab_launcher import build_launcher_tab
 from src.gui.tab_stats import build_stats_tab
 from src.gui.theme import compute_styles
@@ -425,6 +426,10 @@ def manage_gui(
     bot_tab = build_bot_tab(ctx)
     tabs.addTab(bot_tab, tl("bot"))
 
+    ctx.current_tab_name = tl("fishing")
+    fishing_tab = build_fishing_tab(ctx)
+    tabs.addTab(fishing_tab, tl("fishing"))
+
     ctx.current_tab_name = tl("combat")
     combat_tab = build_combat_tab(ctx)
     tabs.addTab(combat_tab, tl("combat"))
@@ -577,13 +582,25 @@ def manage_gui(
 
     # ==================== Close Handling ====================
     close_accepted = [False]
+    close_requested = [False]
+
+    def force_close_after_timeout():
+        """Never leave the GUI stuck if the backend cannot acknowledge shutdown."""
+        if close_accepted[0]:
+            return
+        close_accepted[0] = True
+        window.close()
+        app.quit()
 
     def close_event(event):
         if close_accepted[0]:
             event.accept()
             return
         event.ignore()
-        send_queue.put(GUICommand(GUICommandType.AttemptedClose))
+        if not close_requested[0]:
+            close_requested[0] = True
+            send_queue.put(GUICommand(GUICommandType.AttemptedClose))
+            QTimer.singleShot(3000, force_close_after_timeout)
 
     window.closeEvent = close_event
 
@@ -595,6 +612,7 @@ def manage_gui(
     dev_utils_exports = ctx.exports.get("dev_utils", {})
     flythrough_exports = ctx.exports.get("flythrough", {})
     bot_exports = ctx.exports.get("bot", {})
+    fishing_exports = ctx.exports.get("fishing", {})
 
     # Load dynamic hotkey rows now that all buttons/actions have been registered
     static_ids = hotkeys_exports.get("static_ids", set())
@@ -684,6 +702,10 @@ def manage_gui(
                             )
                         elif tag == "BotStatus":
                             bot_exports.get("set_running", lambda v: None)(
+                                value == "Enabled"
+                            )
+                        elif tag == "Auto FishStatus":
+                            fishing_exports.get("set_running", lambda v: None)(
                                 value == "Enabled"
                             )
                         else:

@@ -315,3 +315,22 @@ orientation_pry=Orientation (PRY):
 
 # Stats popup
 combat_stats=Combat Stats
+
+# Auto fishing
+fishing=Fishing
+auto_fish=Auto Fishing
+fish_filter=Fishing Filter
+fish_chest_filter=Chest Filter
+fish_specific_filter=Specific Fish Filter
+fish_chest_hint=When enabled, catch chests only and completely ignore all specific-fish conditions below.
+fish_mode=Target Type
+fish_mode_fish=Fish (exclude chests)
+fish_mode_chest=Chests only
+fish_school=School
+fish_rank=Rank
+fish_template_id=Template ID
+fish_size_min=Minimum Size
+fish_size_max=Maximum Size
+fish_any=Any
+fish_zero_any=0 means any
+fish_start_hint=Choose filters, then enable auto fishing. Changes take effect the next time it starts.

@@ -606,12 +606,11 @@ class Client:
         """
         Switches to the freecam camera controller
         """
+        elastic, free = await self._camera_controllers()
+
         await self._patch_movement_update()
 
         await self.game_client.write_is_freecam(True)
-
-        elastic = await self.game_client.elastic_camera_controller()
-        free = await self.game_client.free_camera_controller()
 
         elastic_address = await elastic.read_base_address()
         free_address = await free.read_base_address()
@@ -626,17 +625,33 @@ class Client:
         """
         Switches to the elastic camera controller
         """
+        elastic, free = await self._camera_controllers()
+
         await self._unpatch_movement_update()
 
         await self.game_client.write_is_freecam(False)
-
-        elastic = await self.game_client.elastic_camera_controller()
-        free = await self.game_client.free_camera_controller()
 
         elastic_address = await elastic.read_base_address()
         free_address = await free.read_base_address()
 
         await self._switch_camera(elastic_address, free_address)
+
+    async def _camera_controllers(self):
+        """Resolve both camera controllers before changing any camera state."""
+        elastic = await self.game_client.elastic_camera_controller()
+        free = await self.game_client.free_camera_controller()
+
+        if elastic is None or free is None:
+            missing = []
+            if elastic is None:
+                missing.append("elastic")
+            if free is None:
+                missing.append("free")
+            raise RuntimeError(
+                "Could not resolve camera controller(s): " + ", ".join(missing)
+            )
+
+        return elastic, free
 
     async def _patch_movement_update(self):
         """
@@ -706,7 +721,7 @@ class Client:
                 b"\x48\xBA" + packed_new_camera_address +  # mov rdx, new_cam_addr
                 b"\x49\xC7\xC0\x01\x00\x00\x00"  # mov r8, 0x1
                 b"\x48\x8B\x01"  # mov rax, [rcx]
-                b"\x48\x8B\x80\x70\x04\x00\x00"  # mov rax, [rax+0x470]
+                b"\x48\x8B\x80\x78\x04\x00\x00"  # mov rax, [rax+0x478]
                 b"\x49\x89\xC1"  # mov r9, rax
                 b"\xFF\xD0"  # call rax
 
