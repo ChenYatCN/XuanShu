@@ -177,6 +177,38 @@ datas += safe_collect_data_files("wizlaunch")
 datas += safe_collect_data_files("wizwalker.extensions.wizsprinter", include_py_files=True)
 datas += safe_collect_data_files("wizwalker.extensions.wizsprinter.combat_backends", include_py_files=True)
 
+# The Laurenz package remains authoritative for wizsprinter as a whole, but its
+# stock SprintyCombat currently skips valid priorities in DeimosCN.  Replace only
+# that module with the repository's compatibility version (target selection +
+# Willcast fixes), matching the pre-find hook used for the compiled PYZ module.
+combat_compat = (
+    ROOT
+    / "libs"
+    / "wizsprinter"
+    / "wizwalker"
+    / "extensions"
+    / "wizsprinter"
+    / "sprinty_combat.py"
+)
+if not combat_compat.exists():
+    raise FileNotFoundError(
+        f"wizsprinter combat compatibility module not found: {combat_compat}"
+    )
+datas = [
+    entry
+    for entry in datas
+    if not (
+        Path(entry[0]).name == "sprinty_combat.py"
+        and Path(entry[0]).parent.name == "wizsprinter"
+    )
+]
+datas.append(
+    (
+        str(combat_compat),
+        "wizwalker/extensions/wizsprinter",
+    )
+)
+
 # Laurenz 最新 wizsprinter 不包含项目原有的分辨率钩子。
 # 只叠加这一个兼容模块，不将整套旧 wizsprinter 混入新版。
 resolution_hook = (

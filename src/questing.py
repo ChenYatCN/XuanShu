@@ -315,18 +315,28 @@ class Quester():
                 any_client_needs_potions = True
 
         if any_client_needs_potions:
-            # Guaranteed teleport mark placement - marks until mana is lower than starting point
+            original_zones = {}
+            # Try the mark twice.  If the first input is lost, the shared helper
+            # backs up for three seconds before trying PgDn again.
             for p in self.clients:
-                if await p.zone_name() != 'WizardCity/WC_Hub':
-                    original_mana = await p.stats.current_mana()
-                    while await p.stats.current_mana() >= original_mana:
-                        logger.debug(f'Client {p.title} - Marking Location')
-                        await p.send_key(Keycode.PAGE_DOWN, 0.1)
-                        await asyncio.sleep(.75)
+                original_zone = await p.zone_name()
+                if original_zone != 'WizardCity/WC_Hub':
+                    original_zones[p] = original_zone
+                    if not await ensure_teleport_mark(p):
+                        logger.warning(
+                            f'Client {p.title} - Continuing potion refill even '
+                            'though the return mark was not confirmed.'
+                        )
 
             await asyncio.gather(*[refill_potions(c, mark=False, recall=False, original_zone=await c.zone_name()) for c in self.clients])
-            # return all clients to original location, and if it fails, send all to commons
-            await asyncio.gather(*[self.gather_clients_from_potion_buy(c) for c in self.clients])
+            # Clients that started in the Commons do not need a recall.  All
+            # others use bounded retries instead of pressing PageUp forever.
+            await asyncio.gather(
+                *[
+                    self.gather_clients_from_potion_buy(c, original_zone)
+                    for c, original_zone in original_zones.items()
+                ]
+            )
 
     async def collect_wisps(self, p: Client):
         if await is_free(p):
@@ -342,25 +352,18 @@ class Quester():
                     await click_window_by_path(p, potion_usage_path, True)
                     await asyncio.sleep(.6)
 
-    async def gather_clients_from_potion_buy(self, p: Client):
-        while True:
-            try:
-                await p.send_key(Keycode.PAGE_UP)
-                logger.debug('Waiting for zone change on all clients.')
-                await safe_wait_for_zone_change(p, name='WizardCity/WC_Hub', handle_hooks_if_needed=True)
-                break
-            except LoadingScreenNotFound:
-                pass
-            # something went wrong when placing the mark or recalling / our teleport mark was in a closed off area / instance
-            # send all to the commons and let auto quest handle the rest
-            except FriendBusyOrInstanceClosed:
-                for c in self.clients:
-                    while await c.zone_name() != 'WizardCity/WC_Hub':
-                        await navigate_to_ravenwood(c)
-                        await navigate_to_commons_from_ravenwood(c)
-                        await asyncio.sleep(.5)
-
-                break
+    async def gather_clients_from_potion_buy(
+        self, p: Client, original_zone: str
+    ) -> bool:
+        recalled = await recall_to_teleport_mark(
+            p, expected_zone=original_zone, attempts=3
+        )
+        if not recalled:
+            logger.error(
+                f'Client {p.title} - Could not return to the pre-potion '
+                'location; auto questing will continue recovery from the Commons.'
+            )
+        return recalled
 
     # if followers in different zone, try X presses (for X zone changes that require delayed presses between clients)
     async def X_press_zone_recorrect(self):
@@ -823,27 +826,102 @@ class Quester():
                 logger.debug('One or more clients was separated from the group - teleporting all to leader')
                 await self.correct_dungeon_desync(follower_clients)
 
-    async def handle_npc_talking_quests(self, talking_client: Client, present_clients: list[Client]):
-        # wait for initial dialogue to appear
-        while await is_free_leader_questing(talking_client):
-            await asyncio.sleep(.1)
+    async def handle_npc_talking_quests(
+        self, talking_client: Client, present_clients: list[Client]
+    ) -> bool:
+        """Wait for NPC dialogue and confirm the tracked quest actually advances."""
 
-        start_time = time.time()
-        while time.time() < start_time + 3.0:
-            # we most likely entered another dialogue - wait for it to end, then reset the timer
-            if not await is_free_leader_questing(talking_client):
-                logger.info('Detected dialogue - waiting for it to end.')
-                while not await is_free_leader_questing(talking_client):
-                    await asyncio.sleep(.1)
+        async def read_quest_state():
+            quest_text = await self.read_quest_txt(talking_client)
+            try:
+                quest_xyz = await talking_client.quest_position.position()
+            except Exception:
+                quest_xyz = None
+            return quest_text, quest_xyz
 
-                after_talking_paths = (exit_zafaria_class_picture_button, exit_pet_leveled_up_button_path, avalon_badge_exit_button_path)
-                await asyncio.gather(*[exit_menus(c, after_talking_paths) for c in present_clients])
-                await asyncio.sleep(.4)
+        def quest_state_changed(before, after) -> bool:
+            before_text, before_xyz = before
+            after_text, after_xyz = after
+            if after_text != before_text:
+                return True
+            if before_xyz is not None and after_xyz is not None:
+                return calc_Distance(before_xyz, after_xyz) > 1.0
+            return False
 
-                # loop until we can make it 5 seconds without finding another dialogue
-                start_time = time.time()
+        initial_state = await read_quest_state()
+        after_talking_paths = (
+            exit_zafaria_class_picture_button,
+            exit_pet_leveled_up_button_path,
+            avalon_badge_exit_button_path,
+        )
 
-            await asyncio.sleep(.1)
+        for attempt in range(1, 4):
+            if attempt > 1:
+                logger.warning(
+                    f"Client {talking_client.title} - Quest did not update after "
+                    f"dialogue; retrying NPC interaction ({attempt}/3)."
+                )
+                await asyncio.sleep(1.0)
+                await talking_client.send_key(Keycode.X, 0.15)
+
+            # A missed X press previously left this loop waiting forever.  Give
+            # the game a few seconds to display dialogue, then retry the input.
+            appear_deadline = time.monotonic() + 4.0
+            while (
+                await is_free_leader_questing(talking_client)
+                and time.monotonic() < appear_deadline
+            ):
+                if quest_state_changed(initial_state, await read_quest_state()):
+                    await asyncio.sleep(1.0)
+                    return True
+                await asyncio.sleep(0.15)
+
+            if await is_free_leader_questing(talking_client):
+                continue
+
+            logger.info(
+                f"Client {talking_client.title} - Detected dialogue; waiting "
+                "for it and the quest update to finish."
+            )
+
+            # Dialogue may briefly close and immediately open another page or
+            # reward window.  Require a quiet period before allowing movement.
+            quiet_since = None
+            dialogue_deadline = time.monotonic() + 60.0
+            while time.monotonic() < dialogue_deadline:
+                if await is_free_leader_questing(talking_client):
+                    if quiet_since is None:
+                        quiet_since = time.monotonic()
+                    elif time.monotonic() - quiet_since >= 3.0:
+                        break
+                else:
+                    quiet_since = None
+                await asyncio.sleep(0.15)
+
+            await asyncio.gather(
+                *[exit_menus(c, after_talking_paths) for c in present_clients]
+            )
+
+            # Leave extra time for the server to publish the new objective.
+            await asyncio.sleep(1.25)
+            if quest_state_changed(initial_state, await read_quest_state()):
+                logger.debug(
+                    f"Client {talking_client.title} - Quest update confirmed."
+                )
+                return True
+
+            await asyncio.sleep(1.25)
+            if quest_state_changed(initial_state, await read_quest_state()):
+                logger.debug(
+                    f"Client {talking_client.title} - Delayed quest update confirmed."
+                )
+                return True
+
+        logger.error(
+            f"Client {talking_client.title} - Could not confirm quest acceptance "
+            "after 3 attempts; keeping the quester near the NPC for another retry."
+        )
+        return False
 
     async def teleport_to_quest(self, hitting_client: str, follower_clients: list[Client]):
         await asyncio.gather(*[self.leader_wait_for_free(p) for p in self.clients])
@@ -981,7 +1059,12 @@ class Quester():
                     if 'to talk' in msg:
                         await asyncio.gather(*[p.send_key(Keycode.X, 0.1) for p in self.clients])
                         logger.debug('Talking to NPC')
-                        await self.handle_npc_talking_quests(self.current_leader_client, self.clients)
+                        quest_updated = await self.handle_npc_talking_quests(
+                            self.current_leader_client, self.clients
+                        )
+                        if not quest_updated:
+                            await asyncio.sleep(2.0)
+                            return
 
                     elif 'magic raft' in msg or 'to ride' in msg or 'to teleport' in msg:
                         await self.current_leader_client.send_key(Keycode.X, 0.1)
@@ -1370,7 +1453,12 @@ class Quester():
                     elif 'to talk' in sigil_msg_check.lower():
                         logger.debug('Talking to NPC')
                         await self.client.send_key(Keycode.X, 0.1)
-                        await self.handle_npc_talking_quests(self.client, [self.client])
+                        quest_updated = await self.handle_npc_talking_quests(
+                            self.client, [self.client]
+                        )
+                        if not quest_updated:
+                            await asyncio.sleep(2.0)
+                            return
 
                     else:
                         await self.client.send_key(Keycode.X, 0.1)

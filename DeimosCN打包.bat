@@ -37,7 +37,7 @@ if not exist "DeimosCN.spec" (
     exit /b 1
 )
 
-echo [1/5] 检查 PyInstaller...
+echo [1/6] 检查 PyInstaller...
 ".venv\Scripts\python.exe" -m pip show pyinstaller >nul 2>nul
 
 if errorlevel 1 (
@@ -54,7 +54,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo [2/5] 清理旧打包缓存...
+echo [2/6] 清理旧打包缓存...
 
 if exist "build" (
     rmdir /s /q "build"
@@ -71,7 +71,7 @@ if exist "__pycache__" (
 echo 清理完成。
 echo.
 
-echo [3/5] 开始使用虚拟环境打包...
+echo [3/6] 开始使用虚拟环境打包...
 echo.
 
 ".venv\Scripts\python.exe" -m PyInstaller "DeimosCN.spec" --clean -y
@@ -87,7 +87,24 @@ if errorlevel 1 (
 )
 
 echo.
-echo [4/5] 检查输出文件...
+echo [4/6] 检查依赖来源和成品内容...
+
+".venv\Scripts\python.exe" "packaging\verify_bundle.py"
+
+if errorlevel 1 (
+    echo.
+    echo ========================================
+    echo        打包内容校验失败，禁止交付
+    echo ========================================
+    echo 可能选择了错误的 wizwalker / wizsprinter，
+    echo 或缺少 wizlaunch、wizpatch、导航数据等必要文件。
+    echo.
+    pause
+    exit /b 1
+)
+
+echo.
+echo [5/6] 检查输出文件...
 
 if exist "dist\DeimosCN.exe" (
     echo.
@@ -107,7 +124,7 @@ if exist "dist\DeimosCN.exe" (
     exit /b 1
 )
 
-echo [5/5] 完成。
+echo [6/6] 完成。
 echo.
 
 pause

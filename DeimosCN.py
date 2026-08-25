@@ -39,7 +39,12 @@ from src.deimoslang import vm
 from src.drop_logger import logging_loop
 from src.gui import GUIKeys
 from src.gui_inputs import param_input, trunc
-from src.paths import advance_dialog_path, decline_quest_path, play_button_path
+from src.paths import (
+    advance_dialog_path,
+    decline_quest_path,
+    dialog_text_path,
+    play_button_path,
+)
 from src.questing import Quester
 from src.settings_manager import DeimosSettings
 from src.sigil import Sigil
@@ -77,7 +82,7 @@ from wizwalker.utils import get_all_wizard_handles, get_foreground_window
 
 cMessageBox = ctypes.windll.user32.MessageBoxW
 
-tool_version: str = "2.1.0"
+tool_version: str = "2.1.1"
 tool_name: str = "DeimosCN"
 tool_author: str = "Deimos-Wizard101"
 repo_name: str = tool_name + "-Wizard101"
@@ -1162,19 +1167,54 @@ async def main():
     async def dialogue_loop():
         # auto advances dialogue for every client, individually and concurrently
         async def async_dialogue(client: Client):
+            async def current_dialogue_text() -> str:
+                try:
+                    text_window = await get_window_from_path(
+                        client.root_window, dialog_text_path
+                    )
+                    if not text_window:
+                        return ""
+                    return (await text_window.maybe_text()) or ""
+                except Exception:
+                    return ""
+
             while True:
                 if not freecam_status:
                     if await is_visible_by_path(client, advance_dialog_path):
-                        if (
-                            await is_visible_by_path(client, decline_quest_path)
-                            and not side_quest_status
-                        ):
+                        dialogue_text_before = await current_dialogue_text()
+                        has_decline_button = await is_visible_by_path(
+                            client, decline_quest_path
+                        )
+                        if has_decline_button and not side_quest_status:
                             await client.send_key(key=Keycode.ESC)
-                            await asyncio.sleep(0.1)
-                            await client.send_key(key=Keycode.ESC)
+                            await asyncio.sleep(0.45)
+                            if await is_visible_by_path(client, advance_dialog_path):
+                                await client.send_key(key=Keycode.ESC)
+                            # Quest choice screens need more time to close and sync.
+                            await asyncio.sleep(0.9)
                         else:
                             await client.send_key(key=Keycode.SPACEBAR)
-                await asyncio.sleep(0.1)
+
+                            # Do not advance another page until the game has had a
+                            # chance to replace the current dialogue text.  The
+                            # fixed delay also covers builds where the text window
+                            # briefly returns an empty string.
+                            wait_deadline = time.monotonic() + 1.5
+                            while time.monotonic() < wait_deadline:
+                                await asyncio.sleep(0.1)
+                                if not await is_visible_by_path(
+                                    client, advance_dialog_path
+                                ):
+                                    break
+                                dialogue_text_after = await current_dialogue_text()
+                                if (
+                                    dialogue_text_before
+                                    and dialogue_text_after != dialogue_text_before
+                                ):
+                                    break
+
+                            await asyncio.sleep(0.9 if has_decline_button else 0.55)
+                await asyncio.sleep(0.15)
 
         await asyncio.gather(*[async_dialogue(p) for p in walker.clients])
 
@@ -3316,6 +3356,10 @@ async def main():
                                 client.combat_config = combat_configs.get(
                                     i, default_config
                                 )
+                            logger.info(
+                                f"战斗风格已加载，已应用到 "
+                                f"{len(walker.clients)} 个客户端。"
+                            )
                             await toggle_combat_hotkey(False)
                             await toggle_combat_hotkey(False)
                         case deimosgui.GUICommandType.SetScale:

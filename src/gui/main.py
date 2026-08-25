@@ -426,13 +426,13 @@ def manage_gui(
     bot_tab = build_bot_tab(ctx)
     tabs.addTab(bot_tab, tl("bot"))
 
-    ctx.current_tab_name = tl("fishing")
-    fishing_tab = build_fishing_tab(ctx)
-    tabs.addTab(fishing_tab, tl("fishing"))
-
     ctx.current_tab_name = tl("combat")
     combat_tab = build_combat_tab(ctx)
     tabs.addTab(combat_tab, tl("combat"))
+
+    ctx.current_tab_name = tl("fishing")
+    fishing_tab = build_fishing_tab(ctx)
+    tabs.addTab(fishing_tab, tl("fishing"))
 
     ctx.current_tab_name = ""
 

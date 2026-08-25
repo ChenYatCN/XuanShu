@@ -37,6 +37,15 @@ def compute_styles(theme: dict, font: str = None, font_size: int = None) -> dict
         f"QTextEdit {{ background-color: {alt}; color: {tc}; }}"
         f"QPlainTextEdit {{ background-color: {alt}; color: {tc}; }}"
         f"QListWidget {{ background-color: {alt}; color: {tc}; }}"
+        # Explicit tooltip colors are required on Windows. Without them Qt can
+        # combine the dark application background with the system's dark tooltip
+        # text, producing the empty-looking black bar seen over launcher buttons.
+        f"QToolTip {{"
+        f"  background-color: {alt};"
+        f"  color: {tc};"
+        f"  border: 1px solid {sc};"
+        f"  padding: 4px 6px;"
+        f"}}"
         # Fix top tab text color.
         # Without this block, QTabBar can keep the system/default black text.
         f"QTabWidget::pane {{ border: none; background-color: {bg}; }}"
