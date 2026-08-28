@@ -220,6 +220,9 @@ def build_combat_tab(ctx):
     def set_playstyles_callback():
         ctx.send_queue.put(GUICommand(GUICommandType.SetPlaystyles, editor.toPlainText()))
 
+    def reset_playstyles_callback():
+        ctx.send_queue.put(GUICommand(GUICommandType.ResetPlaystyles))
+
     recent_btn = ctx.registry.action_icon_btn(ctx.svgs['recent'], ctx.tl('recent_imports'), lambda: None)
     recent_btn.clicked.disconnect()
     recent_btn.clicked.connect(lambda: show_recent_menu(ctx, 'combat', editor, recent_btn))
@@ -227,7 +230,8 @@ def build_combat_tab(ctx):
     btn_row.addWidget(recent_btn)
     btn_row.addWidget(ctx.registry.action_icon_btn(ctx.svgs['import'], ctx.tl('import_playstyle'), combat_import))
     btn_row.addWidget(ctx.registry.action_icon_btn(ctx.svgs['export'], ctx.tl('export_playstyle'), combat_export))
-    btn_row.addWidget(ctx.registry.action_icon_btn(ctx.svgs['refresh'], ctx.tl('set_playstyles'), set_playstyles_callback))
+    btn_row.addWidget(ctx.registry.action_icon_btn(ctx.svgs['apply'], ctx.tl('set_playstyles'), set_playstyles_callback))
+    btn_row.addWidget(ctx.registry.action_icon_btn(ctx.svgs['reset'], ctx.tl('reset_playstyles'), reset_playstyles_callback))
     btn_row.addStretch()
     layout.addLayout(btn_row)
     return tab

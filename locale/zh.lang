@@ -146,6 +146,7 @@ bot_publish_opened_clipboard=已复制到剪贴板
 import_playstyle=导入战斗风格
 export_playstyle=导出战斗风格
 set_playstyles=设置战斗风格
+reset_playstyles=重置为默认战斗风格
 
 # Misc / 杂项
 scale=缩放

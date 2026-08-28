@@ -146,6 +146,7 @@ bot_publish_opened_clipboard=Bot is too large to prefill. It was copied to your 
 import_playstyle=Import Playstyle
 export_playstyle=Export Playstyle
 set_playstyles=Set Playstyles
+reset_playstyles=Reset to Default Playstyle
 
 # Misc
 scale=Scale

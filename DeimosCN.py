@@ -42,7 +42,6 @@ from src.gui_inputs import param_input, trunc
 from src.paths import (
     advance_dialog_path,
     decline_quest_path,
-    dialog_text_path,
     play_button_path,
 )
 from src.questing import Quester
@@ -82,7 +81,7 @@ from wizwalker.utils import get_all_wizard_handles, get_foreground_window
 
 cMessageBox = ctypes.windll.user32.MessageBoxW
 
-tool_version: str = "2.1.1"
+tool_version: str = "2.1.2"
 tool_name: str = "DeimosCN"
 tool_author: str = "Deimos-Wizard101"
 repo_name: str = tool_name + "-Wizard101"
@@ -290,6 +289,7 @@ auto_fish_task: asyncio.Task = None
 sigil_task: asyncio.Task = None
 dialogue_task: asyncio.Task = None
 combat_task: asyncio.Task = None
+active_combat_playstyle: str | None = None
 tp_task: asyncio.Task = None
 speed_task: asyncio.Task = None
 pet_task: asyncio.Task = None
@@ -1164,57 +1164,44 @@ async def main():
 
         await asyncio.gather(*[async_combat(p) for p in walker.clients])
 
+    async def restart_combat_task_if_running() -> bool:
+        """Reload combat configuration without changing the enabled state."""
+        global combat_task
+
+        if combat_task is None or combat_task.done():
+            return False
+
+        combat_task.cancel()
+        try:
+            await combat_task
+        except asyncio.CancelledError:
+            pass
+
+        combat_task = asyncio.create_task(
+            try_task_coro(combat_loop, walker.clients, True)
+        )
+        return True
+
     async def dialogue_loop():
         # auto advances dialogue for every client, individually and concurrently
         async def async_dialogue(client: Client):
-            async def current_dialogue_text() -> str:
-                try:
-                    text_window = await get_window_from_path(
-                        client.root_window, dialog_text_path
-                    )
-                    if not text_window:
-                        return ""
-                    return (await text_window.maybe_text()) or ""
-                except Exception:
-                    return ""
-
             while True:
                 if not freecam_status:
                     if await is_visible_by_path(client, advance_dialog_path):
-                        dialogue_text_before = await current_dialogue_text()
                         has_decline_button = await is_visible_by_path(
                             client, decline_quest_path
                         )
                         if has_decline_button and not side_quest_status:
                             await client.send_key(key=Keycode.ESC)
-                            await asyncio.sleep(0.45)
+                            await asyncio.sleep(0.5)
                             if await is_visible_by_path(client, advance_dialog_path):
                                 await client.send_key(key=Keycode.ESC)
-                            # Quest choice screens need more time to close and sync.
-                            await asyncio.sleep(0.9)
+                            await asyncio.sleep(0.5)
                         else:
                             await client.send_key(key=Keycode.SPACEBAR)
-
-                            # Do not advance another page until the game has had a
-                            # chance to replace the current dialogue text.  The
-                            # fixed delay also covers builds where the text window
-                            # briefly returns an empty string.
-                            wait_deadline = time.monotonic() + 1.5
-                            while time.monotonic() < wait_deadline:
-                                await asyncio.sleep(0.1)
-                                if not await is_visible_by_path(
-                                    client, advance_dialog_path
-                                ):
-                                    break
-                                dialogue_text_after = await current_dialogue_text()
-                                if (
-                                    dialogue_text_before
-                                    and dialogue_text_after != dialogue_text_before
-                                ):
-                                    break
-
-                            await asyncio.sleep(0.9 if has_decline_button else 0.55)
-                await asyncio.sleep(0.15)
+                            await asyncio.sleep(0.5)
+                        continue
+                await asyncio.sleep(0.05)
 
         await asyncio.gather(*[async_dialogue(p) for p in walker.clients])
 
@@ -1772,7 +1759,18 @@ async def main():
         client.kill_minions_first = kill_minions_first
         client.automatic_team_based_combat = automatic_team_based_combat
         client.latest_drops = ""
-        client.combat_config = default_config
+        if active_combat_playstyle is None:
+            client.combat_config = default_config
+        else:
+            current_clients = list(walker.clients)
+            combat_configs = delegate_combat_configs(
+                active_combat_playstyle, max(len(current_clients), 1)
+            )
+            try:
+                client_index = current_clients.index(client)
+            except ValueError:
+                client_index = 0
+            client.combat_config = combat_configs.get(client_index, default_config)
         client.use_potions = use_potions
         client.buy_potions = buy_potions
         client.client_to_follow = client_to_follow
@@ -2025,6 +2023,7 @@ async def main():
         global highlight_task
         global entity_stream_task
         global client_resizing
+        global active_combat_playstyle
         enemy_stats = []
         current_pos = None
         current_rotation = None
@@ -3344,24 +3343,41 @@ async def main():
                                 logger.debug("Bot Killed")
                                 bot_task = None
                         case deimosgui.GUICommandType.SetPlaystyles:
-                            if not walker.clients:
+                            active_combat_playstyle = str(com.data)
+                            if walker.clients:
+                                combat_configs = delegate_combat_configs(
+                                    active_combat_playstyle, len(walker.clients)
+                                )
+                                for i, client in enumerate(walker.clients):
+                                    client.combat_config = combat_configs.get(
+                                        i, default_config
+                                    )
+                                restarted = await restart_combat_task_if_running()
                                 logger.info(
-                                    "This GUI option requires hooks to be active, skipping."
+                                    f"战斗风格已保存并应用到 "
+                                    f"{len(walker.clients)} 个客户端；"
+                                    f"自动战斗{'已刷新' if restarted else '当前未开启'}。"
                                 )
-                                continue
-                            combat_configs = delegate_combat_configs(
-                                str(com.data), len(walker.clients)
+                            else:
+                                logger.info(
+                                    "战斗风格已保存，将在客户端注入后自动应用。"
+                                )
+                        case deimosgui.GUICommandType.ResetPlaystyles:
+                            active_combat_playstyle = None
+                            for client in walker.clients:
+                                client.combat_config = default_config
+                            restarted = await restart_combat_task_if_running()
+                            gui_send_queue.put(
+                                deimosgui.GUICommand(
+                                    deimosgui.GUICommandType.UpdateWindow,
+                                    ("combat_config", default_config),
+                                )
                             )
-                            for i, client in enumerate(walker.clients):
-                                client.combat_config = combat_configs.get(
-                                    i, default_config
-                                )
                             logger.info(
-                                f"战斗风格已加载，已应用到 "
-                                f"{len(walker.clients)} 个客户端。"
+                                f"已重置为默认战斗风格；"
+                                f"已应用到 {len(walker.clients)} 个客户端，"
+                                f"自动战斗{'已刷新' if restarted else '当前未开启'}。"
                             )
-                            await toggle_combat_hotkey(False)
-                            await toggle_combat_hotkey(False)
                         case deimosgui.GUICommandType.SetScale:
                             if not walker.clients:
                                 logger.info(

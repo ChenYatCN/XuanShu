@@ -37,6 +37,33 @@ def compute_styles(theme: dict, font: str = None, font_size: int = None) -> dict
         f"QTextEdit {{ background-color: {alt}; color: {tc}; }}"
         f"QPlainTextEdit {{ background-color: {alt}; color: {tc}; }}"
         f"QListWidget {{ background-color: {alt}; color: {tc}; }}"
+        # One application-level scrollbar style keeps the console, script and
+        # combat editors visually identical and follows live theme changes.
+        f"QScrollBar:vertical {{"
+        f"  width: 6px;"
+        f"  background: transparent;"
+        f"  margin: 0;"
+        f"}}"
+        f"QScrollBar::handle:vertical {{"
+        f"  background: {tc_rgba_40};"
+        f"  border-radius: 3px;"
+        f"  min-height: 20px;"
+        f"}}"
+        f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}"
+        f"QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}"
+        f"QScrollBar:horizontal {{"
+        f"  height: 6px;"
+        f"  background: transparent;"
+        f"  margin: 0;"
+        f"}}"
+        f"QScrollBar::handle:horizontal {{"
+        f"  background: {tc_rgba_40};"
+        f"  border-radius: 3px;"
+        f"  min-width: 20px;"
+        f"}}"
+        f"QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}"
+        f"QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: transparent; }}"
+        f"QAbstractScrollArea::corner {{ background: transparent; }}"
         # Explicit tooltip colors are required on Windows. Without them Qt can
         # combine the dark application background with the system's dark tooltip
         # text, producing the empty-looking black bar seen over launcher buttons.
@@ -44,6 +71,7 @@ def compute_styles(theme: dict, font: str = None, font_size: int = None) -> dict
         f"  background-color: {alt};"
         f"  color: {tc};"
         f"  border: 1px solid {sc};"
+        f"  border-radius: 4px;"
         f"  padding: 4px 6px;"
         f"}}"
         # Fix top tab text color.
@@ -152,6 +180,7 @@ def apply_theme(ctx, theme: dict):
 
     # Update ctx properties
     ctx.bg_color = bg
+    ctx.alt_bg = theme["alt_bg"]
     ctx.text_color = tc
     ctx.stroke_color = sc
     ctx.btn_color_hex = bc

@@ -8,8 +8,8 @@ from PyQt6.QtWidgets import (
     QWidget, QPushButton, QLabel, QGroupBox, QVBoxLayout, QHBoxLayout,
     QSizePolicy, QMenu, QFileDialog,
 )
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QPixmap, QIcon, QPainter, QTransform
+from PyQt6.QtCore import Qt, QTimer, QEvent, QObject, QPoint
+from PyQt6.QtGui import QPixmap, QIcon, QPainter, QTransform, QColor
 from PyQt6.QtSvg import QSvgRenderer
 
 from src.gui.commands import GUICommand, GUICommandType
@@ -61,6 +61,92 @@ def svg_icon(svg_str):
     return QIcon(pixmap)
 
 
+class _ThemedToolTipFilter(QObject):
+    """Draw a stable themed tooltip instead of the Windows native popup."""
+
+    def __init__(self, ctx, parent=None):
+        super().__init__(parent)
+        self.ctx = ctx
+        self.popup = None
+        self.hide_timer = QTimer(self)
+        self.hide_timer.setSingleShot(True)
+        self.hide_timer.timeout.connect(self.hide)
+
+    def hide(self):
+        if self.popup is not None:
+            self.popup.hide()
+            self.popup.deleteLater()
+            self.popup = None
+
+    def show(self, watched, text):
+        self.hide()
+        popup = QWidget(None, Qt.WindowType.ToolTip)
+        popup.setObjectName("deimosThemedToolTip")
+        popup.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+
+        text_color = QColor(getattr(self.ctx, "text_color", "#ffffff"))
+        border = (
+            f"rgba({text_color.red()},{text_color.green()},"
+            f"{text_color.blue()},55)"
+        )
+        popup.setStyleSheet(
+            "QWidget#deimosThemedToolTip {"
+            " background-color: transparent;"
+            "}"
+            "QLabel#deimosThemedToolTipText {"
+            f" background-color: {getattr(self.ctx, 'alt_bg', '#202030')};"
+            f" color: {getattr(self.ctx, 'text_color', '#ffffff')};"
+            f" border: 2px solid {border};"
+            " border-radius: 6px;"
+            " padding: 8px 12px;"
+            "}"
+        )
+
+        layout = QVBoxLayout(popup)
+        layout.setContentsMargins(0, 0, 0, 0)
+        label = QLabel(text, popup)
+        label.setObjectName("deimosThemedToolTipText")
+        label.setFont(watched.font())
+        layout.addWidget(label)
+        popup.ensurePolished()
+        popup.adjustSize()
+
+        pos = watched.mapToGlobal(
+            QPoint((watched.width() - popup.width()) // 2, watched.height() + 8)
+        )
+
+        screen = watched.screen().availableGeometry()
+        pos.setX(max(screen.left() + 4, min(pos.x(), screen.right() - popup.width() - 4)))
+        pos.setY(max(screen.top() + 4, min(pos.y(), screen.bottom() - popup.height() - 4)))
+        popup.move(pos)
+        popup.show()
+        popup.raise_()
+        self.popup = popup
+        self.hide_timer.start(5000)
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.ToolTip:
+            tooltip = watched.toolTip()
+            if tooltip:
+                self.show(watched, tooltip)
+            return True
+
+        if event.type() in (
+            QEvent.Type.Leave,
+            QEvent.Type.MouseButtonPress,
+            QEvent.Type.Hide,
+        ):
+            self.hide()
+
+        return super().eventFilter(watched, event)
+
+
+def _install_themed_tooltip(btn, ctx, tooltip):
+    btn.setToolTip(tooltip)
+    btn._tooltip_filter = _ThemedToolTipFilter(ctx, btn)
+    btn.installEventFilter(btn._tooltip_filter)
+
+
 def centered_label(text):
     lbl = QLabel(text)
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -69,7 +155,7 @@ def centered_label(text):
 
 def repo_icon_btn(ctx, svg_str, tooltip, url):
     btn = QPushButton()
-    btn.setToolTip(tooltip)
+    _install_themed_tooltip(btn, ctx, tooltip)
     btn.setStyleSheet(ctx.icon_btn_style)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
     btn.setFixedSize(24, 24)
@@ -95,7 +181,7 @@ def section_group(ctx, title, tooltip_text=None):
         info_btn.setIcon(ctx.titlebar_svg_icon(_svg, 16))
         info_btn.setFixedSize(20, 20)
         info_btn.setStyleSheet(ctx.icon_btn_style)
-        info_btn.setToolTip(tooltip_text)
+        _install_themed_tooltip(info_btn, ctx, tooltip_text)
         info_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         if hasattr(ctx, 'tracked_icon_buttons'):
             ctx.tracked_icon_buttons.append((info_btn, _svg, 16))
@@ -111,7 +197,7 @@ def copy_icon_btn(ctx, callback):
     btn.setFixedSize(20, 20)
     btn.setStyleSheet(ctx.icon_btn_style)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    btn.setToolTip(ctx.tl('copy'))
+    _install_themed_tooltip(btn, ctx, ctx.tl('copy'))
     btn.clicked.connect(callback)
     if hasattr(ctx, 'tracked_icon_buttons'):
         ctx.tracked_icon_buttons.append((btn, _svg, 16))
@@ -123,7 +209,7 @@ def launcher_icon_btn(ctx, svg_str, tooltip, callback, size=32):
     btn.setIcon(ctx.titlebar_svg_icon(svg_str, 24))
     btn.setFixedSize(size, size)
     btn.setStyleSheet(ctx.icon_btn_style)
-    btn.setToolTip(tooltip)
+    _install_themed_tooltip(btn, ctx, tooltip)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
     btn.clicked.connect(callback)
     if hasattr(ctx, 'tracked_icon_buttons'):
@@ -136,7 +222,7 @@ def launcher_small_icon_btn(ctx, svg_str, tooltip, callback):
     btn.setIcon(ctx.titlebar_svg_icon(svg_str, 16))
     btn.setFixedSize(22, 22)
     btn.setStyleSheet(ctx.icon_btn_style)
-    btn.setToolTip(tooltip)
+    _install_themed_tooltip(btn, ctx, tooltip)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
     btn.clicked.connect(callback)
     if hasattr(ctx, 'tracked_icon_buttons'):
@@ -271,6 +357,7 @@ def build_shared_svgs(stroke_color):
         'play': f'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="{sc}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>',
         'kill': f'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="{sc}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.513 4.856 13.12 2.17a.5.5 0 0 1 .86.46l-1.377 4.317"/><path d="M15.656 10H20a1 1 0 0 1 .78 1.63l-1.72 1.773"/><path d="M16.273 16.273 10.88 21.83a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14H4a1 1 0 0 1-.78-1.63l4.507-4.643"/><path d="m2 2 20 20"/></svg>',
         'refresh': f'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="{sc}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>',
+        'apply': f'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="{sc}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
         'recent': f'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="{sc}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><circle cx="11.5" cy="14.5" r="2.5"/><path d="M13.3 16.3 15 18"/></svg>',
         'search': f'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="{sc}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>',
         'publish': f'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="{sc}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 13v8"/><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="m8 17 4-4 4 4"/></svg>',

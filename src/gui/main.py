@@ -353,6 +353,7 @@ def manage_gui(
     ctx.stroke_color = _stroke_color
     ctx.text_color = _text_color
     ctx.bg_color = _bg_color
+    ctx.alt_bg = theme_dict["alt_bg"]
     ctx.theme = _theme
     ctx.btn_style = btn_style
     ctx.btn_color_hex = theme_dict["button_color"]
@@ -444,12 +445,6 @@ def manage_gui(
 
     console_text = ConsoleTextEdit()
     console_text.setReadOnly(True)
-    console_text.setStyleSheet(
-        "QScrollBar:vertical { width: 6px; background: transparent; }"
-        "QScrollBar::handle:vertical { background: rgba(255,255,255,40); border-radius: 3px; min-height: 20px; }"
-        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
-        "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }"
-    )
     widget_tags["-CONSOLE-"] = console_text
     console_layout.addWidget(console_text, 1)
 
