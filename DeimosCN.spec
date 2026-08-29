@@ -277,6 +277,33 @@ a = Analysis(
     optimize=2,
 )
 
+# PyInstaller can resolve Windows API-set/UCRT forwarder DLLs through the
+# environment of the program that launched this BAT (for example Codex or an
+# editor).  Those private runtime copies must never be shipped because they can
+# override the target machine's system DLLs and make PyQt6.QtCore fail to load.
+_forbidden_binary_source_markers = (
+    "\\.cache\\codex-runtimes\\",
+    "\\.codex\\tmp\\",
+)
+
+
+def _is_forbidden_build_source(entry):
+    source = str(Path(entry[1]).resolve()).replace("/", "\\").casefold()
+    return any(marker in source for marker in _forbidden_binary_source_markers)
+
+
+for _collection_name in ("binaries", "datas"):
+    _collection = getattr(a, _collection_name)
+    _removed = [entry for entry in _collection if _is_forbidden_build_source(entry)]
+    if _removed:
+        _collection[:] = [
+            entry for entry in _collection if not _is_forbidden_build_source(entry)
+        ]
+        print(
+            f"[DeimosCN.spec] removed {len(_removed)} contaminated "
+            f"{_collection_name} entries"
+        )
+
 pyz = PYZ(a.pure)
 
 exe = EXE(

@@ -68,8 +68,12 @@ class UntilInfo:
 
 
 class VM:
-    def __init__(self, clients: list[Client]):
+    def __init__(self, clients: list[Client], group_any_as_mass: bool = False):
         self._clients = upgrade_clients(clients) # guarantee it's usable
+        # Targeted GUI bot groups use ``any`` as a group-wide action selector.
+        # Conditions keep their original existential behaviour so legacy
+        # constructs such as ``if any windowvisible ...`` still work.
+        self._group_any_as_mass = group_any_as_mass
         self.program: list[Instruction] = []
         self.running = False
         self.killed = False
@@ -211,6 +215,23 @@ class VM:
                     if client:  # Only add the client if it exists
                         result.append(client)
             return result
+
+    def _select_action_players(self, selector: PlayerSelector) -> list[SprintyClient]:
+        """Resolve the clients affected by a command/action instruction.
+
+        In a GUI-targeted bot group, ``any`` is intentionally equivalent to
+        ``mass`` for actions, but remains an existential selector when used in
+        conditions.  Outside targeted groups the original any/sameany routing
+        is preserved.
+        """
+
+        if self._group_any_as_mass and selector.any_player:
+            return self._clients
+        if selector.any_player and self._any_player_client:
+            return self._any_player_client
+        if selector.any_player:
+            return self._clients[:1]
+        return self._select_players(selector)
             
     async def _fetch_tracked_quest(self, client: SprintyClient) -> QuestData:
         tracked_id = await client.quest_id()
@@ -1247,15 +1268,7 @@ class VM:
         assert type(instruction.data) == list
 
         selector: PlayerSelector = instruction.data[0]
-        if selector.any_player and self._any_player_client:
-            clients = self._any_player_client
-        elif selector.any_player:
-            clients = [] 
-            for client in self._clients:
-                clients = [client]  # Use the first client found
-                break
-        else:
-            clients = self._select_players(selector)
+        clients = self._select_action_players(selector)
         
         # Skip execution if no valid clients were selected
         if not clients:
@@ -1725,7 +1738,7 @@ class VM:
                     async with DeckBuilder(client) as deck_builder:
                         await deck_builder.set_deck_preset(deck)
                 assert type(instruction.data) == list
-                clients = self._select_players(instruction.data[0])
+                clients = self._select_action_players(instruction.data[0])
                 token = instruction.data[1]
                 assert type(token) == str
                 coder = DeckEncoderDecoder(token=token)
@@ -1745,7 +1758,7 @@ class VM:
                         logger.debug(f"{client.title}: --> {token} <--");
 
                 assert type(instruction.data) == list
-                clients = self._select_players(instruction.data[0])
+                clients = self._select_action_players(instruction.data[0])
                 logger.debug("Reading deck...")
                 async with TaskGroup() as tg:
                     for client in clients:
@@ -1768,7 +1781,7 @@ class VM:
                 self.current_task.ip += 1
             case InstructionKind.log_multi:
                 assert type(instruction.data) == list
-                clients = self._select_players(instruction.data[0])
+                clients = self._select_action_players(instruction.data[0])
                 expr = instruction.data[1]
                 for client in clients:
                     string = await self.eval(expr, client)
@@ -1796,15 +1809,7 @@ class VM:
                 selector = instruction.data[0]
                 yaw = instruction.data[1]
                 
-                if selector.any_player and self._any_player_client:
-                    clients = self._any_player_client
-                elif selector.any_player:
-                    clients = []
-                    for client in self._clients:
-                        clients = [client] 
-                        break
-                else:
-                    clients = self._select_players(selector)
+                clients = self._select_action_players(selector)
                 
                 if clients:
                     async with TaskGroup() as tg:

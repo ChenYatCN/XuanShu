@@ -107,7 +107,7 @@ class ActionRegistry:
             self.make_bindable(btn, aid)
         return btn
 
-    def action_icon_btn(self, svg_str, tooltip, callback):
+    def action_icon_btn(self, svg_str, tooltip, callback, action_id=None):
         btn = QPushButton()
         btn.setIcon(self._titlebar_svg_icon(svg_str, 32))
         btn.setFixedSize(40, 40)
@@ -116,8 +116,8 @@ class ActionRegistry:
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.clicked.connect(callback)
         self._icon_buttons.append((btn, svg_str))
-        aid = re.sub(r'[^a-z0-9]+', '_', tooltip.lower()).strip('_')
-        if aid in self.meta:
+        aid = action_id or re.sub(r'[^a-z0-9]+', '_', tooltip.lower()).strip('_')
+        if action_id is None and aid in self.meta:
             self._auto_counter += 1
             aid = f"{aid}_{self._auto_counter}"
         cat = getattr(self._ctx, 'current_tab_name', '') if self._ctx else ''

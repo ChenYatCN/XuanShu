@@ -75,3 +75,43 @@ def delegate_combat_configs(input_data: str, fallback_clients: int = 1, line_sep
         client_configs[client_to_match] = line_seperator.join(local_configs)
 
     return client_configs
+
+
+def delegate_selected_combat_configs(
+    input_data: str,
+    selected_indices: List[int],
+    total_clients: int,
+) -> Dict[int, str]:
+    """Resolve playstyle sections for a selected subset of live clients.
+
+    Full/global files keep their original p1/p2 mapping.  A smaller file whose
+    explicit sections do not cover the selected global client numbers is
+    treated as group-local, so selecting global p2 with a ``### p1`` file still
+    applies that first section to p2.
+    """
+
+    selected_indices = list(selected_indices)
+    if not selected_indices:
+        return {}
+
+    explicit_indices = {
+        int(match.group(1)) - 1
+        for match in re.finditer(r'###\s*p\s*(\d+)', input_data)
+    }
+    use_global_indices = (
+        not explicit_indices
+        or all(index in explicit_indices for index in selected_indices)
+    )
+
+    if use_global_indices:
+        configs = delegate_combat_configs(input_data, max(total_clients, 1))
+        return {
+            index: configs.get(index, default_config)
+            for index in selected_indices
+        }
+
+    configs = delegate_combat_configs(input_data, len(selected_indices))
+    return {
+        global_index: configs.get(local_index, default_config)
+        for local_index, global_index in enumerate(selected_indices)
+    }

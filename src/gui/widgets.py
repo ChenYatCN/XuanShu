@@ -18,6 +18,10 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QPlainTextEdit,
     QToolTip,
+    QStyle,
+    QStyleOptionButton,
+    QLayout,
+    QWidgetItem,
 )
 from PyQt6.QtCore import (
     QTimer,
@@ -31,6 +35,8 @@ from PyQt6.QtCore import (
     QPoint,
     QParallelAnimationGroup,
     QRectF,
+    QRect,
+    QSize,
 )
 from PyQt6.QtGui import (
     QPixmap,
@@ -45,6 +51,107 @@ from PyQt6.QtGui import (
 from PyQt6.QtSvg import QSvgRenderer
 
 from src.gui.commands import _QT_KEY_TO_KEYCODE, _MODIFIER_KEYS, _format_binding
+
+
+class FlowLayout(QLayout):
+    """Compact left-to-right layout that wraps widgets onto new rows."""
+
+    def __init__(self, parent=None, margin=0, horizontal_spacing=10,
+                 vertical_spacing=2):
+        super().__init__(parent)
+        self._items = []
+        self._horizontal_spacing = horizontal_spacing
+        self._vertical_spacing = vertical_spacing
+        self.setContentsMargins(margin, margin, margin, margin)
+
+    def __del__(self):
+        while self.takeAt(0) is not None:
+            pass
+
+    def addItem(self, item):
+        self._items.append(item)
+
+    def insertWidget(self, index, widget):
+        self.addChildWidget(widget)
+        self._items.insert(index, QWidgetItem(widget))
+        self.invalidate()
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, index):
+        if 0 <= index < len(self._items):
+            return self._items[index]
+        return None
+
+    def takeAt(self, index):
+        if 0 <= index < len(self._items):
+            return self._items.pop(index)
+        return None
+
+    def expandingDirections(self):
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._do_layout(QRect(0, 0, width, 0), True)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._do_layout(rect, False)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        size = QSize()
+        for item in self._items:
+            if not item.isEmpty():
+                size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        size += QSize(
+            margins.left() + margins.right(),
+            margins.top() + margins.bottom(),
+        )
+        return size
+
+    def _do_layout(self, rect, test_only):
+        margins = self.contentsMargins()
+        area = rect.adjusted(
+            margins.left(),
+            margins.top(),
+            -margins.right(),
+            -margins.bottom(),
+        )
+        x = area.x()
+        y = area.y()
+        line_height = 0
+
+        for item in self._items:
+            if item.isEmpty():
+                continue
+            hint = item.sizeHint()
+            next_x = x + hint.width() + self._horizontal_spacing
+            if (
+                line_height > 0
+                and next_x - self._horizontal_spacing > area.right() + 1
+            ):
+                x = area.x()
+                y += line_height + self._vertical_spacing
+                next_x = x + hint.width() + self._horizontal_spacing
+                line_height = 0
+
+            if not test_only:
+                item.setGeometry(QRect(x, y, hint.width(), hint.height()))
+            x = next_x
+            line_height = max(line_height, hint.height())
+
+        return (
+            y + line_height - rect.y()
+            + margins.bottom()
+        )
 
 
 class ToggleNameLabel(QLabel):
@@ -94,6 +201,101 @@ class ToggleNameLabel(QLabel):
 
     def isChecked(self):
         return self._checked
+
+
+class ThemedCheckBox(QCheckBox):
+    """Checkbox with a crisp indicator driven by the live theme accent color."""
+
+    def __init__(
+        self,
+        text="",
+        accent_color="#80deea",
+        text_color="#ffffff",
+        background_color="#20202e",
+        parent=None,
+    ):
+        super().__init__(text, parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet(
+            "QCheckBox { spacing: 6px; background: transparent; }"
+            "QCheckBox::indicator {"
+            "  width: 16px; height: 16px;"
+            "  background: transparent; border: none;"
+            "}"
+        )
+        self.set_theme_colors(accent_color, text_color, background_color)
+
+    @staticmethod
+    def _valid_color(value, fallback):
+        color = QColor(str(value))
+        return color if color.isValid() else QColor(fallback)
+
+    def set_theme_colors(self, accent_color, text_color, background_color):
+        self._accent_color = self._valid_color(accent_color, "#80deea")
+        self._text_color = self._valid_color(text_color, "#ffffff")
+        self._background_color = self._valid_color(background_color, "#20202e")
+        self.update()
+
+    def paintEvent(self, event):
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+
+        painter = QPainter(self)
+        self.style().drawControl(
+            QStyle.ControlElement.CE_CheckBox,
+            option,
+            painter,
+            self,
+        )
+
+        indicator = self.style().subElementRect(
+            QStyle.SubElement.SE_CheckBoxIndicator,
+            option,
+            self,
+        ).adjusted(1, 1, -1, -1)
+
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        checked = self.isChecked()
+        hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        enabled = self.isEnabled()
+
+        accent = QColor(self._accent_color)
+        text = QColor(self._text_color)
+        background = QColor(self._background_color)
+
+        if not enabled:
+            accent.setAlpha(90)
+            text.setAlpha(70)
+            background.setAlpha(70)
+
+        border = QColor(accent if (checked or hovered) else text)
+        if not checked and not hovered:
+            border.setAlpha(90 if enabled else 50)
+
+        painter.setPen(QPen(border, 1.4))
+        painter.setBrush(QBrush(accent if checked else background))
+        painter.drawRoundedRect(QRectF(indicator), 3.0, 3.0)
+
+        if checked:
+            luminance = (
+                accent.red() * 299
+                + accent.green() * 587
+                + accent.blue() * 114
+            ) / 1000
+            mark = QColor("#11131f" if luminance >= 150 else "#ffffff")
+            if not enabled:
+                mark.setAlpha(120)
+            pen = QPen(mark, 2.0)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            x, y = indicator.x(), indicator.y()
+            painter.drawLine(x + 3, y + 7, x + 6, y + 10)
+            painter.drawLine(x + 6, y + 10, x + 12, y + 4)
+
+        painter.end()
 
 
 class BoldSelectedTabBar(QTabBar):

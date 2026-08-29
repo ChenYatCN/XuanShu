@@ -10,6 +10,18 @@ echo.
 set "ROOT=%~dp0"
 cd /d "%ROOT%"
 
+rem Keep PyInstaller away from inaccessible or mismatched user-level packages.
+set "PYTHONNOUSERSITE=1"
+set "PYTHONUSERBASE=%ROOT%build\python-userbase"
+
+rem Do not inherit Codex/editor DLL directories into the packaged application.
+set "PATH=%ROOT%.venv\Scripts;%SystemRoot%\System32;%SystemRoot%;%SystemRoot%\System32\Wbem;%SystemRoot%\System32\WindowsPowerShell\v1.0"
+set "PYTHONPATH="
+set "PYTHONHOME="
+set "QT_PLUGIN_PATH="
+set "QML2_IMPORT_PATH="
+set "QT_QPA_PLATFORM_PLUGIN_PATH="
+
 echo 当前项目目录：
 echo %ROOT%
 echo.

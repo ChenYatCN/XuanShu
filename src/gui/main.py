@@ -607,6 +607,7 @@ def manage_gui(
     dev_utils_exports = ctx.exports.get("dev_utils", {})
     flythrough_exports = ctx.exports.get("flythrough", {})
     bot_exports = ctx.exports.get("bot", {})
+    combat_exports = ctx.exports.get("combat", {})
     fishing_exports = ctx.exports.get("fishing", {})
 
     # Load dynamic hotkey rows now that all buttons/actions have been registered
@@ -699,6 +700,8 @@ def manage_gui(
                             bot_exports.get("set_running", lambda v: None)(
                                 value == "Enabled"
                             )
+                        elif tag == "BotGroups":
+                            bot_exports.get("set_running_groups", lambda v: None)(value)
                         elif tag == "Auto FishStatus":
                             fishing_exports.get("set_running", lambda v: None)(
                                 value == "Enabled"
@@ -835,6 +838,20 @@ def manage_gui(
                         _update_dev_mass = dev_utils_exports.get("update_mass_state")
                         if _update_dev_mass:
                             _update_dev_mass(hooked_count)
+                        _update_bot_clients = bot_exports.get("set_available_clients")
+                        if _update_bot_clients:
+                            _update_bot_clients([
+                                info.get("title", "")
+                                for info in _last_hooked_data.get("hooked", [])
+                            ])
+                        _update_combat_clients = combat_exports.get(
+                            "set_available_clients"
+                        )
+                        if _update_combat_clients:
+                            _update_combat_clients([
+                                info.get("title", "")
+                                for info in _last_hooked_data.get("hooked", [])
+                            ])
 
                     case GUICommandType.ClearLaunchCheckboxes:
                         if account_list and not (

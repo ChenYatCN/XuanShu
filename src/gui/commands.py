@@ -37,8 +37,8 @@ class GUICommandType(Enum):
     ExecuteFlythrough = auto()
     KillFlythrough = auto()
 
-    ExecuteBot = auto()
-    KillBot = auto()
+    ExecuteBot = auto()  # data: legacy text or {'text': str, 'clients': [title, ...]}
+    KillBot = auto()     # data: None (all) or {'clients': [title, ...]}
 
     SearchBots = auto()          # GUI -> Backend: search registry for current zone/client count (data: None)
     ImportSearchedBot = auto()   # GUI -> Backend: data = (bot path, run: bool)

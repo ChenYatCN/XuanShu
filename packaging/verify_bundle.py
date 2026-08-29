@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ANALYSIS_TOC = ROOT / "build" / "DeimosCN" / "Analysis-00.toc"
+PACKAGE_TOC = ROOT / "build" / "DeimosCN" / "PKG-00.toc"
 OUTPUT_EXE = ROOT / "dist" / "DeimosCN.exe"
 VENV_PACKAGES = (ROOT / ".venv" / "Lib" / "site-packages").resolve()
 COMBAT_COMPAT = (
@@ -21,16 +22,20 @@ COMBAT_COMPAT = (
     / "sprinty_combat.py"
 ).resolve()
 FORBIDDEN_ROOT_PACKAGE = (ROOT / "wizwalker").resolve()
+FORBIDDEN_SOURCE_MARKERS = (
+    "\\.cache\\codex-runtimes\\",
+    "\\.codex\\tmp\\",
+)
 
 
 def _norm(value: str | Path) -> str:
     return str(Path(value).resolve()).replace("/", "\\").casefold()
 
 
-def _load_entries():
-    if not ANALYSIS_TOC.exists():
-        raise RuntimeError(f"找不到 PyInstaller 分析文件：{ANALYSIS_TOC}")
-    tree = ast.literal_eval(ANALYSIS_TOC.read_text(encoding="utf-8"))
+def _load_entries(toc_path: Path):
+    if not toc_path.exists():
+        raise RuntimeError(f"找不到 PyInstaller 分析文件：{toc_path}")
+    tree = ast.literal_eval(toc_path.read_text(encoding="utf-8"))
     entries: list[tuple[str, str, str]] = []
 
     def visit(node):
@@ -46,7 +51,8 @@ def _load_entries():
 
 
 def main() -> None:
-    entries = _load_entries()
+    entries = _load_entries(ANALYSIS_TOC)
+    package_entries = _load_entries(PACKAGE_TOC)
     compat_source = _norm(COMBAT_COMPAT)
     venv_source = _norm(VENV_PACKAGES)
     forbidden_source = _norm(FORBIDDEN_ROOT_PACKAGE)
@@ -79,6 +85,21 @@ def main() -> None:
             + "\n  ".join(sorted(set(root_wizwalker))[:10])
         )
 
+    contaminated_entries = [
+        (name, source)
+        for name, source, _ in package_entries
+        if any(marker in _norm(source) for marker in FORBIDDEN_SOURCE_MARKERS)
+    ]
+    if contaminated_entries:
+        details = "\n  ".join(
+            f"{name} <- {source}"
+            for name, source in contaminated_entries[:15]
+        )
+        raise RuntimeError(
+            "检测到 Codex/编辑器运行库混入成品，已停止交付：\n  "
+            + details
+        )
+
     base_modules = [
         source
         for name, source, kind in entries
@@ -90,12 +111,14 @@ def main() -> None:
         raise RuntimeError("wizwalker 基础库没有从当前 .venv 打包。")
 
     archive_names = {
-        name.replace("\\", "/").casefold() for name, _, _ in entries
+        name.replace("\\", "/").casefold() for name, _, _ in package_entries
     }
     required_suffixes = (
         "wizpatch.exe",
         "traversaldata/zonemap.txt",
         "_wizsprinter_compat/wizwalker/extensions/wizsprinter/resolution_hook.py",
+        "pyqt6/qtcore.pyd",
+        "pyqt6/qt6/bin/qt6core.dll",
     )
     for suffix in required_suffixes:
         if not any(name.endswith(suffix) for name in archive_names):
@@ -112,7 +135,8 @@ def main() -> None:
     compat_hash = hashlib.sha256(COMBAT_COMPAT.read_bytes()).hexdigest().upper()
     print("[验证通过] wizwalker：.venv 最新版")
     print(f"[验证通过] SprintyCombat：兼容版 SHA256 {compat_hash}")
-    print("[验证通过] wizlaunch、wizpatch、分辨率兼容模块和导航数据完整")
+    print("[验证通过] Qt、wizlaunch、wizpatch、分辨率兼容模块和导航数据完整")
+    print("[验证通过] 未混入 Codex/编辑器运行库")
     print(f"[验证通过] 成品：{OUTPUT_EXE}")
 
 

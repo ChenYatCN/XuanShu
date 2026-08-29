@@ -28,12 +28,20 @@ from src import gui as deimosgui
 from src import wizpatch_runner
 from src.auto_fish_original_adapter import fish_bot
 from src.auto_pet import nomnom
+from src.bot_targeting import (
+    bot_group_key,
+    normalize_client_titles,
+    overlapping_bot_groups,
+    resolve_bot_clients,
+    unpack_bot_command,
+)
 from src.client_resizing import ClientResizingManager
 from src.command_parser import execute_flythrough, parse_command
 from src.config_combat import (
     StrCombatConfigProvider,
     default_config,
     delegate_combat_configs,
+    delegate_selected_combat_configs,
 )
 from src.deimoslang import vm
 from src.drop_logger import logging_loop
@@ -290,11 +298,12 @@ sigil_task: asyncio.Task = None
 dialogue_task: asyncio.Task = None
 combat_task: asyncio.Task = None
 active_combat_playstyle: str | None = None
+combat_playstyle_overrides: dict[str, str] = {}
 tp_task: asyncio.Task = None
 speed_task: asyncio.Task = None
 pet_task: asyncio.Task = None
 
-bot_task: asyncio.Task = None
+bot_tasks: dict[tuple[str, ...], asyncio.Task] = {}
 flythrough_task: asyncio.Task = None
 highlight_task: asyncio.Task = None
 entity_stream_task: asyncio.Task = None
@@ -1759,7 +1768,10 @@ async def main():
         client.kill_minions_first = kill_minions_first
         client.automatic_team_based_combat = automatic_team_based_combat
         client.latest_drops = ""
-        if active_combat_playstyle is None:
+        client_title_key = str(client.title).casefold()
+        if client_title_key in combat_playstyle_overrides:
+            client.combat_config = combat_playstyle_overrides[client_title_key]
+        elif active_combat_playstyle is None:
             client.combat_config = default_config
         else:
             current_clients = list(walker.clients)
@@ -2009,7 +2021,7 @@ async def main():
 
         # GUI is started on the main thread; queues are set up before main() runs
         global gui_send_queue
-        global bot_task
+        global bot_tasks
         global flythrough_task
         global gui_thread
         global recv_queue
@@ -2024,9 +2036,29 @@ async def main():
         global entity_stream_task
         global client_resizing
         global active_combat_playstyle
+        global combat_playstyle_overrides
         enemy_stats = []
         current_pos = None
         current_rotation = None
+
+        def send_bot_groups_update():
+            groups = [
+                list(key)
+                for key, task in bot_tasks.items()
+                if task is not None and not task.done()
+            ]
+            gui_send_queue.put(
+                deimosgui.GUICommand(
+                    deimosgui.GUICommandType.UpdateWindow,
+                    ("BotGroups", groups),
+                )
+            )
+            gui_send_queue.put(
+                deimosgui.GUICommand(
+                    deimosgui.GUICommandType.UpdateWindow,
+                    ("BotStatus", "Enabled" if groups else "Disabled"),
+                )
+            )
 
         # Pause/resume state for client disconnect resilience
         paused_task_names = None
@@ -2141,7 +2173,6 @@ async def main():
                             "sigil": sigil_task,
                             "questing": questing_task,
                             "speed": speed_task,
-                            "bot": bot_task,
                             "auto_pet": auto_pet_task,
                             "auto_fish": auto_fish_task,
                         }
@@ -2149,6 +2180,18 @@ async def main():
                             if task is not None and not task.cancelled():
                                 active_tasks.add(name)
                                 task.cancel()
+
+                        dead_titles = [str(client.title) for client in dead]
+                        interrupted_bot_groups = overlapping_bot_groups(
+                            bot_tasks.keys(), dead_titles
+                        )
+                        if interrupted_bot_groups:
+                            active_tasks.add("bot")
+                            for key in interrupted_bot_groups:
+                                task = bot_tasks.pop(key, None)
+                                if task is not None and not task.done():
+                                    task.cancel()
+                            send_bot_groups_update()
 
                         if "combat" in active_tasks:
                             combat_task = None
@@ -2160,8 +2203,6 @@ async def main():
                             questing_task = None
                         if "speed" in active_tasks:
                             speed_task = None
-                        if "bot" in active_tasks:
-                            bot_task = None
                         if "auto_pet" in active_tasks:
                             auto_pet_task = None
                         if "auto_fish" in active_tasks:
@@ -3266,18 +3307,65 @@ async def main():
                                     "This GUI option requires hooks to be active, skipping."
                                 )
                                 continue
-                            command_data: str = com.data
-                            expert_mode = command_data.startswith(
-                                "###deimos_expertmode"
+                            command_data, requested_titles = unpack_bot_command(com.data)
+                            selected_clients = resolve_bot_clients(
+                                walker.clients, requested_titles
                             )
+                            if not command_data.strip():
+                                logger.warning("脚本内容为空，未启动。")
+                                continue
+                            if not selected_clients:
+                                logger.warning("没有找到所选客户端，脚本未启动。")
+                                continue
+                            if requested_titles is not None:
+                                resolved_titles = {
+                                    str(client.title).casefold()
+                                    for client in selected_clients
+                                }
+                                missing_titles = [
+                                    title for title in requested_titles
+                                    if title.casefold() not in resolved_titles
+                                ]
+                                if missing_titles:
+                                    logger.warning(
+                                        "所选客户端当前不可用："
+                                        + ", ".join(missing_titles)
+                                        + "；脚本未启动。"
+                                    )
+                                    continue
 
-                            async def run_bot():
-                                logger.debug("Started Bot")
+                            group_key = bot_group_key(selected_clients)
+                            overlapping = overlapping_bot_groups(
+                                bot_tasks.keys(), group_key
+                            )
+                            for old_key in overlapping:
+                                old_task = bot_tasks.pop(old_key, None)
+                                if old_task is not None and not old_task.done():
+                                    old_task.cancel()
+                                    logger.info(
+                                        f"已停止与新任务重叠的脚本组：{'+'.join(old_key)}"
+                                    )
+
+                            async def run_bot(
+                                bot_clients=tuple(selected_clients),
+                                bot_text=command_data,
+                                group_any_as_mass=requested_titles is not None,
+                            ):
+                                # All scripts now use the expert VM.  Keep accepting
+                                # the legacy marker so existing files remain valid,
+                                # but it is no longer required to enable expert mode.
+                                expert_mode = True
+                                logger.info(
+                                    f"脚本已启动：{'+'.join(client.title for client in bot_clients)}"
+                                )
                                 if expert_mode:
                                     while True:
-                                        v = vm.VM(walker.clients)
+                                        v = vm.VM(
+                                            list(bot_clients),
+                                            group_any_as_mass=group_any_as_mass,
+                                        )
                                         try:
-                                            v.load_from_text(command_data)
+                                            v.load_from_text(bot_text)
                                             v.running = True
                                             while v.running:
                                                 await v.step()
@@ -3288,7 +3376,7 @@ async def main():
                                             break
                                         await asyncio.sleep(1)
                                 else:
-                                    split_commands = command_data.splitlines()
+                                    split_commands = bot_text.splitlines()
                                     web_commands_strs = ["webpage", "pull", "embed"]
                                     new_commands = []
                                     for command_str in split_commands:
@@ -3307,65 +3395,136 @@ async def main():
                                     while True:
                                         for command_str in new_commands:
                                             await parse_command(
-                                                walker.clients, command_str
+                                                list(bot_clients), command_str
                                             )
                                         await asyncio.sleep(1)
 
-                            if bot_task is not None and not bot_task.cancelled():
-                                bot_task.cancel()
-                                logger.debug("Bot Killed")
-                                bot_task = None
-                            bot_task = asyncio.create_task(
-                                try_task_coro(run_bot, walker.clients, True)
+                            new_task = asyncio.create_task(
+                                try_task_coro(run_bot, selected_clients, True)
                             )
-                            bot_task.add_done_callback(
-                                lambda _t: gui_send_queue.put(
-                                    deimosgui.GUICommand(
-                                        deimosgui.GUICommandType.UpdateWindow,
-                                        ("BotStatus", "Disabled"),
-                                    )
-                                )
-                            )
-                            gui_send_queue.put(
-                                deimosgui.GUICommand(
-                                    deimosgui.GUICommandType.UpdateWindow,
-                                    ("BotStatus", "Enabled"),
-                                )
-                            )
+                            bot_tasks[group_key] = new_task
+
+                            def bot_done_callback(completed_task, key=group_key):
+                                if bot_tasks.get(key) is completed_task:
+                                    bot_tasks.pop(key, None)
+                                    logger.info(f"脚本已停止：{'+'.join(key)}")
+                                send_bot_groups_update()
+
+                            new_task.add_done_callback(bot_done_callback)
+                            send_bot_groups_update()
                         case deimosgui.GUICommandType.KillBot:
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
                                 )
                                 continue
-                            if bot_task is not None and not bot_task.cancelled():
-                                bot_task.cancel()
-                                logger.debug("Bot Killed")
-                                bot_task = None
+                            requested_titles = None
+                            if isinstance(com.data, dict):
+                                requested_titles = normalize_client_titles(
+                                    com.data.get("clients")
+                                )
+                            groups_to_stop = overlapping_bot_groups(
+                                bot_tasks.keys(), requested_titles
+                            )
+                            if not groups_to_stop:
+                                logger.info("所选客户端没有运行中的脚本。")
+                                continue
+                            for key in groups_to_stop:
+                                task = bot_tasks.pop(key, None)
+                                if task is not None and not task.done():
+                                    task.cancel()
+                                logger.info(f"脚本已停止：{'+'.join(key)}")
+                            await asyncio.sleep(0)
+                            send_bot_groups_update()
                         case deimosgui.GUICommandType.SetPlaystyles:
-                            active_combat_playstyle = str(com.data)
-                            if walker.clients:
-                                combat_configs = delegate_combat_configs(
-                                    active_combat_playstyle, len(walker.clients)
-                                )
-                                for i, client in enumerate(walker.clients):
-                                    client.combat_config = combat_configs.get(
-                                        i, default_config
+                            playstyle_text, requested_titles = unpack_bot_command(
+                                com.data
+                            )
+                            if not playstyle_text.strip():
+                                logger.warning("战斗风格内容为空，未应用。")
+                                continue
+
+                            selected_clients = resolve_bot_clients(
+                                walker.clients, requested_titles
+                            )
+                            if not selected_clients:
+                                logger.warning("没有找到所选客户端，战斗风格未应用。")
+                                continue
+
+                            if requested_titles is not None:
+                                resolved_titles = {
+                                    str(client.title).casefold()
+                                    for client in selected_clients
+                                }
+                                missing_titles = [
+                                    title for title in requested_titles
+                                    if title.casefold() not in resolved_titles
+                                ]
+                                if missing_titles:
+                                    logger.warning(
+                                        "所选客户端当前不可用："
+                                        + ", ".join(missing_titles)
+                                        + "；战斗风格未应用。"
                                     )
-                                restarted = await restart_combat_task_if_running()
-                                logger.info(
-                                    f"战斗风格已保存并应用到 "
-                                    f"{len(walker.clients)} 个客户端；"
-                                    f"自动战斗{'已刷新' if restarted else '当前未开启'}。"
-                                )
-                            else:
-                                logger.info(
-                                    "战斗风格已保存，将在客户端注入后自动应用。"
-                                )
+                                    continue
+
+                            selected_ids = {id(client) for client in selected_clients}
+                            selected_indices = [
+                                i for i, client in enumerate(walker.clients)
+                                if id(client) in selected_ids
+                            ]
+                            combat_configs = delegate_selected_combat_configs(
+                                playstyle_text,
+                                selected_indices,
+                                len(walker.clients),
+                            )
+                            applied_titles = []
+                            for i, client in enumerate(walker.clients):
+                                if id(client) not in selected_ids:
+                                    continue
+                                config = combat_configs.get(i, default_config)
+                                client.combat_config = config
+                                combat_playstyle_overrides[
+                                    str(client.title).casefold()
+                                ] = config
+                                applied_titles.append(str(client.title))
+
+                            # Preserve the legacy plain-text command behaviour:
+                            # it remains the fallback for future clients and
+                            # clears earlier per-client overrides.
+                            if requested_titles is None:
+                                active_combat_playstyle = playstyle_text
+                                combat_playstyle_overrides.clear()
+
+                            restarted = await restart_combat_task_if_running()
+                            logger.info(
+                                f"战斗风格已应用到：{', '.join(applied_titles)}；"
+                                f"自动战斗{'已刷新' if restarted else '当前未开启'}。"
+                            )
                         case deimosgui.GUICommandType.ResetPlaystyles:
-                            active_combat_playstyle = None
-                            for client in walker.clients:
+                            requested_titles = None
+                            if isinstance(com.data, dict):
+                                requested_titles = normalize_client_titles(
+                                    com.data.get("clients")
+                                )
+                            selected_clients = resolve_bot_clients(
+                                walker.clients, requested_titles
+                            )
+                            if not selected_clients:
+                                logger.warning("没有找到所选客户端，战斗风格未重置。")
+                                continue
+
+                            reset_titles = []
+                            for client in selected_clients:
                                 client.combat_config = default_config
+                                combat_playstyle_overrides[
+                                    str(client.title).casefold()
+                                ] = default_config
+                                reset_titles.append(str(client.title))
+
+                            if requested_titles is None:
+                                active_combat_playstyle = None
+                                combat_playstyle_overrides.clear()
                             restarted = await restart_combat_task_if_running()
                             gui_send_queue.put(
                                 deimosgui.GUICommand(
@@ -3375,7 +3534,7 @@ async def main():
                             )
                             logger.info(
                                 f"已重置为默认战斗风格；"
-                                f"已应用到 {len(walker.clients)} 个客户端，"
+                                f"已应用到：{', '.join(reset_titles)}，"
                                 f"自动战斗{'已刷新' if restarted else '当前未开启'}。"
                             )
                         case deimosgui.GUICommandType.SetScale:
@@ -4187,10 +4346,13 @@ async def main():
             speed_task,
             auto_pet_task,
             auto_fish_task,
-            bot_task,
         ]:
             if task is not None and not task.cancelled():
                 task.cancel()
+        for task in list(bot_tasks.values()):
+            if task is not None and not task.done():
+                task.cancel()
+        bot_tasks.clear()
 
         await tool_finish()
         # Signal GUI thread that unhooking is done so it can exit cleanly
