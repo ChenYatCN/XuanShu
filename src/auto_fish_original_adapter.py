@@ -20,12 +20,9 @@ async def fish_bot(
     size_max: float = 999,
 ):
     """Run the original standalone loop against Deimos' selected client."""
-    original_fishing.IS_CHEST = bool(is_chest)
-    original_fishing.SCHOOL = school
-    original_fishing.RANK = rank
-    original_fishing.ID = fish_id
-    original_fishing.SIZE_MIN = size_min
-    original_fishing.SIZE_MAX = size_max
+    config = (bool(is_chest), "Any", 0, 0, 0, 999) if is_chest else (
+        False, school, rank, fish_id, size_min, size_max
+    )
 
     address_bytes = []
     try:
@@ -37,7 +34,7 @@ async def fish_bot(
         fish_caught = 0
         total = time()
         while client.is_fishing:
-            await original_fishing.refresh_pond(client, fishing_manager)
+            await original_fishing.refresh_pond(client, fishing_manager, config)
             fish_list = await original_fishing.fetch_fish_list(fishing_manager)
 
             fish_windows = await client.root_window.get_windows_with_name(
@@ -121,7 +118,7 @@ async def fish_bot(
                 await asyncio.sleep(0.1)
 
             fish_caught += 1
-            if fish_caught % 100 == 0 and not original_fishing.IS_CHEST:
+            if fish_caught % 100 == 0 and not is_chest:
                 await original_fishing.sell_basket(client)
 
             total_time = round((time() - total) / 60, 2)

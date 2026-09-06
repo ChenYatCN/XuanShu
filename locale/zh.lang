@@ -330,7 +330,7 @@ auto_fish=自动钓鱼
 fish_filter=钓鱼筛选
 fish_chest_filter=宝箱筛选
 fish_specific_filter=指定鱼筛选
-fish_chest_hint=启用后只钓宝箱，并完全忽略右方所有指定鱼条件。
+fish_chest_hint=仅钓宝箱，忽略右侧筛选条件。
 fish_mode=目标类型
 fish_mode_fish=鱼（排除宝箱）
 fish_mode_chest=仅钓宝箱
@@ -341,4 +341,31 @@ fish_size_min=最小尺寸
 fish_size_max=最大尺寸
 fish_any=不限
 fish_zero_any=0 表示不限
-fish_start_hint=选择筛选条件后开启自动钓鱼；修改条件后需重新启动钓鱼才会生效。
+fish_start_hint=筛选条件修改后，重新启动所选组生效。
+
+# Auto quest party / 自动任务编队
+setting_quest_party_enabled=启用任务编队
+setting_questing_clients=做任务客户端
+setting_questing_hitter_clients=打手客户端
+setting_quest_party_no_clients=请先注入客户端
+setting_quest_party_note=支持多选；角色按账号身份保存，重新注入或 p 编号变化后仍能匹配。打手只跟随对应客户端，不执行自己的任务目标。
+setting_quest_assignment_mode=打手分配
+setting_quest_assignment_auto=自动轮流分配
+setting_quest_assignment_manual=手动指定
+setting_quest_manual_assignments=跟随关系
+setting_quest_friend_icons=好友图标保底
+setting_quest_friend_icon_none=不使用
+setting_quest_friend_icon_goblin=哥布林
+setting_quest_friend_icon_grass=小草
+setting_quest_friend_icon_fish=鱼
+setting_quest_friend_icon_note=名称匹配失败时使用。请在打手的好友列表里为任务端设置对应图标；同一打手列表中不要重复。
+quest_party_runtime=任务编队：{status}
+
+fish_reset_filters=重置指定鱼筛选
+
+fish_group_targets=钓鱼组 / 目标客户端
+fish_new_group=新建组：勾选客户端并设置条件
+fish_start_selected=启动钓鱼
+fish_stop_selected=停止钓鱼
+fish_stop_all=停止全部钓鱼组
+fish_running=运行中

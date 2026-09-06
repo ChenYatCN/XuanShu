@@ -330,7 +330,7 @@ auto_fish=Auto Fishing
 fish_filter=Fishing Filter
 fish_chest_filter=Chest Filter
 fish_specific_filter=Specific Fish Filter
-fish_chest_hint=When enabled, catch chests only and completely ignore all specific-fish conditions below.
+fish_chest_hint=Catch chests only; ignore fish filters.
 fish_mode=Target Type
 fish_mode_fish=Fish (exclude chests)
 fish_mode_chest=Chests only
@@ -341,4 +341,31 @@ fish_size_min=Minimum Size
 fish_size_max=Maximum Size
 fish_any=Any
 fish_zero_any=0 means any
-fish_start_hint=Choose filters, then enable auto fishing. Changes take effect the next time it starts.
+fish_start_hint=Restart the selected group to apply filter changes.
+
+# Auto quest party
+setting_quest_party_enabled=Enable Quest Party
+setting_questing_clients=Questing Clients
+setting_questing_hitter_clients=Hitter Clients
+setting_quest_party_no_clients=Hook clients first
+setting_quest_party_note=Multi-select supported. Roles are stored by account identity and survive p-number changes. Hitters only follow their assigned client and never execute their own quest objective.
+setting_quest_assignment_mode=Hitter Assignment
+setting_quest_assignment_auto=Automatic round-robin
+setting_quest_assignment_manual=Manual
+setting_quest_manual_assignments=Follow Mapping
+setting_quest_friend_icons=Friend Icon Fallback
+setting_quest_friend_icon_none=Disabled
+setting_quest_friend_icon_goblin=Goblin
+setting_quest_friend_icon_grass=Grass
+setting_quest_friend_icon_fish=Fish
+setting_quest_friend_icon_note=Used when name matching fails. Set the same icon for the questing client in each hitter's friend list, without duplicates in that list.
+quest_party_runtime=Quest party: {status}
+
+fish_reset_filters=Reset fish filters
+
+fish_group_targets=Fishing groups / Target clients
+fish_new_group=New group: select clients and filters
+fish_start_selected=Start fishing
+fish_stop_selected=Stop fishing
+fish_stop_all=Stop all fishing groups
+fish_running=Running

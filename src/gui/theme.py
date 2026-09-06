@@ -287,7 +287,7 @@ def apply_theme(ctx, theme: dict):
             pass
 
     # Re-theme tab exports
-    for export_key in ("dev_utils", "hotkeys", "launcher", "bot", "combat"):
+    for export_key in ("dev_utils", "hotkeys", "launcher", "bot", "combat", "fishing"):
         retheme = ctx.exports.get(export_key, {}).get("retheme")
 
         if retheme:

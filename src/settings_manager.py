@@ -33,6 +33,12 @@ DEFAULT_SETTINGS = {
     "friend_teleport": False,
     "gear_switching_in_solo_zones": False,
     "hitter_client": None,
+    "quest_party_enabled": False,
+    "questing_clients": [],
+    "questing_hitter_clients": [],
+    "quest_hitter_assignment_mode": "auto",
+    "quest_hitter_assignments": {},
+    "quest_friend_icons": {},
     # [auto pet]
     "ignore_pet_level_up": False,
     "only_play_dance_game": False,

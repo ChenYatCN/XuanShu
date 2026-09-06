@@ -125,6 +125,36 @@ class FlowLayout(QLayout):
             -margins.right(),
             -margins.bottom(),
         )
+        if self.alignment() & Qt.AlignmentFlag.AlignHCenter:
+            rows = []
+            row, width, height = [], 0, 0
+            for item in self._items:
+                if item.isEmpty():
+                    continue
+                hint = item.sizeHint()
+                extra = self._horizontal_spacing if row else 0
+                if row and width + extra + hint.width() > area.width():
+                    rows.append((row, width, height))
+                    row, width, height = [], 0, 0
+                    extra = 0
+                row.append((item, hint))
+                width += extra + hint.width()
+                height = max(height, hint.height())
+            if row:
+                rows.append((row, width, height))
+            y = area.y()
+            for row, width, height in rows:
+                x = area.x() + max(0, (area.width() - width) // 2)
+                for item, hint in row:
+                    if not test_only:
+                        item.setGeometry(QRect(x, y + (height - hint.height()) // 2,
+                                               hint.width(), hint.height()))
+                    x += hint.width() + self._horizontal_spacing
+                y += height + self._vertical_spacing
+            return (margins.top() + margins.bottom()
+                    + sum(height for _, _, height in rows)
+                    + max(0, len(rows) - 1) * self._vertical_spacing)
+
         x = area.x()
         y = area.y()
         line_height = 0

@@ -55,20 +55,21 @@ def _build_client_toolbar(ctx, wiki_tooltip_key, wiki_path, with_status=False):
         flow.addWidget(status_label)
 
     toolbar_row.addWidget(flow_host, 1)
-    info_tooltip = (
-        f"{ctx.tl('advanced_warning')}\n"
-        f"{ctx.tl(wiki_tooltip_key)}"
-    )
-    toolbar_row.addWidget(
-        repo_icon_btn(
-            ctx,
-            ctx.svgs['readme'],
-            info_tooltip,
-            f"{ctx.wiki_base}/{wiki_path}",
-        ),
-        0,
-        Qt.AlignmentFlag.AlignTop,
-    )
+    if wiki_path is not None:
+        info_tooltip = (
+            f"{ctx.tl('advanced_warning')}\n"
+            f"{ctx.tl(wiki_tooltip_key)}"
+        )
+        toolbar_row.addWidget(
+            repo_icon_btn(
+                ctx,
+                ctx.svgs['readme'],
+                info_tooltip,
+                f"{ctx.wiki_base}/{wiki_path}",
+            ),
+            0,
+            Qt.AlignmentFlag.AlignTop,
+        )
     return toolbar, flow, all_clients, status_label
 
 

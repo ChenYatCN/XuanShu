@@ -702,10 +702,19 @@ def manage_gui(
                             )
                         elif tag == "BotGroups":
                             bot_exports.get("set_running_groups", lambda v: None)(value)
+                        elif tag == "FishingGroups":
+                            fishing_exports.get("set_running_groups", lambda v: None)(value)
+                        elif tag == "FishingToggle":
+                            fishing_exports.get("toggle_selected", lambda: None)()
                         elif tag == "Auto FishStatus":
                             fishing_exports.get("set_running", lambda v: None)(
                                 value == "Enabled"
                             )
+                        elif tag == "QuestPartyRuntimeStatus":
+                            widget = widget_tags.get(tag)
+                            if widget is not None:
+                                widget.setText(str(value))
+                                widget.setVisible(bool(value))
                         else:
                             widget = widget_tags.get(tag)
                             if widget is not None:
@@ -844,6 +853,9 @@ def manage_gui(
                                 info.get("title", "")
                                 for info in _last_hooked_data.get("hooked", [])
                             ])
+                        fishing_exports.get("set_available_clients", lambda v: None)([
+                            info.get("title", "") for info in _last_hooked_data.get("hooked", [])
+                        ])
                         _update_combat_clients = combat_exports.get(
                             "set_available_clients"
                         )

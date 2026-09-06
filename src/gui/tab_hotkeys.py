@@ -1,7 +1,7 @@
 import os
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QColor, QPixmap
 from PyQt6.QtWidgets import (
     QFrame,
     QGraphicsOpacityEffect,
@@ -573,6 +573,38 @@ def build_hotkeys_tab(ctx):
     repo_links_row.addStretch()
     info_layout.addLayout(repo_links_row)
 
+    quest_party_status = QLabel()
+    quest_party_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    quest_party_status.setWordWrap(True)
+    quest_party_status.setMinimumHeight(58)
+    quest_party_status.setMinimumWidth(340)
+    quest_party_status.setMaximumWidth(340)
+    quest_party_status.setSizePolicy(
+        QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred
+    )
+
+    def _quest_party_status_style():
+        accent = QColor(ctx.stroke_color)
+        red, green, blue, _ = accent.getRgb()
+        return (
+            "QLabel {"
+            f" color: {ctx.stroke_color};"
+            f" background-color: rgba({red}, {green}, {blue}, 22);"
+            f" border: 1px solid {ctx.stroke_color};"
+            " border-radius: 8px;"
+            " font-size: 13px;"
+            " font-weight: 600;"
+            " padding: 8px 12px;"
+            "}"
+        )
+
+    quest_party_status.setStyleSheet(_quest_party_status_style())
+    quest_party_status.setVisible(False)
+    info_layout.addWidget(
+        quest_party_status, alignment=Qt.AlignmentFlag.AlignHCenter
+    )
+    ctx.widget_tags["QuestPartyRuntimeStatus"] = quest_party_status
+
     info_layout.addStretch()
     hotkeys_layout.addWidget(info_widget)
 
@@ -598,6 +630,7 @@ def build_hotkeys_tab(ctx):
         version_label.setText(
             f'<b>{ctx.tool_name}</b> <a href="{_cl_url}" style="color: {ctx.text_color}; text-decoration: none;">v{ctx.tool_version}</a>'
         )
+        quest_party_status.setStyleSheet(_quest_party_status_style())
 
     ctx.exports["hotkeys"] = {
         "add_dynamic_hk_row": _add_dynamic_hk_row,

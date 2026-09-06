@@ -1194,9 +1194,15 @@ class Parser:
             case TokenKind.command_friendtp:
                 result.kind = CommandKind.teleport
                 self.i += 1
-                x = self.expect_consume_any([TokenKind.keyword_icon, TokenKind.identifier])
+                x = self.expect_consume_any([
+                    TokenKind.keyword_icon, TokenKind.identifier, TokenKind.string
+                ])
                 if x.kind == TokenKind.keyword_icon:
                     result.data = [TeleportKind.friend_icon]
+                elif x.kind == TokenKind.string:
+                    # Quoted names are literal text, including Chinese names
+                    # and names containing spaces. Do not include the quotes.
+                    result.data = [TeleportKind.friend_name, x.value]
                 elif self.tokens[self.i].kind == TokenKind.END_LINE:
                     result.data = [TeleportKind.friend_name, IdentExpression(x.literal)]
                 else:

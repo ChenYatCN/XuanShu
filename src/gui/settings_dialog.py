@@ -31,6 +31,8 @@ from src.gui.icon_manager import (
     update_desktop_shortcut,
 )
 from src.settings_manager import DEFAULT_SETTINGS, DEFAULT_THEME, RESTART_REQUIRED_KEYS
+from src.quest_party import FRIEND_ICON_PRESETS
+from src.gui.widgets import FlowLayout, ThemedCheckBox
 
 
 class _NoScrollComboBox(QComboBox):
@@ -120,6 +122,7 @@ def show_settings_dialog(ctx):
     scroll.setWidget(scroll_widget)
 
     widgets = {}  # key -> widget
+    multi_select_widgets = {}  # key -> {client title: checkbox}
 
     def _add_checkbox(form, key, label_key):
         cb = QCheckBox(tl(label_key))
@@ -134,6 +137,42 @@ def show_settings_dialog(ctx):
         combo.setCurrentText(str(val) if val else "None")
         form.addRow(tl(label_key), combo)
         widgets[key] = combo
+
+    def _add_client_multi_select(form, key, label_key, client_options):
+        container = QWidget()
+        flow = FlowLayout(
+            container,
+            margin=0,
+            horizontal_spacing=10,
+            vertical_spacing=2,
+        )
+        selected = {
+            str(title).strip().casefold()
+            for title in current.get(key, DEFAULT_SETTINGS.get(key, [])) or []
+        }
+        checkboxes = {}
+        for option in client_options:
+            value = option["value"]
+            checkbox = ThemedCheckBox(
+                option["label"],
+                accent_color=ctx.btn_color_hex,
+                text_color=ctx.text_color,
+                background_color=ctx.alt_bg,
+            )
+            option_aliases = {
+                str(alias).strip().casefold()
+                for alias in option.get("aliases", [value])
+            }
+            checkbox.setChecked(bool(option_aliases.intersection(selected)))
+            flow.addWidget(checkbox)
+            checkboxes[value] = checkbox
+        if not client_options:
+            empty_label = QLabel(tl("setting_quest_party_no_clients"))
+            empty_label.setStyleSheet("color: rgba(255,255,255,100);")
+            flow.addWidget(empty_label)
+        form.addRow(tl(label_key), container)
+        multi_select_widgets[key] = checkboxes
+        return container, checkboxes
 
     # ---- General ----
     general_group = QGroupBox(tl("settings_general"))
@@ -375,12 +414,246 @@ def show_settings_dialog(ctx):
     questing_form = QFormLayout(questing_group)
     questing_form.setSpacing(4)
 
+    launcher_state = ctx.exports.get("launcher", {})
+    hooked_data = launcher_state.get("last_hooked_data", {})
+    live_client_options = []
+    for info in hooked_data.get("hooked", []):
+        title = str(info.get("title", "")).strip()
+        if not title:
+            continue
+        nickname = str(info.get("account_nick", "")).strip()
+        stable_id = str(info.get("stable_id", "")).strip() or f"title:{title.casefold()}"
+        live_client_options.append(
+            {
+                "title": title,
+                "label": f"{title}（{nickname}）" if nickname else title,
+                "value": stable_id,
+                "aliases": [stable_id, title, f"title:{title.casefold()}"],
+            }
+        )
+
+    _add_checkbox(
+        questing_form,
+        "quest_party_enabled",
+        "setting_quest_party_enabled",
+    )
+    quester_container, quester_checks = _add_client_multi_select(
+        questing_form,
+        "questing_clients",
+        "setting_questing_clients",
+        live_client_options,
+    )
+    hitter_container, hitter_checks = _add_client_multi_select(
+        questing_form,
+        "questing_hitter_clients",
+        "setting_questing_hitter_clients",
+        live_client_options,
+    )
+    party_note = QLabel(tl("setting_quest_party_note"))
+    party_note.setWordWrap(True)
+    party_note.setStyleSheet("color: rgba(255,255,255,120); font-size: 10px;")
+    questing_form.addRow("", party_note)
+
+    for option in live_client_options:
+        identity = option["value"]
+        quester_box = quester_checks[identity]
+        hitter_box = hitter_checks[identity]
+        quester_box.toggled.connect(
+            lambda checked, other=hitter_box: other.setChecked(False)
+            if checked
+            else None
+        )
+        hitter_box.toggled.connect(
+            lambda checked, other=quester_box: other.setChecked(False)
+            if checked
+            else None
+        )
+
+    friend_icon_widget = QWidget()
+    friend_icon_layout = QVBoxLayout(friend_icon_widget)
+    friend_icon_layout.setContentsMargins(0, 0, 0, 0)
+    friend_icon_layout.setSpacing(2)
+    friend_icon_rows = {}
+    friend_icon_combos = {}
+    saved_friend_icons = current.get("quest_friend_icons", {}) or {}
+
+    for option in live_client_options:
+        identity = option["value"]
+        aliases = {
+            str(alias).strip().casefold()
+            for alias in option.get("aliases", [identity])
+        }
+        saved_icon = next(
+            (
+                value
+                for saved_identity, value in saved_friend_icons.items()
+                if str(saved_identity).strip().casefold() in aliases
+                and isinstance(value, dict)
+            ),
+            None,
+        )
+
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+        row_layout.addWidget(QLabel(option["label"]))
+        icon_combo = _NoScrollComboBox()
+        icon_combo.setMinimumWidth(120)
+        icon_combo.addItem(tl("setting_quest_friend_icon_none"), None)
+        for preset_name, preset_value in FRIEND_ICON_PRESETS.items():
+            icon_combo.addItem(
+                tl(f"setting_quest_friend_icon_{preset_name}"), preset_value
+            )
+        if saved_icon is not None:
+            try:
+                saved_value = (
+                    int(saved_icon.get("icon_list")),
+                    int(saved_icon.get("icon_index")),
+                )
+            except (TypeError, ValueError):
+                saved_value = None
+            saved_index = icon_combo.findData(saved_value)
+            if saved_index >= 0:
+                icon_combo.setCurrentIndex(saved_index)
+        row_layout.addWidget(icon_combo, 1)
+        friend_icon_layout.addWidget(row)
+        friend_icon_rows[identity] = row
+        friend_icon_combos[identity] = icon_combo
+
+    friend_icon_note = QLabel(tl("setting_quest_friend_icon_note"))
+    friend_icon_note.setWordWrap(True)
+    friend_icon_note.setStyleSheet(
+        "color: rgba(255,255,255,120); font-size: 10px;"
+    )
+    friend_icon_layout.addWidget(friend_icon_note)
+    questing_form.addRow(tl("setting_quest_friend_icons"), friend_icon_widget)
+
+    def _refresh_friend_icon_rows():
+        any_visible = False
+        for identity, row in friend_icon_rows.items():
+            visible = quester_checks[identity].isChecked()
+            row.setVisible(visible)
+            any_visible = any_visible or visible
+        friend_icon_note.setVisible(any_visible)
+        friend_icon_widget.setVisible(any_visible)
+
+    for box in quester_checks.values():
+        box.toggled.connect(_refresh_friend_icon_rows)
+    _refresh_friend_icon_rows()
+
+    assignment_mode = _NoScrollComboBox()
+    assignment_mode.addItem(tl("setting_quest_assignment_auto"), "auto")
+    assignment_mode.addItem(tl("setting_quest_assignment_manual"), "manual")
+    saved_mode = str(current.get("quest_hitter_assignment_mode", "auto"))
+    assignment_mode.setCurrentIndex(max(0, assignment_mode.findData(saved_mode)))
+    questing_form.addRow(tl("setting_quest_assignment_mode"), assignment_mode)
+    widgets["quest_hitter_assignment_mode"] = assignment_mode
+
+    manual_mapping_widget = QWidget()
+    manual_mapping_layout = QVBoxLayout(manual_mapping_widget)
+    manual_mapping_layout.setContentsMargins(0, 0, 0, 0)
+    manual_mapping_layout.setSpacing(2)
+    manual_assignment_rows = {}
+    manual_assignment_combos = {}
+    saved_assignments = current.get("quest_hitter_assignments", {}) or {}
+    for option in live_client_options:
+        identity = option["value"]
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+        row_layout.addWidget(QLabel(f"{option['label']} →"))
+        combo = _NoScrollComboBox()
+        combo.setMinimumWidth(120)
+        row_layout.addWidget(combo, 1)
+        manual_mapping_layout.addWidget(row)
+        manual_assignment_rows[identity] = row
+        manual_assignment_combos[identity] = combo
+    questing_form.addRow(tl("setting_quest_manual_assignments"), manual_mapping_widget)
+
+    def _refresh_manual_assignments():
+        manual = assignment_mode.currentData() == "manual"
+        selected_questers = [
+            option
+            for option in live_client_options
+            if quester_checks[option["value"]].isChecked()
+        ]
+        for hitter_id, combo in manual_assignment_combos.items():
+            hitter_option = next(
+                option
+                for option in live_client_options
+                if option["value"] == hitter_id
+            )
+            hitter_aliases = {
+                str(alias).strip().casefold()
+                for alias in hitter_option.get("aliases", [])
+            }
+            saved_target = next(
+                (
+                    target
+                    for saved_hitter, target in saved_assignments.items()
+                    if str(saved_hitter).strip().casefold() in hitter_aliases
+                ),
+                None,
+            )
+            previous = combo.currentData() or saved_target
+            if previous:
+                previous_key = str(previous).strip().casefold()
+                previous = next(
+                    (
+                        option["value"]
+                        for option in selected_questers
+                        if previous_key
+                        in {
+                            str(alias).strip().casefold()
+                            for alias in option.get("aliases", [])
+                        }
+                    ),
+                    previous,
+                )
+            combo.blockSignals(True)
+            combo.clear()
+            for option in selected_questers:
+                combo.addItem(option["label"], option["value"])
+            if previous:
+                index = combo.findData(previous)
+                if index >= 0:
+                    combo.setCurrentIndex(index)
+            combo.blockSignals(False)
+            manual_assignment_rows[hitter_id].setVisible(
+                manual and hitter_checks[hitter_id].isChecked()
+            )
+        manual_mapping_widget.setVisible(
+            manual and any(box.isChecked() for box in hitter_checks.values())
+        )
+
+    assignment_mode.currentIndexChanged.connect(_refresh_manual_assignments)
+    for box in quester_checks.values():
+        box.toggled.connect(_refresh_manual_assignments)
+    for box in hitter_checks.values():
+        box.toggled.connect(_refresh_manual_assignments)
+    _refresh_manual_assignments()
+
     _add_client_combo(questing_form, "client_to_boost", "setting_client_to_boost")
     _add_checkbox(questing_form, "friend_teleport", "setting_friend_teleport")
     _add_checkbox(
         questing_form, "gear_switching_in_solo_zones", "setting_gear_switching"
     )
     _add_client_combo(questing_form, "hitter_client", "setting_hitter_client")
+
+    def _update_party_controls(enabled):
+        quester_container.setEnabled(enabled)
+        hitter_container.setEnabled(enabled)
+        assignment_mode.setEnabled(enabled)
+        manual_mapping_widget.setEnabled(enabled)
+        friend_icon_widget.setEnabled(enabled)
+        party_note.setEnabled(enabled)
+        widgets["client_to_boost"].setEnabled(not enabled)
+        widgets["hitter_client"].setEnabled(not enabled)
+
+    widgets["quest_party_enabled"].toggled.connect(_update_party_controls)
+    _update_party_controls(widgets["quest_party_enabled"].isChecked())
 
     layout.addWidget(questing_group)
 
@@ -463,12 +736,64 @@ def show_settings_dialog(ctx):
                 values[key] = w.value()
             elif isinstance(w, QComboBox):
                 text = w.currentText()
-                if key in ("client_to_follow", "client_to_boost", "hitter_client"):
+                if key == "quest_hitter_assignment_mode":
+                    values[key] = w.currentData()
+                elif key in ("client_to_follow", "client_to_boost", "hitter_client"):
                     values[key] = None if text == "None" else text
                 else:
                     values[key] = text
             elif isinstance(w, QLineEdit):
                 values[key] = w.text()
+        for key, checkboxes in multi_select_widgets.items():
+            if checkboxes:
+                visible_aliases = {
+                    str(alias).strip().casefold()
+                    for option in live_client_options
+                    for alias in option.get("aliases", [])
+                }
+                unseen_saved = [
+                    saved_value
+                    for saved_value in current.get(key, []) or []
+                    if str(saved_value).strip().casefold() not in visible_aliases
+                ]
+                values[key] = unseen_saved + [
+                    title for title, checkbox in checkboxes.items() if checkbox.isChecked()
+                ]
+            else:
+                # Opening settings before clients are injected must not erase a
+                # previously saved party configuration.
+                values[key] = list(current.get(key, DEFAULT_SETTINGS.get(key, [])) or [])
+        visible_aliases = {
+            str(alias).strip().casefold()
+            for option in live_client_options
+            for alias in option.get("aliases", [])
+        }
+        values["quest_hitter_assignments"] = {
+            hitter_id: quester_id
+            for hitter_id, quester_id in (
+                current.get("quest_hitter_assignments", {}) or {}
+            ).items()
+            if str(hitter_id).strip().casefold() not in visible_aliases
+        }
+        values["quest_hitter_assignments"].update({
+            hitter_id: combo.currentData()
+            for hitter_id, combo in manual_assignment_combos.items()
+            if hitter_checks[hitter_id].isChecked() and combo.currentData()
+        })
+        values["quest_friend_icons"] = {
+            quester_id: icon
+            for quester_id, icon in saved_friend_icons.items()
+            if str(quester_id).strip().casefold() not in visible_aliases
+        }
+        values["quest_friend_icons"].update({
+            quester_id: {
+                "icon_list": preset[0],
+                "icon_index": preset[1],
+            }
+            for quester_id, combo in friend_icon_combos.items()
+            if quester_checks[quester_id].isChecked()
+            and (preset := combo.currentData()) is not None
+        })
         return values
 
     saved = [False]

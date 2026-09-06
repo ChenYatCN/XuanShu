@@ -231,25 +231,28 @@ async def fetch_fish_list(fishing_manager):
         except RuntimeError:
             await asyncio.sleep(0.1)
 
-async def banish_config(fishing_manager):
+async def banish_config(fishing_manager, config=None):
+    is_chest, school, rank, fish_id, size_min, size_max = (
+        config if config is not None else (IS_CHEST, SCHOOL, RANK, ID, SIZE_MIN, SIZE_MAX)
+    )
     kept_fish = []
     for fish in await fetch_fish_list(fishing_manager):
         fish_temp = await fish.template()
         fish_is_accepted = True
         fish_size = await fish.size()
-        if (await fish.is_chest()) != IS_CHEST:
+        if (await fish.is_chest()) != is_chest:
             fish_is_accepted = False
 
-        if (SCHOOL != "Any") and (await fish_temp.school_name() != SCHOOL):
+        if (school != "Any") and (await fish_temp.school_name() != school):
             fish_is_accepted = False
 
-        if (RANK != 0) and (await fish_temp.rank() != RANK):
+        if (rank != 0) and (await fish_temp.rank() != rank):
             fish_is_accepted = False
 
-        if (ID != 0) and (await fish.template_id() != ID):
+        if (fish_id != 0) and (await fish.template_id() != fish_id):
             fish_is_accepted = False
 
-        if fish_size < SIZE_MIN or fish_size > SIZE_MAX:
+        if fish_size < size_min or fish_size > size_max:
             fish_is_accepted = False
 
         if not fish_is_accepted:
@@ -258,8 +261,8 @@ async def banish_config(fishing_manager):
             kept_fish.append(fish)
     return kept_fish
 
-async def refresh_pond(client, fishing_manager):
-    fish_list = await banish_config(fishing_manager)
+async def refresh_pond(client, fishing_manager, config=None):
+    fish_list = await banish_config(fishing_manager, config)
     while len(fish_list) == 0:
         fish_windows = await client.root_window.get_windows_with_name("FishingWindow")
         while len(fish_windows) == 0:
@@ -281,7 +284,7 @@ async def refresh_pond(client, fishing_manager):
             except RuntimeError:
                 await asyncio.sleep(0.1)
         await asyncio.sleep(.5)
-        fish_list = await banish_config(fishing_manager)
+        fish_list = await banish_config(fishing_manager, config)
 
 async def main():
     handler = ClientHandler()

@@ -3,6 +3,7 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QAbstractSpinBox,
     QComboBox,
+    QSizePolicy,
     QDoubleSpinBox,
     QGridLayout,
     QGroupBox,
@@ -15,6 +16,8 @@ from PyQt6.QtWidgets import (
 )
 
 from src.gui.commands import GUICommand, GUICommandType, GUIKeys
+from src.gui.tab_actions import _build_client_toolbar
+from src.gui.widgets import ThemedCheckBox
 
 
 _SCHOOLS = ["Any", "Fire", "Ice", "Storm", "Myth", "Life", "Death", "Balance"]
@@ -90,17 +93,39 @@ def build_fishing_tab(ctx):
     current = ctx.settings.get_settings()
     tl = ctx.tl
 
+    toolbar, target_flow, all_clients, running_label = _build_client_toolbar(
+        ctx, None, None, with_status=True)
+    checks = {}
+    active_groups = []
+    updating = [False]
+    initialized_clients = [False]
+    target_flow.removeWidget(running_label)
+    target_flow.setAlignment(Qt.AlignmentFlag.AlignLeft)
+    toolbar.setObjectName("FishingClientSelector")
+    running_label.setObjectName("FishingRunningGroups")
+    running_label.setWordWrap(True)
+    running_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    running_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+    running_label.show()
+
+    content = QWidget()
+    content_layout = QVBoxLayout(content)
+    content_layout.setContentsMargins(0, 0, 0, 0)
+    content_layout.setSpacing(4)
+    outer.addWidget(content)
+    outer.addStretch()
+
     chest_group = QGroupBox(tl("fish_chest_filter"))
     filters_row = QHBoxLayout()
     filters_row.setSpacing(8)
 
     chest_layout = QVBoxLayout(chest_group)
-    chest_layout.setContentsMargins(10, 18, 10, 8)
+    chest_layout.setContentsMargins(10, 10, 10, 6)
     chest_only = QPushButton(tl("fish_mode_chest"))
     chest_only.setCheckable(True)
     chest_only.setChecked(bool(current.get("fish_chest_only", False)))
     chest_only.setCursor(Qt.CursorShape.PointingHandCursor)
-    chest_only.setMinimumSize(180, 46)
+    chest_only.setMinimumSize(160, 36)
     _configure_icon_toggle(ctx, chest_only, _chest_svg(ctx.stroke_color))
     chest_layout.addWidget(chest_only)
     chest_hint = QLabel(tl("fish_chest_hint"))
@@ -172,77 +197,212 @@ def build_fishing_tab(ctx):
     form.addWidget(QLabel(tl("fish_size_max")), 2, 0)
     form.addWidget(size_max, 2, 1)
 
+    reset = QPushButton()
+    reset.setObjectName("ResetFishFilters")
+    reset.setAccessibleName(tl("fish_reset_filters"))
+    reset.setToolTip(tl("fish_reset_filters"))
+    reset.setCursor(Qt.CursorShape.PointingHandCursor)
+    reset.setFixedSize(32, 32)
+    reset_svg = f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+        fill="none" stroke="{ctx.stroke_color}" stroke-width="1.8"
+        stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 10a9 9 0 1 1 2 8M3 4v6h6"/>
+    </svg>'''
+    _configure_icon_toggle(ctx, reset, reset_svg)
+    reset.setIconSize(QSize(22, 22))
+    reset.setStyleSheet(
+        "QPushButton { padding: 3px; border: none; border-radius: 5px; background: transparent; }"
+        f"QPushButton:hover {{ background: {_rgba(ctx.stroke_color, 28)}; }}"
+    )
+
+    def _reset_filters():
+        school.setCurrentIndex(0)
+        rank.setValue(0)
+        fish_id.setValue(0)
+        size_min.setValue(0)
+        size_max.setValue(999)
+
+    reset.clicked.connect(_reset_filters)
+    form.addWidget(reset, 2, 3, alignment=Qt.AlignmentFlag.AlignRight)
+
     field_style = _filter_field_style(ctx)
     for field in (school, rank, fish_id, size_min, size_max):
         field.setStyleSheet(field_style)
+        field.setMinimumHeight(max(32, field.sizeHint().height()))
 
     form.setColumnStretch(1, 1)
     form.setColumnStretch(3, 1)
 
+    fish_group.setMinimumHeight(form.sizeHint().height() + 20)
     filters_row.addWidget(fish_group, 2)
-    outer.addLayout(filters_row)
+    content_layout.addLayout(filters_row)
 
     hint = QLabel(tl("fish_start_hint"))
     hint.setWordWrap(True)
     hint.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
     hint.setStyleSheet(f"color: {ctx.text_color}; font-style: italic;")
-    outer.addWidget(hint)
+    content_layout.addWidget(hint)
 
     toggle_row = QHBoxLayout()
-    toggle_row.setContentsMargins(0, 12, 0, 0)
-    toggle_row.addStretch()
-    toggle = QPushButton(tl("auto_fish"))
-    toggle.setCheckable(True)
+    toggle_row.setContentsMargins(0, 2, 0, 0)
+    toggle_row.setSpacing(8)
+    toggle_row.addWidget(toolbar, 1, Qt.AlignmentFlag.AlignVCenter)
+    toggle = QPushButton()
+    toggle.setObjectName("ToggleFishingGroup")
     toggle.setCursor(Qt.CursorShape.PointingHandCursor)
-    toggle.setMinimumSize(180, 48)
-    _configure_icon_toggle(ctx, toggle, _fish_svg(ctx.stroke_color))
+    toggle.setFixedSize(40, 40)
+    toggle.setIconSize(QSize(32, 32))
+    toggle.setStyleSheet(ctx.icon_btn_style)
     toggle_row.addWidget(toggle)
-    toggle_row.addStretch()
+    toggle_row.addWidget(running_label, 1)
     outer.addLayout(toggle_row)
-    outer.addStretch()
 
     ctx.widget_tags["Auto FishStatus"] = toggle
 
     fish_filter_widgets = [school, rank, fish_id, size_min, size_max]
-    is_running = [False]
 
-    def _sync_filter_state():
-        chest_only.setEnabled(not is_running[0])
-        fish_filters_enabled = not is_running[0] and not chest_only.isChecked()
-        fish_group.setEnabled(fish_filters_enabled)
-        for widget in fish_filter_widgets:
-            widget.setEnabled(fish_filters_enabled)
+    def selected_clients():
+        return [title for title, check in checks.items() if check.isChecked()]
 
-    chest_only.toggled.connect(lambda _checked: _sync_filter_state())
-    _sync_filter_state()
-
-    def _toggle_fishing(checked: bool):
-        values = {
+    def _values():
+        return {
             "fish_chest_only": chest_only.isChecked(),
             "fish_school": str(school.currentData()),
-            "fish_rank": rank.value(),
-            "fish_id": fish_id.value(),
+            "fish_rank": rank.value(), "fish_id": fish_id.value(),
             "fish_size_min": size_min.value(),
-            "fish_size_max": size_max.value(),
+            "fish_size_max": max(size_min.value(), size_max.value()),
         }
 
-        if values["fish_size_max"] < values["fish_size_min"]:
-            values["fish_size_max"] = values["fish_size_min"]
-            size_max.setValue(values["fish_size_max"])
+    def _sync_filter_state():
+        if updating[0]:
+            return
+        selected = set(selected_clients())
+        overlaps = [g for g in active_groups if selected.intersection(g["clients"])]
+        running = bool(overlaps)
+        toggle.setIcon(ctx.titlebar_svg_icon(_fish_svg(ctx.stroke_color), 32))
+        description = tl("fish_start_selected")
+        toggle.setToolTip(description)
+        toggle.setAccessibleName(description)
+        toggle.setEnabled(bool(selected) and not running)
+        chest_only.setEnabled(not running)
+        fish_group.setEnabled(not running and not chest_only.isChecked())
+        stop_selected.setEnabled(running)
 
+    def _selection_changed():
+        if updating[0]:
+            return
+        updating[0] = True
+        all_clients.setChecked(bool(checks) and all(c.isChecked() for c in checks.values()))
+        # Selecting exactly one running group displays its actual configuration.
+        selected = set(selected_clients())
+        group = next((g for g in active_groups if set(g['clients']) == selected), None)
+        if group:
+            values = group['settings']
+            chest_only.setChecked(bool(values.get('fish_chest_only', False)))
+            school.setCurrentIndex(max(0, school.findData(values.get('fish_school', 'Any'))))
+            rank.setValue(values.get('fish_rank', 0))
+            fish_id.setValue(values.get('fish_id', 0))
+            size_min.setValue(values.get('fish_size_min', 0))
+            size_max.setValue(values.get('fish_size_max', 999))
+        updating[0] = False
+        _sync_filter_state()
+
+    def _toggle_all(checked):
+        if updating[0]:
+            return
+        updating[0] = True
+        for check in checks.values():
+            check.setChecked(checked)
+        updating[0] = False
+        _selection_changed()
+
+    stop_selected = QPushButton()
+    stop_selected.setObjectName("StopFishingGroup")
+    stop_selected.setFixedSize(40, 40)
+    stop_selected.setIconSize(QSize(32, 32))
+    stop_selected.setCursor(Qt.CursorShape.PointingHandCursor)
+    stop_selected.setStyleSheet(ctx.icon_btn_style)
+    stop_selected.setToolTip(tl("fish_stop_selected"))
+    stop_selected.setAccessibleName(tl("fish_stop_selected"))
+    stop_selected_svg = ctx.svgs['kill']
+    stop_selected.setIcon(ctx.titlebar_svg_icon(stop_selected_svg, 32))
+    ctx.tracked_svg_labels.append([stop_selected, stop_selected_svg, 32, "icon"])
+    toggle_row.insertWidget(toggle_row.count() - 1, stop_selected)
+
+
+    def _start_fishing(_checked=False):
+        selected = selected_clients()
+        if not selected or any(set(selected).intersection(g['clients']) for g in active_groups):
+            return
+        values = _values()
+        size_max.setValue(values['fish_size_max'])
         ctx.settings.set_settings(values)
-        ctx.send_queue.put(GUICommand(GUICommandType.UpdateSettings, values))
-        ctx.send_queue.put(GUICommand(GUICommandType.ToggleOption, GUIKeys.toggle_auto_fish))
-        is_running[0] = checked
+        ctx.send_queue.put(GUICommand(GUICommandType.StartFishingGroup,
+                                     {"clients": selected, "settings": values}))
         _sync_filter_state()
 
-    toggle.clicked.connect(_toggle_fishing)
-
-    def _set_running(running_state: bool):
-        toggle.setChecked(running_state)
-        is_running[0] = bool(running_state)
+    def _stop_fishing(_checked=False):
+        selected = selected_clients()
+        if selected and any(set(selected).intersection(g['clients']) for g in active_groups):
+            ctx.send_queue.put(GUICommand(GUICommandType.StopFishingGroup, {"clients": selected}))
         _sync_filter_state()
 
-    ctx.exports["fishing"] = {"set_running": _set_running}
+    def _toggle_fishing():
+        # Preserve the keyboard shortcut while keeping the two UI actions fixed.
+        if any(set(selected_clients()).intersection(g['clients']) for g in active_groups):
+            _stop_fishing()
+        else:
+            _start_fishing()
 
+    def set_available_clients(titles):
+        titles = sorted(dict.fromkeys(t for t in titles if t),
+                        key=lambda t: (0, int(t[1:])) if t.lower().startswith('p') and t[1:].isdigit() else (1, t))
+        previous = {t: c.isChecked() for t, c in checks.items()}
+        select_all = (not initialized_clients[0] and bool(titles)) or all_clients.isChecked()
+        updating[0] = True
+        for check in checks.values():
+            target_flow.removeWidget(check)
+            check.setParent(None)
+            check.deleteLater()
+        checks.clear()
+        for title in titles:
+            check = ThemedCheckBox(title, ctx.stroke_color, ctx.text_color, ctx.alt_bg)
+            check.setChecked(select_all or previous.get(title, False))
+            check.toggled.connect(_selection_changed)
+            checks[title] = check
+            target_flow.addWidget(check)
+        all_clients.setEnabled(bool(titles))
+        initialized_clients[0] = bool(titles)
+        updating[0] = False
+        _selection_changed()
+
+    def set_running_groups(groups):
+        active_groups[:] = groups or []
+        display = '、'.join('+'.join(g['clients']) for g in active_groups)
+        running_label.setText(tl('bot_running_groups').replace('{groups}', display) if display else '')
+        running_label.setToolTip(running_label.text())
+        _sync_filter_state()
+
+    def retheme():
+        for check in (all_clients, *checks.values()):
+            check.set_theme_colors(ctx.stroke_color, ctx.text_color, ctx.alt_bg)
+        running_label.setStyleSheet(f"color: {ctx.stroke_color};")
+
+        toggle.setStyleSheet(ctx.icon_btn_style)
+        stop_selected.setStyleSheet(ctx.icon_btn_style)
+        _sync_filter_state()
+
+    chest_only.toggled.connect(lambda _: _sync_filter_state())
+    all_clients.toggled.connect(_toggle_all)
+    all_clients.setEnabled(False)
+    toggle.clicked.connect(_start_fishing)
+    stop_selected.clicked.connect(_stop_fishing)
+    _sync_filter_state()
+    ctx.exports["fishing"] = {
+        "retheme": retheme,
+        "set_running": lambda _: _sync_filter_state(),
+        "set_available_clients": set_available_clients,
+        "set_running_groups": set_running_groups,
+        "toggle_selected": lambda: _toggle_fishing(),
+    }
     return tab

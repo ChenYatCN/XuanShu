@@ -7,6 +7,10 @@ from loguru import logger
 
 import re
 from src.auto_pet import auto_pet
+from src.interaction_prompts import (
+    is_dungeon_entry_prompt, interaction_kind, quest_has_action,
+    split_quest_location, collect_object_name, portal_kind, resolve_portal_destination,
+)
 from src.teleport_math import *
 from wizwalker import XYZ, Keycode, MemoryReadError, Client, Rectangle, HookAlreadyActivated, HookNotActive
 from wizwalker.file_readers.wad import Wad
@@ -26,6 +30,7 @@ class Quester():
         self.current_leader_client = client
         self.current_leader_pid = leader_pid
         self.d_location = None
+        self._krok_exit_watch = {}
 
     async def read_quest_txt(self, client: Client) -> str:
         try:
@@ -38,6 +43,11 @@ class Quester():
     async def read_spiral_door_title(self, client: Client) -> str:
         try:
             title_text_path = await get_window_from_path(client.root_window, spiral_door_title_path)
+            # UniverseMap.gui contains a hidden streamTitle whose default is
+            # Streamportal even at ordinary world gates. Only a displayed title
+            # identifies a special portal; the tracked quest selects the world.
+            if not title_text_path or not await title_text_path.is_visible():
+                return ""
             title = await title_text_path.maybe_text()
         except:
             title = ""
@@ -55,11 +65,7 @@ class Quester():
     async def detected_interact_from_popup(self, p: Client) -> bool:
         txtmsg = await self.read_popup(p)
 
-        msg = txtmsg.lower()
-        if not 'to talk' in msg and not 'to open' in msg and not 'to collect' in msg:
-            return True
-        else:
-            return False
+        return bool(txtmsg) and interaction_kind(txtmsg) not in {"talk", "open", "collect"}
 
     async def is_position_safe(self, position: XYZ, safe_distance: float = 1000) -> bool:
         sp = SprintyClient(self.client)
@@ -83,10 +89,7 @@ class Quester():
         # '<center>Collect Cog in Triton Avenue (0 of 3)</center>'
         # -> 'Cog'
         s = await self.read_quest_txt(self.client)
-        res = re.findall(r"\w+\s+(.*)\s+in.*", s)
-        if len(res) == 0:
-            return ''
-        return res[0].strip()
+        return collect_object_name(s)
 
     # TODO: Does this need a client?
     async def get_quest_zone_name(self, c: Client) -> str:
@@ -96,15 +99,7 @@ class Quester():
 
         query = await self.read_quest_txt(c)
 
-        stopwords = ['<center>','</center>']
-        querywords = query.split()
-        resultwords  = [word for word in querywords if word.lower() not in stopwords]
-        s = ' '.join(resultwords)
-
-        res = re.findall(r"\s+in\s+([^\(]*)", s)
-        if len(res) == 0:
-            return ''
-        return res[0].strip()
+        return split_quest_location(query)[1]
 
     async def get_truncated_quest_objectives(self, p: Client) -> str:
         quest_objective = await get_quest_name(p)
@@ -391,22 +386,17 @@ class Quester():
 
     async def find_quest_zone_area_name(self, client: Client, door_locations: list) -> Optional[str]:
         location = await self.get_quest_zone_name(client)
-        location = location.lower()
-        parts_of_string = location.split(" ")
-        for piece in parts_of_string:
-            for d_location in door_locations:
-                if piece in d_location:
-                    self.d_location = d_location
-                    return d_location
+        self.d_location = resolve_portal_destination(location, door_locations)
+        return self.d_location
 
     async def new_world_doors(self, client: Client) -> bool:
-        if "Streamportal" in await self.read_spiral_door_title(client):
-            location = await self.find_quest_zone_area_name(client, streamportal_locations)
-            await new_portals_cycle(client, location)
-            return True
-
-        elif "Nanavator" in await self.read_spiral_door_title(client):
-            location = await self.find_quest_zone_area_name(client, nanavator_locations)
+        kind = portal_kind(await self.read_spiral_door_title(client))
+        if kind in {"streamportal", "nanavator"}:
+            choices = streamportal_locations if kind == "streamportal" else nanavator_locations
+            location = await self.find_quest_zone_area_name(client, choices)
+            if location is None:
+                logger.warning(f"Client {client.title}: 无法确定特殊传送门的任务目的地，跳过传送。")
+                return True
             await new_portals_cycle(client, location)
             return True
 
@@ -414,6 +404,8 @@ class Quester():
 
     async def handle_spiral_navigation(self):
         if await self.new_world_doors(self.current_leader_client):
+            if self.d_location is None:
+                return
             for c in self.clients:
                 if c.process_id != self.current_leader_pid:
                     if await is_visible_by_path(c, spiral_door_teleport_path):
@@ -923,6 +915,84 @@ class Quester():
         )
         return False
 
+    async def teleport_to_quest_target(self, client, xyz, leader_client=None):
+        zone = await client.zone_name()
+        key = id(client)
+        if zone != "Krokotopia/KT_WorldTeleporter":
+            self._krok_exit_watch.pop(key, None)
+            await collision_tp(client, xyz, leader_client=leader_client)
+            return
+
+        async def interaction_pending():
+            return (await is_spiral_door_open(client)
+                    or (await is_visible_by_path(client, npc_range_path)
+                        and calc_Distance(await client.body.position(), xyz) < 750)
+                    or await is_visible_by_path(client, exit_dungeon_path))
+
+        # Give world-gate interaction priority over both movement and END.
+        if await client.is_loading() or await interaction_pending() or not await is_free(client):
+            self._krok_exit_watch.pop(key, None)
+            return
+
+        objective = await get_quest_name(leader_client or client)
+        target = (xyz.x, xyz.y, xyz.z)
+        before = await client.body.position()
+        state = self._krok_exit_watch.get(key)
+        if state is None or state['objective'] != objective or state['target'] != target:
+            state = dict(objective=objective, target=target, anchor=before,
+                         since=time.monotonic(), attempts=0, end_sent=False)
+            self._krok_exit_watch[key] = state
+
+        transition = [False]
+        async def watch_transition():
+            while True:
+                if await client.is_loading() or await client.zone_name() != zone:
+                    transition[0] = True
+                    return
+                await asyncio.sleep(.1)
+
+        # Observe loading during the existing teleport, without adding a dwell sleep.
+        watcher = asyncio.create_task(watch_transition())
+        try:
+            await collision_tp(client, xyz, leader_client=leader_client)
+        except BaseException:
+            self._krok_exit_watch.pop(key, None)
+            raise
+        finally:
+            watcher.cancel()
+            outcome = (await asyncio.gather(watcher, return_exceptions=True))[0]
+            if isinstance(outcome, Exception):
+                # A failed observation cannot establish that no loading occurred.
+                transition[0] = True
+
+        if (transition[0] or await client.is_loading() or await client.zone_name() != zone
+                or await interaction_pending() or not await is_free(client)
+                or await get_quest_name(leader_client or client) != objective):
+            self._krok_exit_watch.pop(key, None)
+            return
+
+        after = await client.body.position()
+        # Both endpoints must stay within the same small area across attempts.
+        if max(calc_Distance(before, state['anchor']),
+               calc_Distance(after, state['anchor'])) > 100:
+            state.update(anchor=after, since=time.monotonic(), attempts=0)
+            return
+        state['attempts'] += 1
+        if not objective or state['end_sent'] or state['attempts'] < 3 or time.monotonic() - state['since'] < 10:
+            return
+
+        state['end_sent'] = True
+        logger.debug(f"Client {client.title}: 克洛克传送室连续任务传送受阻，按 END 返回主城。")
+        await client.send_key(Keycode.END, 0.1)
+        try:
+            async with asyncio.timeout(15):
+                while await client.is_loading() or await client.zone_name() == zone:
+                    await asyncio.sleep(.1)
+        except TimeoutError:
+            logger.warning(f"Client {client.title}: END 回城尚未完成，本次受阻不重复按 END。")
+            return
+        self._krok_exit_watch.pop(key, None)
+
     async def teleport_to_quest(self, hitting_client: str, follower_clients: list[Client]):
         await asyncio.gather(*[self.leader_wait_for_free(p) for p in self.clients])
 
@@ -931,7 +1001,7 @@ class Quester():
             leader_objective = await self.get_truncated_quest_objectives(self.current_leader_client)
 
             # complex teleport logic for defeat quests to prevent mob battle separation
-            if 'defeat' in leader_objective.lower():
+            if quest_has_action(leader_objective, "defeat"):
                 # if the hitting client is the leader client, they would teleport first, forcing them into battle first
                 # we use a proxy leader client instead during battle teleports so that in the case that the hitting client is the leader, we can still teleport them last
                 ignore_hitter = True
@@ -977,7 +1047,7 @@ class Quester():
                 # leader client collided and got sent back
                 if distance < 20:
                     logger.debug('client ' + proxy_leader_client.title + ' collided on initial teleport')
-                    await collision_tp(client=proxy_leader_client, xyz=leader_client_objective_xyz, leader_client=self.current_leader_client)
+                    await self.teleport_to_quest_target(client=proxy_leader_client, xyz=leader_client_objective_xyz, leader_client=self.current_leader_client)
 
                 await asyncio.sleep(1.0)
                 while await proxy_leader_client.is_loading():
@@ -990,7 +1060,7 @@ class Quester():
                 if await proxy_leader_client.zone_name() != zone_before_teleport or detected_dungeon:
                     logger.debug('leader zone changed or interactible reached - syncing all clients')
                     try:
-                        await asyncio.gather(*[collision_tp(client=c, xyz=leader_client_objective_xyz, leader_client=self.current_leader_client) for c in followup_teleport_clients])
+                        await asyncio.gather(*[self.teleport_to_quest_target(client=c, xyz=leader_client_objective_xyz, leader_client=self.current_leader_client) for c in followup_teleport_clients])
                     except:
                         print(traceback.print_exc())
 
@@ -1019,9 +1089,15 @@ class Quester():
             # if we aren't doing a mob / boss fight, we have no need to stagger teleports
             # furthermore staggered teleports can break certain quests in dungeons for certain clients
             else:
-                await asyncio.gather(*[collision_tp(p, leader_client_objective_xyz, leader_client=self.current_leader_client) for p in self.clients])
+                await asyncio.gather(*[self.teleport_to_quest_target(p, leader_client_objective_xyz, leader_client=self.current_leader_client) for p in self.clients])
 
     async def handle_normal_quests(self, follower_clients: list[Client], questing_friend_tp: bool):
+        if await close_endorsement_window(self.current_leader_client):
+            return
+        if await is_spiral_door_open(self.current_leader_client):
+            self._krok_exit_watch.pop(id(self.current_leader_client), None)
+            await self.handle_spiral_navigation()
+            return
         # Handles chest reroll menu, will always cancel
         await asyncio.gather(*[safe_click_window(c, cancel_chest_roll_path) for c in self.clients])
         # confirm exit dungeon early button
@@ -1042,8 +1118,8 @@ class Quester():
 
                 # Handles interactables
                 sigil_msg_check = await self.read_popup(self.current_leader_client)
-                if "to enter" in sigil_msg_check.lower():
-                    while 'to enter' in sigil_msg_check.lower():
+                if is_dungeon_entry_prompt(sigil_msg_check):
+                    while is_dungeon_entry_prompt(sigil_msg_check):
                         logger.debug('Entering dungeon')
                         await asyncio.gather(*[p.send_key(Keycode.X, 0.1) for p in self.clients])
                         await asyncio.sleep(1.0)
@@ -1056,7 +1132,7 @@ class Quester():
                     await self.handle_dungeon_entry(questing_friend_tp, follower_clients)
                 else:
                     msg = sigil_msg_check.lower()
-                    if 'to talk' in msg:
+                    if interaction_kind(msg) == "talk":
                         await asyncio.gather(*[p.send_key(Keycode.X, 0.1) for p in self.clients])
                         logger.debug('Talking to NPC')
                         quest_updated = await self.handle_npc_talking_quests(
@@ -1066,7 +1142,7 @@ class Quester():
                             await asyncio.sleep(2.0)
                             return
 
-                    elif 'magic raft' in msg or 'to ride' in msg or 'to teleport' in msg:
+                    elif interaction_kind(msg) in {"ride", "teleport"}:
                         await self.current_leader_client.send_key(Keycode.X, 0.1)
                         await asyncio.sleep(1.0)
                         await asyncio.gather(*[p.send_key(Keycode.X, 0.1) for p in self.clients])
@@ -1093,13 +1169,13 @@ class Quester():
 
                     await asyncio.sleep(0.75)
 
-                    if await is_visible_by_path(self.current_leader_client, spiral_door_teleport_path):
+                    if await is_spiral_door_open(self.current_leader_client):
                         await self.handle_spiral_navigation()
             else:
                 # we may be on a photomancy quest
                 quest_objective = await get_quest_name(self.current_leader_client)
 
-                if "Photomance" in quest_objective:
+                if quest_has_action(quest_objective, "photomance"):
                     # Photomancy quests (WC, KM, LM)
                     await asyncio.gather(*[p.send_key(key=Keycode.Z, seconds=0.1) for p in self.clients])
                     await asyncio.gather(*[p.send_key(key=Keycode.Z, seconds=0.1) for p in self.clients])
@@ -1392,18 +1468,149 @@ class Quester():
                 last_leader_zone = await self.current_leader_client.zone_name()
                 iterations_since_last_quest_change = 0
 
+    async def handle_pending_dungeon_confirmation(self) -> bool:
+        """Confirm a dungeon transition modal even if it appeared late."""
+        if not await is_visible_by_path(self.client, exit_dungeon_path):
+            return False
+
+        zone_before = await self.client.zone_name()
+        logger.debug(
+            f"Client {self.client.title} - confirming pending dungeon transition."
+        )
+        await click_window_by_path(self.client, exit_dungeon_path)
+
+        # Do not wait forever if this was a slow or stale message box.  The
+        # next quest iteration can retry the click if it remains visible.
+        deadline = time.monotonic() + 15.0
+        saw_loading = False
+        while time.monotonic() < deadline:
+            if await self.client.is_loading():
+                saw_loading = True
+                await asyncio.sleep(0.1)
+                continue
+
+            current_zone = await self.client.zone_name()
+            if current_zone != zone_before:
+                if getattr(self.client, "quest_party_hitters", []):
+                    self.client.quest_party_quest_worker_zone = current_zone
+                    self.client.quest_party_probe_pending = True
+                break
+
+            if saw_loading or not await is_visible_by_path(
+                self.client, exit_dungeon_path
+            ):
+                break
+            await asyncio.sleep(0.1)
+
+        await asyncio.sleep(0.5)
+        return True
+
     async def handle_questing_zone_change(self):
-        if await is_visible_by_path(self.client, exit_dungeon_path):
-            async with self.client.mouse_handler:
-                await asyncio.sleep(1.0)
-                await click_window_by_path(self.client, exit_dungeon_path)
-                await self.client.wait_for_zone_change()
-                await asyncio.sleep(1.0)
-        else:
-            while await self.client.is_loading():
-                await asyncio.sleep(.1)
+        if await self.handle_pending_dungeon_confirmation():
+            return
+        while await self.client.is_loading():
+            await asyncio.sleep(.1)
+
+    async def prepare_party_dungeon_entry(self) -> list[Client]:
+        """Move assigned hitters to the entrance before everyone presses X."""
+        entry_clients = list(self.clients)
+        assigned_hitters = [
+            hitter
+            for hitter in getattr(self.client, "quest_party_hitters", [])
+            if getattr(hitter, "questing_status", False)
+        ]
+        if not assigned_hitters:
+            return entry_clients
+
+        deadline = time.monotonic() + 4.0
+        pending = list(assigned_hitters)
+        while pending and time.monotonic() < deadline:
+            quester_zone = await self.client.zone_name()
+            quester_position = await self.client.body.position()
+            for hitter in list(pending):
+                try:
+                    if (
+                        not await hitter.is_loading()
+                        and await hitter.zone_name() == quester_zone
+                        and await is_free(hitter)
+                    ):
+                        await hitter.teleport(quester_position)
+                        if hitter not in entry_clients:
+                            entry_clients.append(hitter)
+                        pending.remove(hitter)
+                except Exception as exc:
+                    logger.debug(
+                        f"Client {hitter.title} not ready for synchronized dungeon entry: {exc}"
+                    )
+            if pending:
+                await asyncio.sleep(0.25)
+
+        if pending:
+            logger.warning(
+                "The following hitters missed the synchronized dungeon entrance: "
+                + ", ".join(hitter.title for hitter in pending)
+            )
+        if len(entry_clients) > len(self.clients):
+            logger.info(
+                "Synchronized dungeon entry: "
+                + ", ".join(client.title for client in entry_clients)
+            )
+            await asyncio.sleep(0.5)
+        return entry_clients
+
+    async def _quest_party_probe_blocks_movement(self) -> bool:
+        """Pause quest movement until the assigned hitter finishes its zone probe."""
+        if not getattr(self.client, "quest_party_hitters", []):
+            return False
+        if await self.client.is_loading():
+            return True
+
+        try:
+            current_zone = await self.client.zone_name()
+        except Exception as exc:
+            logger.debug(
+                f"Client {self.client.title} could not verify its current zone; "
+                f"keeping quest movement paused: {exc}"
+            )
+            return True
+
+        worker_zone = getattr(
+            self.client, "quest_party_quest_worker_zone", None
+        )
+        if worker_zone is None:
+            self.client.quest_party_quest_worker_zone = current_zone
+        elif current_zone != worker_zone:
+            self.client.quest_party_quest_worker_zone = current_zone
+            self.client.quest_party_probe_pending = True
+            logger.debug(
+                f"Client {self.client.title} changed zones outside the previous "
+                "movement check; pausing quest movement for hitter probe."
+            )
+
+        return bool(getattr(self.client, "quest_party_probe_pending", False))
 
     async def auto_quest_solo(self, auto_pet_disabled=False, ignore_pet_level_up=False, play_dance_game=False):
+        if await close_endorsement_window(self.client):
+            return
+        # The confirmation can appear shortly after the movement that opened
+        # it, after handle_questing_zone_change already checked once.  Handle it
+        # at the top of every iteration so it cannot block auto questing.
+        if await self.handle_pending_dungeon_confirmation():
+            return
+
+        # A portal dialog may open after the preceding iteration's X check.
+        # Finish it before probing followers or teleporting to the quest again.
+        if await is_spiral_door_open(self.client):
+            self._krok_exit_watch.pop(id(self.client), None)
+            if not await self.new_world_doors(self.client):
+                await spiral_door_with_quest(self.client)
+            return
+
+        # In configurable quest-party mode the assigned hitter first probes a
+        # newly entered zone with friend teleport.  Do not start the next quest
+        # movement until that probe decides whether the zone is solo-only.
+        if await self._quest_party_probe_blocks_movement():
+            return
         if await is_free(self.client):
             if await is_potion_needed(self.client) and await self.client.stats.current_mana() > 1 and await self.client.stats.current_hitpoints() > 1:
                 await collect_wisps(self.client)
@@ -1424,10 +1631,28 @@ class Quester():
                 while self.client.entity_detect_combat_status:
                     await asyncio.sleep(.1)
 
-                await collision_tp(self.client, quest_xyz)
+                zone_before_quest_move = await self.client.zone_name()
+                await self.teleport_to_quest_target(self.client, quest_xyz)
 
                 # confirm exit dungeon early button or wait for client to exit loading
                 await self.handle_questing_zone_change()
+
+                if (
+                    getattr(self.client, "quest_party_hitters", [])
+                    and await self.client.zone_name() != zone_before_quest_move
+                ):
+                    # Set this from the quest worker itself, rather than relying
+                    # only on the follower's polling interval.  This guarantees
+                    # that no second quest teleport starts before the hitter has
+                    # probed the newly entered zone.
+                    self.client.quest_party_quest_worker_zone = (
+                        await self.client.zone_name()
+                    )
+                    self.client.quest_party_probe_pending = True
+                    logger.debug(
+                        f"Client {self.client.title} changed zones; pausing quest movement for hitter probe."
+                    )
+                    return
 
                 await asyncio.sleep(.5)
                 if await is_visible_by_path(self.client, cancel_chest_roll_path):
@@ -1438,19 +1663,46 @@ class Quester():
                 if await is_visible_by_path(self.client, npc_range_path) and calc_Distance(quest_xyz, current_pos) < 750.0:
                     # Handles interactables
                     sigil_msg_check = await self.read_popup(self.client)
-                    if "to enter" in sigil_msg_check.lower():
+                    if is_dungeon_entry_prompt(sigil_msg_check):
                         # Handles entering dungeons
-                        await asyncio.gather(*[p.send_key(Keycode.X, 0.1) for p in self.clients])
-                        for c in self.clients:
-                            while not await c.is_loading():
+                        entry_clients = await self.prepare_party_dungeon_entry()
+                        await asyncio.gather(
+                            *[p.send_key(Keycode.X, 0.1) for p in entry_clients]
+                        )
+                        loading_clients = []
+                        for c in entry_clients:
+                            loading_deadline = time.monotonic() + 15.0
+                            while (
+                                not await c.is_loading()
+                                and time.monotonic() < loading_deadline
+                            ):
                                 if await is_visible_by_path(c, dungeon_warning_path):
                                     await c.send_key(Keycode.ENTER, 0.1)
                                 await asyncio.sleep(0.1)
+                            if await c.is_loading():
+                                loading_clients.append(c)
+                            else:
+                                logger.warning(
+                                    f"Client {c.title} did not enter the dungeon in time."
+                                )
 
-                        for c in self.clients:
+                        for c in loading_clients:
                             while await c.is_loading():
                                 await asyncio.sleep(0.1)
-                    elif 'to talk' in sigil_msg_check.lower():
+                        if (
+                            getattr(self.client, "quest_party_hitters", [])
+                            and await self.client.zone_name()
+                            != zone_before_quest_move
+                        ):
+                            self.client.quest_party_quest_worker_zone = (
+                                await self.client.zone_name()
+                            )
+                            self.client.quest_party_probe_pending = True
+                            logger.debug(
+                                f"Client {self.client.title} entered a dungeon; pausing for hitter probe."
+                            )
+                            return
+                    elif interaction_kind(sigil_msg_check) == "talk":
                         logger.debug('Talking to NPC')
                         await self.client.send_key(Keycode.X, 0.1)
                         quest_updated = await self.handle_npc_talking_quests(
@@ -1464,14 +1716,14 @@ class Quester():
                         await self.client.send_key(Keycode.X, 0.1)
 
                         await asyncio.sleep(0.75)
-                        if await is_visible_by_path(self.client, spiral_door_teleport_path):
+                        if await is_spiral_door_open(self.client):
                             # Handles spiral door navigation
                             if await self.new_world_doors(self.client) == False:
                                 await spiral_door_with_quest(self.client)
 
                 quest_objective = await get_quest_name(self.client)
 
-                if "Photomance" in quest_objective:
+                if quest_has_action(quest_objective, "photomance"):
                     # Photomancy quests (WC, KM, LM)
                     await self.client.send_key(key=Keycode.Z, seconds=0.1)
                     await self.client.send_key(key=Keycode.Z, seconds=0.1)

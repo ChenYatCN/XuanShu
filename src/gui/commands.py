@@ -37,6 +37,9 @@ class GUICommandType(Enum):
     ExecuteFlythrough = auto()
     KillFlythrough = auto()
 
+    StartFishingGroup = auto()
+    StopFishingGroup = auto()
+
     ExecuteBot = auto()  # data: legacy text or {'text': str, 'clients': [title, ...]}
     KillBot = auto()     # data: None (all) or {'clients': [title, ...]}
 

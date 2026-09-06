@@ -19,7 +19,6 @@ from wizwalker import XYZ, Client, Keycode, Primitive, kernel32
 from wizwalker.combat import CombatMember
 from wizwalker.extensions.scripting.utils import (
     _click_on_friend,
-    _cycle_to_online_friends,
     _friend_list_entry,
     _maybe_get_named_window,
     _teleport_to_friend,
@@ -34,6 +33,7 @@ from wizwalker.utils import (
 )
 
 from src.dance_game_hook import attempt_deactivate_dance_hook
+from src.interaction_prompts import portal_kind, resolve_portal_destination, matches_text
 from src.paths import *
 from src.sprinty_client import SprintyClient
 
@@ -112,6 +112,29 @@ async def is_visible_by_path(client: Client, path: list[str]):
         return False
 
 
+async def close_endorsement_window(client: Client) -> bool:
+    """Close only the endorsement panel, using names verified in its GUI asset."""
+    windows = await client.root_window.get_windows_with_name("EndorsementWindow")
+    for window in windows:
+        if not await window.is_visible():
+            continue
+        for button in await window.get_windows_with_name("CloseEndorsementWindowButton"):
+            if await button.is_visible():
+                async with client.mouse_handler:
+                    await client.mouse_handler.click_window(button)
+                return True
+    return False
+
+
+async def is_friend_teleport_error(client: Client) -> bool:
+    # A Yes/No dungeon confirmation also has rightButton (No).
+    # Its centerButton (Yes) distinguishes it from the one-button error.
+    return (
+        await is_visible_by_path(client, friend_is_busy_and_dungeon_reset_path)
+        and not await is_visible_by_path(client, exit_dungeon_path)
+    )
+
+
 async def read_control_checkbox_text(checkbox: Window) -> str:
     return await checkbox.read_wide_string_from_offset(616)
 
@@ -119,9 +142,7 @@ async def read_control_checkbox_text(checkbox: Window) -> str:
 # Teleport to given world through spiral door
 async def go_to_new_world(p, destinationWorld, open_window: bool = True):
     if open_window:
-        while not await get_popup_title(
-            p
-        ) == "World Gate" and not await is_visible_by_path(p, spiral_door_path):
+        while portal_kind(await get_popup_title(p)) != "world_gate" and not await is_visible_by_path(p, spiral_door_path):
             await asyncio.sleep(0.1)
 
         while not await is_visible_by_path(p, spiral_door_path):
@@ -235,7 +256,7 @@ async def go_to_new_world(p, destinationWorld, open_window: bool = True):
             for child in await option_window[0].children():
                 if await child.name() in ["opt0", "opt1", "opt2", "opt3"]:
                     name = await read_control_checkbox_text(child)
-                    if name == spiralGateName:
+                    if name == spiralGateName or matches_text(name, f"WorldNames_{destinationWorld}"):
                         await p.mouse_handler.click_window_with_name(
                             zoneDoorOptions[worldIndex]
                         )
@@ -266,6 +287,8 @@ async def go_to_new_world(p, destinationWorld, open_window: bool = True):
 
 
 async def new_portals_cycle(client: Client, location: str):
+    if not location:
+        raise ValueError("Cannot select a portal without a recognized quest destination")
     option_window = await client.root_window.get_windows_with_name("optionWindow")
     assert len(option_window) == 1, str(option_window)
     for child in await option_window[0].children():
@@ -284,7 +307,7 @@ async def new_portals_cycle(client: Client, location: str):
         for child in await option_window[0].children():
             if await child.name() in ["opt0", "opt1", "opt2", "opt3"]:
                 name = await read_control_checkbox_text(child)
-                if name.lower() == spiralGateName.lower():
+                if resolve_portal_destination(name, [spiralGateName]) == spiralGateName:
                     async with client.mouse_handler:
                         await client.mouse_handler.click_window_with_name(
                             await child.name()
@@ -447,9 +470,7 @@ async def spiral_door(
 ):
     # optionally open the spiral door window
     if open_window:
-        while not await get_popup_title(
-            client
-        ) == "World Gate" and not await is_visible_by_path(client, spiral_door_path):
+        while portal_kind(await get_popup_title(client)) != "world_gate" and not await is_visible_by_path(client, spiral_door_path):
             await asyncio.sleep(0.1)
 
         while not await is_visible_by_path(client, spiral_door_path):
@@ -613,9 +634,7 @@ async def buy_potions(client: Client, recall: bool = True, original_zone=None):
 
         # Only recall if we actually left the original zone.
         if original_zone != current_zone:
-            return await recall_to_teleport_mark(
-                client, expected_zone=original_zone
-            )
+            return await recall_to_teleport_mark(client, expected_zone=original_zone)
 
     return True
 
@@ -725,9 +744,7 @@ async def auto_potions_force_buy(
         # Navigate to hilda brewer
         await navigate_to_potions(client)
         # Buy potions
-        recalled = await buy_potions(
-            client, recall=recall, original_zone=original_zone
-        )
+        recalled = await buy_potions(client, recall=recall, original_zone=original_zone)
 
         if await is_potion_needed(client, minimum_mana):
             await use_potion(client)
@@ -907,9 +924,7 @@ async def ensure_teleport_mark(client: Client, attempts: int = 2) -> bool:
             mark_after = await teleport_mark_is_available(client)
             mana_after = await client.stats.current_mana()
             if mark_after and (not mark_before or mana_after < mana_before):
-                logger.debug(
-                    f"Client {client.title} - Teleport mark confirmed."
-                )
+                logger.debug(f"Client {client.title} - Teleport mark confirmed.")
                 await asyncio.sleep(0.75)
                 return True
 
@@ -950,6 +965,7 @@ async def recall_to_teleport_mark(
             f"Client {client.title} - Recalling to teleport mark "
             f"(attempt {attempt}/{attempts})."
         )
+        await asyncio.sleep(2)
         await client.send_key(Keycode.PAGE_UP, 0.2)
         await asyncio.sleep(0.75)
 
@@ -976,9 +992,7 @@ async def recall_to_teleport_mark(
 
         arrival_zone = await client.zone_name()
         if expected_zone is None or arrival_zone == expected_zone:
-            logger.debug(
-                f"Client {client.title} - Return to teleport mark confirmed."
-            )
+            logger.debug(f"Client {client.title} - Return to teleport mark confirmed.")
             return True
 
         logger.warning(
@@ -1193,10 +1207,43 @@ async def is_popup_title_relevant(client: Client, quest_info: str = None) -> boo
     return False
 
 
+async def get_spiral_teleport_button(client: Client):
+    # Multiple anonymous modal roots can coexist. Follow every matching branch
+    # instead of accepting the first (possibly hidden) path match.
+    async def follow(window, names):
+        if not names:
+            return window if await window.is_visible() else None
+        for child in await window.children():
+            if await child.name() == names[0] and await child.is_visible():
+                found = await follow(child, names[1:])
+                if found is not None:
+                    return found
+        return None
+
+    for path in (spiral_door_teleport_path, spiral_door_teleport_path[1:]):
+        found = await follow(client.root_window, path)
+        if found is not None:
+            return found
+    return None
+
+
+async def is_spiral_door_open(client: Client) -> bool:
+    return await get_spiral_teleport_button(client) is not None
+
+
 async def spiral_door_with_quest(client: Client):
-    while await is_visible_by_path(client, spiral_door_teleport_path):
-        await click_window_by_path(client, spiral_door_teleport_path, True)
-        await asyncio.sleep(0.25)
+    async with asyncio.timeout(15):
+        button = await get_spiral_teleport_button(client)
+        if button is None:
+            return
+        logger.debug(f"Client {client.title}: 世界选择界面已识别，点击进入世界。")
+        while button is not None:
+            async with client.mouse_handler:
+                await client.mouse_handler.click_window(button)
+            await asyncio.sleep(0.25)
+            if await client.is_loading():
+                break
+            button = await get_spiral_teleport_button(client)
 
     while await client.is_loading():
         await asyncio.sleep(0.1)
@@ -1215,6 +1262,44 @@ async def sync_camera(client: Client, xyz: XYZ = None, yaw: float = None):
     camera = await client.game_client.free_camera_controller()
     await camera.write_position(xyz)
     await camera.write_yaw(yaw)
+
+
+async def _cycle_to_online_friends(client, friends_list):
+    """Select the online-friends list without assuming an English client."""
+    list_label = await _maybe_get_named_window(friends_list, "lblFriendsList")
+    right_button = await _maybe_get_named_window(friends_list, "btnListTypeRight")
+    online_labels = {
+        "online friends",
+        "在线好友",
+        "在線好友",
+        "在线朋友",
+        "在線朋友",
+    }
+
+    async def _get_text():
+        current_text = await list_label.maybe_text()
+        if current_text is None:
+            raise ValueError("Friend's list has no label")
+        return (
+            current_text.replace("<center>", "")
+            .replace("</center>", "")
+            .strip()
+        )
+
+    # There are only a few list types.  The fixed bound prevents a translated
+    # or changed label from leaving the follower stuck in an endless loop.
+    for _ in range(8):
+        current_page = await _get_text()
+        if matches_text(current_page, "GUI_00000510", "GUI_FriendsOnline") or current_page.casefold() in online_labels:
+            return
+        await client.mouse_handler.click_window(right_button)
+        deadline = asyncio.get_running_loop().time() + 5.0
+        while asyncio.get_running_loop().time() < deadline:
+            if await _get_text() != current_page:
+                break
+            await asyncio.sleep(0.1)
+
+    raise ValueError("Could not find the online friends list")
 
 
 async def _cycle_friends_list(
