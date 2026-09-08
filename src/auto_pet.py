@@ -1,3 +1,4 @@
+# Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
 import asyncio
 import re
 import time
@@ -222,7 +223,7 @@ async def _nomnom(client: Client, ignore_pet_level_up: bool, only_play_dance_gam
                         # otherwise, leave it up and force user to close it themselves
                         if await is_visible_by_path(client, skipped_pet_leveled_up_window_path):
                             if not ignore_pet_level_up:
-                                logger.info('Auto Pet - Client ' + client.title + '\'s pet leveled uclient.  Please close the window to continue, or exit Deimos if you wish to stop questing.')
+                                logger.info('Auto Pet - Client ' + client.title + '\'s pet leveled uclient.  Please close the window to continue, or exit XuanShu if you wish to stop questing.')
                                 logger.info('These pauses can be disabled in the config file by setting ignore_pet_level_up = True')
 
                                 # wait for the user to realize their pet leveled up and wait for them to manually close the window
@@ -372,7 +373,7 @@ async def won_game_leveled_up(client: Client, auto_pet_ignore_pet_level_up):
     await asyncio.sleep(1.0)
     if await is_visible_by_path(client, won_pet_leveled_up_window_path):
         if not auto_pet_ignore_pet_level_up:
-            logger.info('Auto Pet - Client ' + client.title + '\'s pet leveled up.  Please close the window to continue, or exit Deimos if you wish to stop questing.')
+            logger.info('Auto Pet - Client ' + client.title + '\'s pet leveled up.  Please close the window to continue, or exit XuanShu if you wish to stop questing.')
             logger.info('These pauses can be disabled in the config file by setting auto_pet_ignore_pet_level_up = True')
 
             # wait for the user to realize their pet leveled up and wait for them to manually close the window

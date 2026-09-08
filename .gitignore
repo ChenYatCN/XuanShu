@@ -1,13 +1,13 @@
 __pycache__/
 *.pyc
 logs/
-Deimos-Testconfig.ini
+XuanShu-Testconfig.ini
 venv
 *.exe
 testbot.txt
 *.spec
-!Deimos.spec
-!DeimosCN.spec
+!XuanShu.spec
+!XuanShu.spec
 build/
 dist/
 *.env

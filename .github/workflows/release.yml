@@ -1,4 +1,4 @@
-name: Release DeimosCN
+name: Release XuanShu
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Releases are driven by the version in DeimosCN.py: a push to main that carries
+  # Releases are driven by the version in XuanShu.py: a push to main that carries
   # a version we have not published yet becomes a release, and every other push
   # is a no-op. This gate is a separate job so "nothing to release" shows up as a
   # skipped release job rather than a failed one -- otherwise every merge to main
@@ -29,23 +29,23 @@ jobs:
       with:
         fetch-depth: 0  # Full history so existing tags are visible
 
-    - name: Extract version from DeimosCN.py
+    - name: Extract version from XuanShu.py
       id: version
       shell: bash
       run: |
-        echo "Extracting version from DeimosCN.py..."
+        echo "Extracting version from XuanShu.py..."
 
-        # Check if DeimosCN.py exists
-        if [ ! -f "DeimosCN.py" ]; then
-          echo "ERROR: DeimosCN.py not found in repository root"
+        # Check if XuanShu.py exists
+        if [ ! -f "XuanShu.py" ]; then
+          echo "ERROR: XuanShu.py not found in repository root"
           exit 1
         fi
 
         # Extract version using grep and sed
-        VERSION_LINE=$(grep -n "tool_version: str = " DeimosCN.py | head -1)
+        VERSION_LINE=$(grep -n "tool_version: str = " XuanShu.py | head -1)
 
         if [ -z "$VERSION_LINE" ]; then
-          echo "ERROR: Could not find 'tool_version: str = ' in DeimosCN.py"
+          echo "ERROR: Could not find 'tool_version: str = ' in XuanShu.py"
           echo "Make sure the version is defined as: tool_version: str = 'x.x.x'"
           exit 1
         fi
@@ -83,14 +83,14 @@ jobs:
 
         if git rev-parse "${TAG}" >/dev/null 2>&1; then
           echo "Git tag ${TAG} already exists -- nothing to release."
-          echo "Bump tool_version in DeimosCN.py to publish a new version."
+          echo "Bump tool_version in XuanShu.py to publish a new version."
           echo "should_release=false" >> $GITHUB_OUTPUT
           exit 0
         fi
 
         if gh release view "${TAG}" >/dev/null 2>&1; then
           echo "GitHub release ${TAG} already exists -- nothing to release."
-          echo "Bump tool_version in DeimosCN.py to publish a new version."
+          echo "Bump tool_version in XuanShu.py to publish a new version."
           echo "should_release=false" >> $GITHUB_OUTPUT
           exit 0
         fi
@@ -126,13 +126,13 @@ jobs:
 
     - name: Compile check
       shell: bash
-      run: uv run --group dev python -m compileall -q DeimosCN.py src
+      run: uv run --group dev python -m compileall -q XuanShu.py src
 
     - name: Build update helper (Rust)
       shell: bash
       run: |
         cargo build --release --manifest-path libs/updater/Cargo.toml
-        ls -la libs/updater/target/release/DeimosCN-updater.exe
+        ls -la libs/updater/target/release/deimos-updater.exe
 
     - name: Build wizpatch patcher (Rust)
       shell: bash
@@ -142,7 +142,7 @@ jobs:
 
     - name: Build with PyInstaller
       run: |
-        uv run --group dev pyinstaller --noconfirm --clean DeimosCN.spec
+        uv run --group dev pyinstaller --noconfirm --clean XuanShu.spec
         echo "Build completed successfully"
         dir dist
 
@@ -150,8 +150,8 @@ jobs:
       shell: bash
       run: |
         echo "Checking for required files..."
-        if [ ! -f "dist/DeimosCN.exe" ]; then
-          echo "ERROR: DeimosCN.exe not found in dist folder"
+        if [ ! -f "dist/XuanShu.exe" ]; then
+          echo "ERROR: XuanShu.exe not found in dist folder"
           exit 1
         fi
         if [ ! -f "LICENSE" ]; then
@@ -159,9 +159,9 @@ jobs:
           exit 1
         fi
         echo "All required files found ✓"
-        echo "DeimosCN.exe size: $(stat -c%s dist/DeimosCN.exe) bytes"
+        echo "XuanShu.exe size: $(stat -c%s dist/XuanShu.exe) bytes"
 
-    # Fail loudly if the helpers did not make it into the bundle. DeimosCN.spec
+    # Fail loudly if the helpers did not make it into the bundle. XuanShu.spec
     # omits a missing helper with only a warning, which is invisible in CI logs;
     # shipping without them silently disables self-update and game-file patching.
     - name: Verify bundled helpers
@@ -171,20 +171,20 @@ jobs:
         import sys
         from PyInstaller.archive.readers import CArchiveReader
 
-        required = {"DeimosCN-updater.exe", "wizpatch.exe"}
-        bundled = set(CArchiveReader("dist/DeimosCN.exe").toc)
+        required = {"deimos-updater.exe", "wizpatch.exe"}
+        bundled = set(CArchiveReader("dist/XuanShu.exe").toc)
         missing = sorted(required - bundled)
         if missing:
             print(f"ERROR: helper(s) missing from bundle: {', '.join(missing)}")
             sys.exit(1)
-        print(f"All helpers embedded in DeimosCN.exe: {', '.join(sorted(required))}")
+        print(f"All helpers embedded in XuanShu.exe: {', '.join(sorted(required))}")
         PY
 
     - name: Generate checksum
       shell: powershell
       run: |
-        $hash = (Get-FileHash "dist/DeimosCN.exe" -Algorithm SHA256).Hash.ToLower()
-        "$hash  DeimosCN.exe" | Out-File -FilePath "dist/DeimosCN.exe.sha256" -Encoding ascii -NoNewline
+        $hash = (Get-FileHash "dist/XuanShu.exe" -Algorithm SHA256).Hash.ToLower()
+        "$hash  XuanShu.exe" | Out-File -FilePath "dist/XuanShu.exe.sha256" -Encoding ascii -NoNewline
         Write-Host "SHA256: $hash"
 
     - name: Create release package
@@ -195,12 +195,12 @@ jobs:
 
         # Copy files to release directory. The checksum goes in the zip too, so the
         # packaged download matches the loose assets and can be verified offline.
-        Copy-Item "dist/DeimosCN.exe" -Destination "release/"
-        Copy-Item "dist/DeimosCN.exe.sha256" -Destination "release/"
+        Copy-Item "dist/XuanShu.exe" -Destination "release/"
+        Copy-Item "dist/XuanShu.exe.sha256" -Destination "release/"
         Copy-Item "LICENSE" -Destination "release/"
 
         # Create zip file with version in name using PowerShell
-        $zipName = "DeimosCN-${{ needs.check.outputs.version_tag }}.zip"
+        $zipName = "XuanShu-${{ needs.check.outputs.version_tag }}.zip"
         Compress-Archive -Path "release/*" -DestinationPath $zipName -Force
 
         Write-Host "Release package created: $zipName"
@@ -239,13 +239,13 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ needs.check.outputs.version_tag }}
-        name: DeimosCN ${{ needs.check.outputs.version_tag }}
+        name: XuanShu ${{ needs.check.outputs.version_tag }}
         body: |
           **Full Changelog**: https://github.com/${{ github.repository }}/compare/${{ steps.changelog.outputs.LAST_TAG }}...${{ needs.check.outputs.version_tag }}
         files: |
-          DeimosCN-${{ needs.check.outputs.version_tag }}.zip
-          dist/DeimosCN.exe
-          dist/DeimosCN.exe.sha256
+          XuanShu-${{ needs.check.outputs.version_tag }}.zip
+          dist/XuanShu.exe
+          dist/XuanShu.exe.sha256
         draft: false
         prerelease: ${{ contains(needs.check.outputs.version_number, 'alpha') || contains(needs.check.outputs.version_number, 'beta') || contains(needs.check.outputs.version_number, 'rc') }}
       env:
@@ -284,7 +284,7 @@ jobs:
         VERSION: ${{ needs.check.outputs.version_number }}
         VERSION_TAG: ${{ needs.check.outputs.version_tag }}
         REPOSITORY: https://github.com/${{ github.repository }}
-        ZIP_FILE: DeimosCN-${{ needs.check.outputs.version_tag }}.zip
+        ZIP_FILE: XuanShu-${{ needs.check.outputs.version_tag }}.zip
         CHANGELOG_URL: https://github.com/${{ github.repository }}/compare/${{ steps.changelog.outputs.LAST_TAG }}...${{ needs.check.outputs.version_tag }}
 
 
@@ -292,6 +292,6 @@ jobs:
       shell: bash
       run: |
         echo "🎉 Release ${{ needs.check.outputs.version_tag }} completed successfully!"
-        echo "📦 Package: DeimosCN-${{ needs.check.outputs.version_tag }}.zip"
+        echo "📦 Package: XuanShu-${{ needs.check.outputs.version_tag }}.zip"
         echo "🔗 Release URL: https://github.com/${{ github.repository }}/releases/tag/${{ needs.check.outputs.version_tag }}"
-        echo "📁 Package size: $(stat -c%s "DeimosCN-${{ needs.check.outputs.version_tag }}.zip") bytes"
+        echo "📁 Package size: $(stat -c%s "XuanShu-${{ needs.check.outputs.version_tag }}.zip") bytes"

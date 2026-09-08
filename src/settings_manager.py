@@ -1,7 +1,9 @@
+# Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
 import json
 import os
 import shutil
 from pathlib import Path
+from src.branding import appdata_dir
 
 DEFAULT_THEME = {
     "bg_color": "#1e1e1e",
@@ -133,14 +135,14 @@ _INI_KEY_MAP = {
 
 def _theme_path() -> Path:
     appdata = os.environ.get("APPDATA", "")
-    return Path(appdata) / "Deimos" / "default_theme.json"
+    return appdata_dir() / "default_theme.json"
 
 
-class DeimosSettings:
+class XuanShuSettings:
     def __init__(self, settings_path: str | None = None):
         if settings_path is None:
             appdata = os.environ.get("APPDATA", "")
-            settings_dir = Path(appdata) / "Deimos"
+            settings_dir = appdata_dir()
             settings_dir.mkdir(parents=True, exist_ok=True)
             self._path = settings_dir / "settings.json"
         else:
@@ -341,3 +343,6 @@ class DeimosSettings:
         self._data["hotkeys"] = hotkeys
         self._data["_migrated"] = True
         self._save()
+
+# Compatibility for external scripts that imported the original public class.
+DeimosSettings = XuanShuSettings

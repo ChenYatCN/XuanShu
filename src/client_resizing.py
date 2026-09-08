@@ -1,6 +1,7 @@
+# Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
 """Client window resizing — freeform, crisp, undistorted game-window resizing.
 
-Pieces (Deimos runs out-of-process, but uses WizWalker's in-process asm hooks for
+Pieces (XuanShu runs out-of-process, but uses WizWalker's in-process asm hooks for
 the one thing cross-process can't do — forcing the render backbuffer):
 
 1. Window (ctypes): add a sizing border (WS_THICKFRAME) so the game window can be

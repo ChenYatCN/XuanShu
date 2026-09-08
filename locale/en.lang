@@ -1,11 +1,11 @@
-# Deimos English language file
+# XuanShu English language file
 
 # License
 license_title=License Agreement
-license_text=By using Deimos, you agree to the GPL v3 license agreement.
+license_text=By using XuanShu, you agree to the GPL v3 license agreement.
 
 # Main banner
-free_tool=Deimos will always be a free tool. If you paid for this, you got scammed!
+free_tool=XuanShu will always be a free tool. If you paid for this, you got scammed!
 
 # Tab names
 hotkeys=Hotkeys

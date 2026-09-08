@@ -6,7 +6,7 @@ param(
     [string]$VersionTag = "3.11.0",
    
     [Parameter(Mandatory=$true)]
-    [string]$Repository = "https://github.com/Deimos-Wizard101/Deimos-Wizard101",
+    [string]$Repository = "https://github.com/ChenYatCN/Deimos-Wizard101-main",
    
     [Parameter(Mandatory=$true)]
     [string]$ChangelogUrl = ""

@@ -1,3 +1,4 @@
+# Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
 """Fail the build if PyInstaller selected an incompatible dependency source."""
 
 from __future__ import annotations
@@ -8,9 +9,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-ANALYSIS_TOC = ROOT / "build" / "DeimosCN" / "Analysis-00.toc"
-PACKAGE_TOC = ROOT / "build" / "DeimosCN" / "PKG-00.toc"
-OUTPUT_EXE = ROOT / "dist" / "DeimosCN.exe"
+ANALYSIS_TOC = ROOT / "build" / "XuanShu" / "Analysis-00.toc"
+PACKAGE_TOC = ROOT / "build" / "XuanShu" / "PKG-00.toc"
+OUTPUT_EXE = ROOT / "dist" / "XuanShu.exe"
 VENV_PACKAGES = (ROOT / ".venv" / "Lib" / "site-packages").resolve()
 COMBAT_COMPAT = (
     ROOT

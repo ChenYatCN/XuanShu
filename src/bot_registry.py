@@ -1,3 +1,4 @@
+# Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
 """Fetching and filtering for the approved bot registry repo (Deimos-Wizard101/bots).
 
 All functions here are synchronous (requests-based) and meant to be called via
@@ -13,7 +14,7 @@ registry_repo: str = 'Deimos-Wizard101/bots'
 registry_branch: str = 'main'
 registry_raw_base: str = f'https://raw.githubusercontent.com/{registry_repo}/{registry_branch}'
 
-# Routing marker the bot runner uses to dispatch expertmode bots (see Deimos.py
+# Routing marker the bot runner uses to dispatch expertmode bots (see XuanShu.py
 # ExecuteBot). It must be the very first line of an expertmode bot's text.
 expertmode_marker: str = '###deimos_expertmode'
 

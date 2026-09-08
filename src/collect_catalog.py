@@ -1,3 +1,4 @@
+# Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
 """Build collect aliases from the installed language resources, with a versioned cache.
 
 No name-table allowlist: names can move to a new table after a game update.
@@ -14,6 +15,7 @@ import tempfile
 import time
 import zlib
 from pathlib import Path
+from src.branding import appdata_dir
 
 from loguru import logger
 
@@ -26,7 +28,7 @@ _SERVICES = {}
 
 
 def cache_directory():
-    base = Path(os.environ['APPDATA']) / 'Deimos' if os.environ.get('APPDATA') else Path.cwd()
+    base = appdata_dir()
     return base / 'collect_cache'
 
 

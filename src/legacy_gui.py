@@ -1,3 +1,4 @@
+# Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
 import ctypes
 import gettext
 import queue
@@ -939,7 +940,7 @@ def show_entity_list_popup(entity_list_content):
         "Entity List",
         layout,
         finalize=True,
-        icon="..\\Deimos-logo.ico",
+        icon=__import__("src.gui.helpers", fromlist=["resource_path"]).resource_path("XuanShu-logo.ico"),
         keep_on_top=True,
     )
     return (EntityListWindow, entity_list)

@@ -1,11 +1,11 @@
-# Deimos Chinese language file / Deimos 中文语言文件
+# XuanShu Chinese language file / XuanShu 中文语言文件
 
 # License / 许可证
 license_title=许可协议
-license_text=使用 Deimos 即表示你同意 GPL v3 许可协议。
+license_text=使用 XuanShu 即表示你同意 GPL v3 许可协议。
 
 # Main banner / 主横幅
-free_tool=Deimos 永远是免费工具。如果你为此付费，那你被骗了！
+free_tool=XuanShu 永远是免费工具。如果你为此付费，那你被骗了！
 
 # Tab names / 标签页名称
 hotkeys=快捷键

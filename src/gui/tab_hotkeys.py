@@ -1,3 +1,4 @@
+# Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
 import os
 
 from PyQt6.QtCore import Qt
@@ -532,7 +533,7 @@ def build_hotkeys_tab(ctx):
 
     ctx.tool_info_logo_label = logo_label
 
-    _changelog_url = f"https://github.com/{ctx.tool_author}/{ctx.tool_name}-Wizard101/releases/tag/{ctx.tool_version}"
+    _changelog_url = f"{ctx.repo_base}/releases/tag/v{ctx.tool_version}"
     version_label = QLabel(
         f'<b>{ctx.tool_name}</b> <a href="{_changelog_url}" style="color: {ctx.text_color}; text-decoration: none;">v{ctx.tool_version}</a>'
     )
@@ -626,7 +627,7 @@ def build_hotkeys_tab(ctx):
                     off_color=ctx.text_color,
                 )
         # Update version link color
-        _cl_url = f"https://github.com/{ctx.tool_author}/{ctx.tool_name}-Wizard101/releases/tag/{ctx.tool_version}"
+        _cl_url = f"{ctx.repo_base}/releases/tag/v{ctx.tool_version}"
         version_label.setText(
             f'<b>{ctx.tool_name}</b> <a href="{_cl_url}" style="color: {ctx.text_color}; text-decoration: none;">v{ctx.tool_version}</a>'
         )

@@ -1,4 +1,4 @@
-# Deimos Version Bump and Release Script
+# XuanShu Version Bump and Release Script
 # Usage: .\release.ps1 [major|minor|patch]
 
 param(
@@ -22,7 +22,7 @@ function Write-Yellow { Write-ColorOutput Yellow $args }
 function Write-Red { Write-ColorOutput Red $args }
 function Write-Blue { Write-ColorOutput Blue $args }
 
-Write-Green "🚀 Deimos Release Script"
+Write-Green "🚀 XuanShu Release Script"
 Write-Blue "Bump type: $BumpType"
 
 # Branch check removed - user will handle branch management
@@ -39,18 +39,18 @@ if ($status) {
 Write-Blue "📥 Pulling latest changes..."
 git pull origin main
 
-# Get current version from Deimos.py source code
-Write-Blue "📖 Reading current version from Deimos.py..."
-if (-not (Test-Path "Deimos.py")) {
-    Write-Red "❌ Error: Deimos.py not found in current directory"
+# Get current version from XuanShu.py source code
+Write-Blue "📖 Reading current version from XuanShu.py..."
+if (-not (Test-Path "XuanShu.py")) {
+    Write-Red "❌ Error: XuanShu.py not found in current directory"
     exit 1
 }
 
-$content = Get-Content "Deimos.py" -Raw
+$content = Get-Content "XuanShu.py" -Raw
 $versionMatch = $content | Select-String "tool_version: str = '([^']+)'"
 
 if (-not $versionMatch) {
-    Write-Red "❌ Error: Could not find tool_version in Deimos.py"
+    Write-Red "❌ Error: Could not find tool_version in XuanShu.py"
     exit 1
 }
 
@@ -103,12 +103,12 @@ if ($confirm -ne "y" -and $confirm -ne "Y") {
     exit 0
 }
 
-# Update version in Deimos.py if it exists
-if (Test-Path "Deimos.py") {
-    Write-Yellow "📝 Updating version in Deimos.py..."
+# Update version in XuanShu.py if it exists
+if (Test-Path "XuanShu.py") {
+    Write-Yellow "📝 Updating version in XuanShu.py..."
     
     # Read the file content
-    $content = Get-Content "Deimos.py" -Raw
+    $content = Get-Content "XuanShu.py" -Raw
     
     # Update the tool_version variable
     $pattern = "tool_version: str = '[^']*'"
@@ -116,14 +116,14 @@ if (Test-Path "Deimos.py") {
     $newContent = $content -replace $pattern, $replacement
     
     # Write back to file
-    Set-Content "Deimos.py" -Value $newContent -NoNewline
+    Set-Content "XuanShu.py" -Value $newContent -NoNewline
     
     # Show the change
-    Write-Blue "Version updated in Deimos.py:"
-    Select-String -Path "Deimos.py" -Pattern "tool_version:"
+    Write-Blue "Version updated in XuanShu.py:"
+    Select-String -Path "XuanShu.py" -Pattern "tool_version:"
     
     # Commit version file changes
-    git add Deimos.py
+    git add XuanShu.py
     git commit -m "Bump version to $newVersion"
 }
 
@@ -186,7 +186,7 @@ Write-Blue "   https://github.com/$repoPath/releases/tag/$newVersion"
 
 Write-Host ""
 Write-Yellow "📋 Release will include:"
-Write-Host "   • Deimos.exe (compiled application)"
-Write-Host "   • Deimos-config.ini (configuration file)"
+Write-Host "   • XuanShu.exe (compiled application)"
+Write-Host "   • XuanShu-config.ini (configuration file)"
 Write-Host "   • LICENSE (license information)"
-Write-Host "   • All packaged in: Deimos-$newVersion.zip"
+Write-Host "   • All packaged in: XuanShu-$newVersion.zip"

@@ -1,3 +1,4 @@
+# Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
 import html
 import re
 import webbrowser
@@ -16,7 +17,7 @@ from src.gui.commands import GUICommand, GUICommandType
 from src.gui.helpers import launcher_small_icon_btn, spinning_loader_widget
 
 
-def show_update_dialog(parent, send_queue, version, notes_url, tool_name='Deimos', tl=None):
+def show_update_dialog(parent, send_queue, version, notes_url, tool_name='XuanShu', tl=None):
     """Non-modal 'update available' prompt.
 
     Returns the dialog, which exposes ``set_progress``/``set_status``/``set_error``

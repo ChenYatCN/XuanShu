@@ -1,3 +1,4 @@
+# Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
 import glob
 import os
 import shutil
@@ -392,7 +393,7 @@ def show_settings_dialog(ctx):
     shortcut_icon_btn.setStyleSheet(ctx.btn_style)
     shortcut_icon_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     shortcut_icon_btn.clicked.connect(
-        lambda: update_desktop_shortcut(ctx, "DeimosCN.lnk", dialog)
+        lambda: update_desktop_shortcut(ctx, "XuanShu.lnk", dialog)
     )
 
     appearance_form.addRow("", shortcut_icon_btn)

@@ -1,3 +1,4 @@
+# Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
 from __future__ import annotations
 
 import re
@@ -35,7 +36,7 @@ def _is_downloading(progress_line: str) -> bool:
     return False
 
 
-# CreateProcess flag: don't pop a console window for the child (Deimos is a
+# CreateProcess flag: don't pop a console window for the child (XuanShu is a
 # windowed app). Harmless/no-op off Windows.
 _CREATE_NO_WINDOW = 0x08000000
 
@@ -43,14 +44,14 @@ _BINARY_NAME = "wizpatch.exe" if sys.platform == "win32" else "wizpatch"
 
 
 def _is_frozen() -> bool:
-    """True when running as a PyInstaller bundle (a real Deimos.exe)."""
+    """True when running as a PyInstaller bundle (a real XuanShu.exe)."""
     return getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")
 
 
 def wizpatch_binary_path() -> Optional[Path]:
     """Locate the wizpatch binary, or ``None`` if it isn't available.
 
-    Frozen builds carry it next to the bundle (added via ``Deimos.spec``); a dev
+    Frozen builds carry it next to the bundle (added via ``XuanShu.spec``); a dev
     checkout uses the cargo build output under ``libs/wizpatch/target/release``.
     """
     if _is_frozen():

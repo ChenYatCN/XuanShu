@@ -18,7 +18,7 @@ if not VENV_SITE_PACKAGES.exists():
     )
 
 # 打包时明确优先使用 .venv 中已安装的最新 wizwalker / wizsprinter。
-# 项目根目录仍用于加载 DeimosCN.py，但不得覆盖虚拟环境里的依赖包。
+# 项目根目录仍用于加载 XuanShu.py，但不得覆盖虚拟环境里的依赖包。
 LIB_PATHS = [
     VENV_SITE_PACKAGES,
     ROOT / "src",
@@ -26,7 +26,7 @@ LIB_PATHS = [
 ]
 
 # Analysis 直接使用虚拟环境的 site-packages，不再将它重复加入
-# pathex。主脚本改为根目录的 DeimosCN.py，让脚本目录排在依赖包之后。
+# pathex。主脚本改为根目录的 XuanShu.py，让脚本目录排在依赖包之后。
 ANALYSIS_PATHS = [
     ROOT / "src",
 ]
@@ -76,7 +76,7 @@ def require_venv_package(package_name: str) -> Path:
         raise RuntimeError(
             f"{package_name} resolved outside .venv: {package_dir}"
         )
-    print(f"[DeimosCN.spec] {package_name}: {package_dir}")
+    print(f"[XuanShu.spec] {package_name}: {package_dir}")
     return package_dir
 
 
@@ -108,7 +108,7 @@ if _missing_wizlaunch_api:
         + ", ".join(_missing_wizlaunch_api)
     )
 print(
-    f"[DeimosCN.spec] wizlaunch version: "
+    f"[XuanShu.spec] wizlaunch version: "
     f"{getattr(_wizlaunch, '__version__', 'unknown')}"
 )
 
@@ -144,10 +144,15 @@ hiddenimports = [
 ]
 
 datas = []
+updater_exe = ROOT / "libs/updater/target/release/deimos-updater.exe"
+if updater_exe.is_file():
+    datas.append((str(updater_exe), "."))
 
-add_data_if_exists(datas, "Deimos-logo.ico", ".")
-add_data_if_exists(datas, "Deimos-logo.png", ".")
+add_data_if_exists(datas, "XuanShu-logo.ico", ".")
+add_data_if_exists(datas, "XuanShu-logo.png", ".")
 add_data_if_exists(datas, "locale", "locale")
+add_data_if_exists(datas, "LICENSE", ".")
+add_data_if_exists(datas, "NOTICE.md", ".")
 add_data_if_exists(datas, "src/data/collect_names.json", "src/data")
 
 # Optional-at-runtime but required for this build: the launcher setting
@@ -179,7 +184,7 @@ datas += safe_collect_data_files("wizwalker.extensions.wizsprinter", include_py_
 datas += safe_collect_data_files("wizwalker.extensions.wizsprinter.combat_backends", include_py_files=True)
 
 # The Laurenz package remains authoritative for wizsprinter as a whole, but its
-# stock SprintyCombat currently skips valid priorities in DeimosCN.  Replace only
+# stock SprintyCombat currently skips valid priorities in XuanShu.  Replace only
 # that module with the repository's compatibility version (target selection +
 # Willcast fixes), matching the pre-find hook used for the compiled PYZ module.
 combat_compat = (
@@ -257,12 +262,12 @@ if not runtime_hook.exists():
 if not font_runtime_hook.exists():
     raise FileNotFoundError(f"font runtime hook not found: {font_runtime_hook}")
 
-icon_file = ROOT / "Deimos-logo.ico"
+icon_file = ROOT / "XuanShu-logo.ico"
 version_file = ROOT / "version_info.txt"
 manifest_file = ROOT / "app.manifest"
 
 a = Analysis(
-    [str(ROOT / "DeimosCN.py")],
+    [str(ROOT / "XuanShu.py")],
     pathex=[str(path) for path in ANALYSIS_PATHS if path.exists()],
     binaries=[],
     datas=datas,
@@ -301,7 +306,7 @@ for _collection_name in ("binaries", "datas"):
             entry for entry in _collection if not _is_forbidden_build_source(entry)
         ]
         print(
-            f"[DeimosCN.spec] removed {len(_removed)} contaminated "
+            f"[XuanShu.spec] removed {len(_removed)} contaminated "
             f"{_collection_name} entries"
         )
 
@@ -313,7 +318,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="DeimosCN",
+    name="XuanShu",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

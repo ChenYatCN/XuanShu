@@ -1,9 +1,9 @@
 @echo off
 chcp 65001 >nul
-title DeimosCN 打包工具
+title XuanShu 打包工具
 
 echo ========================================
-echo       DeimosCN 自动打包脚本
+echo       XuanShu 自动打包脚本
 echo ========================================
 echo.
 
@@ -35,16 +35,16 @@ if not exist ".venv\Scripts\python.exe" (
     exit /b 1
 )
 
-if not exist "DeimosCN.py" (
-    echo [错误] 当前目录未找到 DeimosCN.py
-    echo 请把本 bat 放在 DeimosCN.py 同级目录。
+if not exist "XuanShu.py" (
+    echo [错误] 当前目录未找到 XuanShu.py
+    echo 请把本 bat 放在 XuanShu.py 同级目录。
     pause
     exit /b 1
 )
 
-if not exist "DeimosCN.spec" (
-    echo [错误] 当前目录未找到 DeimosCN.spec
-    echo 请确认 spec 文件名是否为 DeimosCN.spec。
+if not exist "XuanShu.spec" (
+    echo [错误] 当前目录未找到 XuanShu.spec
+    echo 请确认 spec 文件名是否为 XuanShu.spec。
     pause
     exit /b 1
 )
@@ -86,7 +86,7 @@ echo.
 echo [3/6] 开始使用虚拟环境打包...
 echo.
 
-".venv\Scripts\python.exe" -m PyInstaller "DeimosCN.spec" --clean -y
+".venv\Scripts\python.exe" -m PyInstaller "XuanShu.spec" --clean -y
 
 if errorlevel 1 (
     echo.
@@ -118,20 +118,20 @@ if errorlevel 1 (
 echo.
 echo [5/6] 检查输出文件...
 
-if exist "dist\DeimosCN.exe" (
+if exist "dist\XuanShu.exe" (
     echo.
     echo ========================================
     echo              打包成功
     echo ========================================
     echo 输出文件：
-    echo %ROOT%dist\DeimosCN.exe
+    echo %ROOT%dist\XuanShu.exe
     echo.
 ) else (
     echo.
     echo [警告] 打包命令执行完成，但没有找到：
-    echo %ROOT%dist\DeimosCN.exe
+    echo %ROOT%dist\XuanShu.exe
     echo.
-    echo 请检查 spec 文件里的 name 是否为 DeimosCN。
+    echo 请检查 spec 文件里的 name 是否为 XuanShu。
     pause
     exit /b 1
 )

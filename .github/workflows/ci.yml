@@ -32,7 +32,7 @@ jobs:
 
     - name: Compile check
       shell: bash
-      run: uv run --group dev python -m compileall -q DeimosCN.py src
+      run: uv run --group dev python -m compileall -q XuanShu.py src
 
     - name: Record Rust version
       id: rust
@@ -66,24 +66,24 @@ jobs:
         cargo build --release --manifest-path libs/wizpatch/Cargo.toml
         ls -la libs/wizpatch/target/release/wizpatch.exe
 
-    # Build through Deimos.spec -- the same entry point develop/build/release
+    # Build through XuanShu.spec -- the same entry point develop/build/release
     # use -- so a PR that breaks the spec fails here rather than at tag time.
     # The spec supplies the icon, version resource and manifest itself.
     - name: Build with PyInstaller
       run: |
-        uv run --group dev pyinstaller --noconfirm --clean Deimos.spec
+        uv run --group dev pyinstaller --noconfirm --clean XuanShu.spec
         dir dist
 
     - name: Verify build output
       shell: bash
       run: |
-        if [ ! -f "dist/Deimos.exe" ]; then
-          echo "Build failed: Deimos.exe not found"
+        if [ ! -f "dist/XuanShu.exe" ]; then
+          echo "Build failed: XuanShu.exe not found"
           exit 1
         fi
-        echo "Build OK: $(stat -c%s dist/Deimos.exe) bytes"
+        echo "Build OK: $(stat -c%s dist/XuanShu.exe) bytes"
 
-    # Fail loudly if the helpers did not make it into the bundle. Deimos.spec
+    # Fail loudly if the helpers did not make it into the bundle. XuanShu.spec
     # omits a missing helper with only a warning, which is invisible in CI logs;
     # shipping without them silently disables self-update and game-file patching.
     - name: Verify bundled helpers
@@ -94,10 +94,10 @@ jobs:
         from PyInstaller.archive.readers import CArchiveReader
 
         required = {"deimos-updater.exe", "wizpatch.exe"}
-        bundled = set(CArchiveReader("dist/Deimos.exe").toc)
+        bundled = set(CArchiveReader("dist/XuanShu.exe").toc)
         missing = sorted(required - bundled)
         if missing:
             print(f"ERROR: helper(s) missing from bundle: {', '.join(missing)}")
             sys.exit(1)
-        print(f"All helpers embedded in Deimos.exe: {', '.join(sorted(required))}")
+        print(f"All helpers embedded in XuanShu.exe: {', '.join(sorted(required))}")
         PY

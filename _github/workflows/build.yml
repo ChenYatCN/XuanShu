@@ -1,4 +1,4 @@
-name: Build Deimos Application
+name: Build XuanShu Application
 
 on:
   push:
@@ -27,11 +27,11 @@ jobs:
     
     - name: Build with PyInstaller
       run: |
-        pyinstaller -F -w --clean -i Deimos-logo.ico --version-file version_info.txt Deimos.py --noupx --optimize 2 --strip --manifest "app.manifest"
+        python -m PyInstaller --clean --noconfirm XuanShu.spec
     
     - name: Upload executable artifact
       uses: actions/upload-artifact@v4
       with:
-        name: Deimos
-        path: dist/Deimos.exe
+        name: XuanShu
+        path: dist/XuanShu.exe
         retention-days: 7  # Keep the artifact for 7 days

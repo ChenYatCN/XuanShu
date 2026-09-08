@@ -1,3 +1,4 @@
+# Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
 import os
 import sys
 
@@ -5,7 +6,7 @@ import sys
 def _resource_path(filename: str) -> str:
     if hasattr(sys, '_MEIPASS'):
         return os.path.join(sys._MEIPASS, filename)
-    return filename
+    return os.path.join(os.path.dirname(os.path.dirname(__file__)), filename)
 
 
 def load_lang(langcode: str) -> callable:

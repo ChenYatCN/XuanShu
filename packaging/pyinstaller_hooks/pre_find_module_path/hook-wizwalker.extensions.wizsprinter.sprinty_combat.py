@@ -1,7 +1,8 @@
-"""Bundle DeimosCN's combat-compatible SprintyCombat implementation.
+# Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
+"""Bundle XuanShu's combat-compatible SprintyCombat implementation.
 
 The rest of wizsprinter comes from the active .venv.  Only this module carries
-the local target-selection and Willcast fixes needed by DeimosCN.
+the local target-selection and Willcast fixes needed by XuanShu.
 """
 
 from pathlib import Path

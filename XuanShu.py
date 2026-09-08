@@ -1,3 +1,4 @@
+# Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
 from src.task_lifecycle import gather_owned
 # pyright: reportMissingImports=false
 import asyncio
@@ -25,7 +26,7 @@ from pypresence import AioPresence
 
 import wizwalker
 from src import discsdk
-from src import gui as deimosgui
+from src import gui as xuanshu_gui
 from src import wizpatch_runner
 from src.auto_fish_original_adapter import fish_bot
 from src.auto_pet import nomnom
@@ -37,6 +38,7 @@ from src.bot_targeting import (
     resolve_bot_clients,
     unpack_bot_command,
 )
+from src.script_popups import run_with_script_popups
 from src.client_resizing import ClientResizingManager
 from src.command_parser import execute_flythrough, parse_command
 from src.config_combat import (
@@ -63,7 +65,7 @@ from src.quest_party import (
     resolve_quester_friend_icon,
     stable_client_identity,
 )
-from src.settings_manager import DeimosSettings
+from src.settings_manager import XuanShuSettings
 from src.sigil import Sigil
 from src.sprinty_client import SprintyClient
 
@@ -108,12 +110,13 @@ from wizwalker.utils import get_all_wizard_handles, get_foreground_window
 cMessageBox = ctypes.windll.user32.MessageBoxW
 
 tool_version: str = "2.1.3"
-tool_name: str = "DeimosCN"
+tool_name: str = "XuanShu"
 tool_author: str = "Deimos-Wizard101"
-repo_name: str = tool_name + "-Wizard101"
+repo_name: str = "Deimos-Wizard101-main"
+repo_owner: str = "ChenYatCN"
 branch: str = "main"
 repo_path_raw: str = (
-    f"https://raw.githubusercontent.com/{tool_author}/{repo_name}/refs/heads/{branch}"
+    f"https://raw.githubusercontent.com/{repo_owner}/{repo_name}/refs/heads/{branch}"
 )
 
 type_format_dict = {
@@ -189,7 +192,7 @@ fish_id = 0
 fish_size_min = 0.0
 fish_size_max = 999.0
 
-settings = DeimosSettings()
+settings = XuanShuSettings()
 settings.migrate_theme_from_settings()
 
 # Load theme from dedicated theme file
@@ -583,7 +586,7 @@ async def kill_tool(debug: bool):
         logger.debug(f"Kill tool hotkey pressed, killing {tool_name}.")
     await asyncio.sleep(0)
     await asyncio.sleep(0)
-    raise deimosgui.ToolClosedException
+    raise xuanshu_gui.ToolClosedException
 
 
 async def tool_finish():
@@ -683,8 +686,8 @@ async def main():
                 speed_task = None
                 logger.debug("Speed hotkey pressed, disabling speed multiplier.")
                 gui_send_queue.put(
-                    deimosgui.GUICommand(
-                        deimosgui.GUICommandType.UpdateWindow,
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
                         ("SpeedhackStatus", "Disabled"),
                     )
                 )
@@ -696,8 +699,8 @@ async def main():
             else:
                 logger.debug("Speed hotkey pressed, enabling speed multiplier.")
                 gui_send_queue.put(
-                    deimosgui.GUICommand(
-                        deimosgui.GUICommandType.UpdateWindow,
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
                         ("SpeedhackStatus", "Enabled"),
                     )
                 )
@@ -713,18 +716,18 @@ async def main():
         # await tool_finish()
         # try:
         # 	await kill_tool(debug=True)
-        # except deimosgui.ToolClosedException:
+        # except xuanshu_gui.ToolClosedException:
         # 	pass
         # finally:
-        # 	gui_send_queue.put(deimosgui.GUICommand(deimosgui.GUICommandType.Close))
+        # 	gui_send_queue.put(xuanshu_gui.GUICommand(xuanshu_gui.GUICommandType.Close))
         # global tool_status
         # tool_status = False;
         logger.debug(f"Kill tool hotkey pressed, closing {tool_name}.")
         if walker.clients != 0:
             gui_send_queue.put(
-                deimosgui.GUICommand(deimosgui.GUICommandType.CloseFromBackend)
+                xuanshu_gui.GUICommand(xuanshu_gui.GUICommandType.CloseFromBackend)
             )
-        # raise deimosgui.ToolClosedException
+        # raise xuanshu_gui.ToolClosedException
 
     async def toggle_combat_hotkey(debug: bool = True):
         global combat_task
@@ -740,8 +743,8 @@ async def main():
                 if debug:
                     logger.debug("Combat hotkey pressed, disabling auto combat.")
                 gui_send_queue.put(
-                    deimosgui.GUICommand(
-                        deimosgui.GUICommandType.UpdateWindow,
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
                         ("CombatStatus", "Disabled"),
                     )
                 )
@@ -750,8 +753,8 @@ async def main():
                 if debug:
                     logger.debug("Combat hotkey pressed, enabling auto combat.")
                 gui_send_queue.put(
-                    deimosgui.GUICommand(
-                        deimosgui.GUICommandType.UpdateWindow,
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
                         ("CombatStatus", "Enabled"),
                     )
                 )
@@ -771,8 +774,8 @@ async def main():
                 dialogue_task = None
                 logger.debug("Dialogue hotkey pressed, disabling auto dialogue.")
                 gui_send_queue.put(
-                    deimosgui.GUICommand(
-                        deimosgui.GUICommandType.UpdateWindow,
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
                         ("DialogueStatus", "Disabled"),
                     )
                 )
@@ -784,8 +787,8 @@ async def main():
                 # 	side_quest_log_str += " and auto side quests functionality"
                 logger.debug("Dialogue hotkey pressed, enabling auto dialogue.")
                 gui_send_queue.put(
-                    deimosgui.GUICommand(
-                        deimosgui.GUICommandType.UpdateWindow,
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
                         ("DialogueStatus", "Enabled"),
                     )
                 )
@@ -799,8 +802,8 @@ async def main():
         status_str = "Enabled" if side_quest_status else "Disabled"
         logger.debug(f"Side quests hotkey pressed, side quest acceptance {status_str}.")
         gui_send_queue.put(
-            deimosgui.GUICommand(
-                deimosgui.GUICommandType.UpdateWindow,
+            xuanshu_gui.GUICommand(
+                xuanshu_gui.GUICommandType.UpdateWindow,
                 ("SideQuestAcceptStatus", status_str),
             )
         )
@@ -823,8 +826,8 @@ async def main():
                 sigil_task = None
                 logger.debug("Sigil hotkey pressed, disabling auto sigil.")
                 gui_send_queue.put(
-                    deimosgui.GUICommand(
-                        deimosgui.GUICommandType.UpdateWindow,
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
                         ("SigilStatus", "Disabled"),
                     )
                 )
@@ -834,8 +837,8 @@ async def main():
                 if questing_task is not None and not questing_task.cancelled():
                     logger.debug("Questing hotkey pressed, disabling auto questing.")
                     gui_send_queue.put(
-                        deimosgui.GUICommand(
-                            deimosgui.GUICommandType.UpdateWindow,
+                        xuanshu_gui.GUICommand(
+                            xuanshu_gui.GUICommandType.UpdateWindow,
                             ("QuestingStatus", "Disabled"),
                         )
                     )
@@ -846,8 +849,8 @@ async def main():
                     questing_task = None
 
                 gui_send_queue.put(
-                    deimosgui.GUICommand(
-                        deimosgui.GUICommandType.UpdateWindow,
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
                         ("SigilStatus", "Enabled"),
                     )
                 )
@@ -892,8 +895,8 @@ async def main():
                         await foreground_client.camera_elastic()
                         freecam_status = False
                         gui_send_queue.put(
-                            deimosgui.GUICommand(
-                                deimosgui.GUICommandType.UpdateWindow,
+                            xuanshu_gui.GUICommand(
+                                xuanshu_gui.GUICommandType.UpdateWindow,
                                 ("FreecamStatus", "Disabled"),
                             )
                         )
@@ -919,8 +922,8 @@ async def main():
                         )
                         freecam_status = True
                         gui_send_queue.put(
-                            deimosgui.GUICommand(
-                                deimosgui.GUICommandType.UpdateWindow,
+                            xuanshu_gui.GUICommand(
+                                xuanshu_gui.GUICommandType.UpdateWindow,
                                 ("FreecamStatus", "Enabled"),
                             )
                         )
@@ -929,8 +932,8 @@ async def main():
                         "Freecam toggle failed; keeping the GUI task alive."
                     )
                     gui_send_queue.put(
-                        deimosgui.GUICommand(
-                            deimosgui.GUICommandType.UpdateWindow,
+                        xuanshu_gui.GUICommand(
+                            xuanshu_gui.GUICommandType.UpdateWindow,
                             (
                                 "FreecamStatus",
                                 "Enabled" if freecam_status else "Disabled",
@@ -992,8 +995,8 @@ async def main():
                 apply_questing_roles(False)
                 logger.debug("Questing hotkey pressed, disabling auto questing.")
                 gui_send_queue.put(
-                    deimosgui.GUICommand(
-                        deimosgui.GUICommandType.UpdateWindow,
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
                         ("QuestingStatus", "Disabled"),
                     )
                 )
@@ -1013,8 +1016,8 @@ async def main():
                         "任务编队未找到任何已注入的做任务客户端；自动任务未启动。"
                     )
                     gui_send_queue.put(
-                        deimosgui.GUICommand(
-                            deimosgui.GUICommandType.UpdateWindow,
+                        xuanshu_gui.GUICommand(
+                            xuanshu_gui.GUICommandType.UpdateWindow,
                             ("QuestingStatus", "Disabled"),
                         )
                     )
@@ -1027,8 +1030,8 @@ async def main():
                 if sigil_task is not None and not sigil_task.cancelled():
                     logger.debug("Sigil hotkey pressed, disabling auto sigil.")
                     gui_send_queue.put(
-                        deimosgui.GUICommand(
-                            deimosgui.GUICommandType.UpdateWindow,
+                        xuanshu_gui.GUICommand(
+                            xuanshu_gui.GUICommandType.UpdateWindow,
                             ("SigilStatus", "Disabled"),
                         )
                     )
@@ -1050,8 +1053,8 @@ async def main():
                         + f"；打手跟随={assignments}"
                     )
                 gui_send_queue.put(
-                    deimosgui.GUICommand(
-                        deimosgui.GUICommandType.UpdateWindow,
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
                         ("QuestingStatus", "Enabled"),
                     )
                 )
@@ -1071,8 +1074,8 @@ async def main():
             if auto_pet_task is not None and not auto_pet_task.cancelled():
                 logger.debug(f"Disabling auto pet.")
                 gui_send_queue.put(
-                    deimosgui.GUICommand(
-                        deimosgui.GUICommandType.UpdateWindow,
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
                         ("Auto PetStatus", "Disabled"),
                     )
                 )
@@ -1082,8 +1085,8 @@ async def main():
             else:
                 logger.debug(f"Enabling auto pet.")
                 gui_send_queue.put(
-                    deimosgui.GUICommand(
-                        deimosgui.GUICommandType.UpdateWindow,
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
                         ("Auto PetStatus", "Enabled"),
                     )
                 )
@@ -1100,16 +1103,16 @@ async def main():
             if auto_potion_status:
                 logger.debug(f"Enabling auto potion.")
                 gui_send_queue.put(
-                    deimosgui.GUICommand(
-                        deimosgui.GUICommandType.UpdateWindow,
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
                         ("Auto PotionStatus", "Enabled"),
                     )
                 )
             else:
                 logger.debug(f"Disabling auto potion.")
                 gui_send_queue.put(
-                    deimosgui.GUICommand(
-                        deimosgui.GUICommandType.UpdateWindow,
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
                         ("Auto PotionStatus", "Disabled"),
                     )
                 )
@@ -1117,22 +1120,22 @@ async def main():
     def publish_fishing_groups(groups):
         global auto_fish_status
         auto_fish_status = bool(groups)
-        gui_send_queue.put(deimosgui.GUICommand(
-            deimosgui.GUICommandType.UpdateWindow, ("FishingGroups", groups)))
+        gui_send_queue.put(xuanshu_gui.GUICommand(
+            xuanshu_gui.GUICommandType.UpdateWindow, ("FishingGroups", groups)))
 
     fishing_groups = FishingGroups(fish_bot, lambda: walker.clients, publish_fishing_groups)
 
     async def toggle_auto_fish_hotkey():
         if not freecam_status:
-            gui_send_queue.put(deimosgui.GUICommand(
-                deimosgui.GUICommandType.UpdateWindow, ("FishingToggle", None)))
+            gui_send_queue.put(xuanshu_gui.GUICommand(
+                xuanshu_gui.GUICommandType.UpdateWindow, ("FishingToggle", None)))
 
     # Generic hotkey callback factory — sends InvokeAction to GUI thread,
     # which calls the button's click handler. Works for ANY registered action.
     def _make_hotkey_callback(action_id):
         async def _callback():
             gui_send_queue.put(
-                deimosgui.GUICommand(deimosgui.GUICommandType.InvokeAction, action_id)
+                xuanshu_gui.GUICommand(xuanshu_gui.GUICommandType.InvokeAction, action_id)
             )
 
         return _callback
@@ -1379,8 +1382,8 @@ async def main():
             apply_questing_roles(False)
             logger.error("任务编队中没有可用的做任务客户端，自动任务已停止。")
             gui_send_queue.put(
-                deimosgui.GUICommand(
-                    deimosgui.GUICommandType.UpdateWindow,
+                xuanshu_gui.GUICommand(
+                    xuanshu_gui.GUICommandType.UpdateWindow,
                     ("QuestingStatus", "Disabled"),
                 )
             )
@@ -1401,8 +1404,8 @@ async def main():
                 return
             runtime_status[hitter.title] = value
             gui_send_queue.put(
-                deimosgui.GUICommand(
-                    deimosgui.GUICommandType.UpdateWindow,
+                xuanshu_gui.GUICommand(
+                    xuanshu_gui.GUICommandType.UpdateWindow,
                     ("QuestPartyRuntimeStatus", "\n".join(runtime_status.values())),
                 )
             )
@@ -1413,8 +1416,8 @@ async def main():
             runtime_status.pop(hitter.title, None)
             hitter.quest_party_status_session = None
             gui_send_queue.put(
-                deimosgui.GUICommand(
-                    deimosgui.GUICommandType.UpdateWindow,
+                xuanshu_gui.GUICommand(
+                    xuanshu_gui.GUICommandType.UpdateWindow,
                     ("QuestPartyRuntimeStatus", "\n".join(runtime_status.values())),
                 )
             )
@@ -1928,8 +1931,8 @@ async def main():
             )
         elif quest_party_enabled:
             gui_send_queue.put(
-                deimosgui.GUICommand(
-                    deimosgui.GUICommandType.UpdateWindow,
+                xuanshu_gui.GUICommand(
+                    xuanshu_gui.GUICommandType.UpdateWindow,
                     ("QuestPartyRuntimeStatus", ""),
                 )
             )
@@ -2708,8 +2711,8 @@ async def main():
 
     def _send_hooked_clients_update():
         gui_send_queue.put(
-            deimosgui.GUICommand(
-                deimosgui.GUICommandType.UpdateHookedClients,
+            xuanshu_gui.GUICommand(
+                xuanshu_gui.GUICommandType.UpdateHookedClients,
                 _build_hooked_clients_info(),
             )
         )
@@ -2864,16 +2867,16 @@ async def main():
                                 y1 = min(head[1], feet[1])
                                 y2 = max(head[1], feet[1])
                                 gui_send_queue.put(
-                                    deimosgui.GUICommand(
-                                        deimosgui.GUICommandType.UpdateHighlightBox,
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateHighlightBox,
                                         (client.window_handle, x1, y1, x2, y2),
                                     )
                                 )
                             elif feet is not None:
                                 # Head behind camera - just show small box at feet
                                 gui_send_queue.put(
-                                    deimosgui.GUICommand(
-                                        deimosgui.GUICommandType.UpdateHighlightBox,
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateHighlightBox,
                                         (
                                             client.window_handle,
                                             feet[0] - 30,
@@ -2885,15 +2888,15 @@ async def main():
                                 )
                             else:
                                 gui_send_queue.put(
-                                    deimosgui.GUICommand(
-                                        deimosgui.GUICommandType.UpdateHighlightBox,
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateHighlightBox,
                                         None,
                                     )
                                 )
                         else:
                             gui_send_queue.put(
-                                deimosgui.GUICommand(
-                                    deimosgui.GUICommandType.UpdateHighlightBox, None
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateHighlightBox, None
                                 )
                             )
                     except wizwalker.errors.MemoryReadError:
@@ -2903,8 +2906,8 @@ async def main():
                     await asyncio.sleep(0.033)
             except asyncio.CancelledError:
                 gui_send_queue.put(
-                    deimosgui.GUICommand(
-                        deimosgui.GUICommandType.UpdateHighlightBox, None
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateHighlightBox, None
                     )
                 )
                 return
@@ -2920,8 +2923,8 @@ async def main():
                         if window and window is not False:
                             rect = await window.scale_to_client()
                             gui_send_queue.put(
-                                deimosgui.GUICommand(
-                                    deimosgui.GUICommandType.UpdateHighlightBox,
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateHighlightBox,
                                     (
                                         client.window_handle,
                                         rect.x1,
@@ -2933,8 +2936,8 @@ async def main():
                             )
                         else:
                             gui_send_queue.put(
-                                deimosgui.GUICommand(
-                                    deimosgui.GUICommandType.UpdateHighlightBox, None
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateHighlightBox, None
                                 )
                             )
                     except wizwalker.errors.MemoryReadError:
@@ -2944,8 +2947,8 @@ async def main():
                     await asyncio.sleep(0.033)
             except asyncio.CancelledError:
                 gui_send_queue.put(
-                    deimosgui.GUICommand(
-                        deimosgui.GUICommandType.UpdateHighlightBox, None
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateHighlightBox, None
                     )
                 )
                 return
@@ -2992,8 +2995,8 @@ async def main():
                             )
                         entity_data.sort(key=lambda e: e["distance"])
                         gui_send_queue.put(
-                            deimosgui.GUICommand(
-                                deimosgui.GUICommandType.UpdateEntityListData,
+                            xuanshu_gui.GUICommand(
+                                xuanshu_gui.GUICommandType.UpdateEntityListData,
                                 entity_data,
                             )
                         )
@@ -3035,14 +3038,14 @@ async def main():
                 if task is not None and not task.done()
             ]
             gui_send_queue.put(
-                deimosgui.GUICommand(
-                    deimosgui.GUICommandType.UpdateWindow,
+                xuanshu_gui.GUICommand(
+                    xuanshu_gui.GUICommandType.UpdateWindow,
                     ("BotGroups", groups),
                 )
             )
             gui_send_queue.put(
-                deimosgui.GUICommand(
-                    deimosgui.GUICommandType.UpdateWindow,
+                xuanshu_gui.GUICommand(
+                    xuanshu_gui.GUICommandType.UpdateWindow,
                     ("BotStatus", "Enabled" if groups else "Disabled"),
                 )
             )
@@ -3103,20 +3106,20 @@ async def main():
                         current_rotation: Orient = Orient(0, 0, 0)
 
                     gui_send_queue.put(
-                        deimosgui.GUICommand(
-                            deimosgui.GUICommandType.UpdateWindow,
+                        xuanshu_gui.GUICommand(
+                            xuanshu_gui.GUICommandType.UpdateWindow,
                             ("Title", f"Client: {foreground_client.title}"),
                         )
                     )
                     gui_send_queue.put(
-                        deimosgui.GUICommand(
-                            deimosgui.GUICommandType.UpdateWindow,
+                        xuanshu_gui.GUICommand(
+                            xuanshu_gui.GUICommandType.UpdateWindow,
                             ("Zone", f"Zone: {current_zone}"),
                         )
                     )
                     gui_send_queue.put(
-                        deimosgui.GUICommand(
-                            deimosgui.GUICommandType.UpdateWindow,
+                        xuanshu_gui.GUICommand(
+                            xuanshu_gui.GUICommandType.UpdateWindow,
                             (
                                 "xyz",
                                 "Position (XYZ): "
@@ -3127,8 +3130,8 @@ async def main():
                         )
                     )
                     gui_send_queue.put(
-                        deimosgui.GUICommand(
-                            deimosgui.GUICommandType.UpdateWindow,
+                        xuanshu_gui.GUICommand(
+                            xuanshu_gui.GUICommandType.UpdateWindow,
                             (
                                 "pry",
                                 "Orientation (PRY): "
@@ -3217,26 +3220,26 @@ async def main():
 
                         if not walker.clients:
                             gui_send_queue.put(
-                                deimosgui.GUICommand(
-                                    deimosgui.GUICommandType.UpdateWindow,
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateWindow,
                                     ("Title", f"Client: None"),
                                 )
                             )
                             gui_send_queue.put(
-                                deimosgui.GUICommand(
-                                    deimosgui.GUICommandType.UpdateWindow,
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateWindow,
                                     ("Zone", f"Zone: "),
                                 )
                             )
                             gui_send_queue.put(
-                                deimosgui.GUICommand(
-                                    deimosgui.GUICommandType.UpdateWindow,
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateWindow,
                                     ("xyz", f"Position (XYZ): "),
                                 )
                             )
                             gui_send_queue.put(
-                                deimosgui.GUICommand(
-                                    deimosgui.GUICommandType.UpdateWindow,
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateWindow,
                                     ("pry", f"Orientation (PRY): "),
                                 )
                             )
@@ -3433,17 +3436,17 @@ async def main():
                 while True:
                     com = recv_queue.get_nowait()
                     match com.com_type:
-                        case deimosgui.GUICommandType.Close:
+                        case xuanshu_gui.GUICommandType.Close:
                             if len(walker.clients) != 0:
-                                raise deimosgui.ToolClosedException
+                                raise xuanshu_gui.ToolClosedException
                             os._exit(
                                 0
                             )  # "Fuck you, you're getting terminated homeboy" - Slack
-                        case deimosgui.GUICommandType.AttemptedClose:
+                        case xuanshu_gui.GUICommandType.AttemptedClose:
                             if not walker.clients:
                                 os._exit(0)
-                            raise deimosgui.ToolClosedException
-                        case deimosgui.GUICommandType.ToggleOption:
+                            raise xuanshu_gui.ToolClosedException
+                        case xuanshu_gui.GUICommandType.ToggleOption:
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
@@ -3487,13 +3490,13 @@ async def main():
                                         )
                                 case GUIKeys.toggle_show_expanded_logs:
                                     gui_send_queue.put(
-                                        deimosgui.GUICommand(
-                                            deimosgui.GUICommandType.UpdateConsole
+                                        xuanshu_gui.GUICommand(
+                                            xuanshu_gui.GUICommandType.UpdateConsole
                                         )
                                     )
                                 case _:
                                     logger.debug(f"Unknown window toggle: {com.data}")
-                        case deimosgui.GUICommandType.Copy:
+                        case xuanshu_gui.GUICommandType.Copy:
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
@@ -3517,8 +3520,8 @@ async def main():
                                     if foreground_client:
                                         logger.debug("Opening Entity List")
                                         gui_send_queue.put(
-                                            deimosgui.GUICommand(
-                                                deimosgui.GUICommandType.ShowEntityListPopup
+                                            xuanshu_gui.GUICommand(
+                                                xuanshu_gui.GUICommandType.ShowEntityListPopup
                                             )
                                         )
                                 case GUIKeys.copy_camera_position:
@@ -3610,8 +3613,8 @@ async def main():
                                         if ui_tree:
                                             logger.success("Available UI Paths:")
                                             gui_send_queue.put(
-                                                deimosgui.GUICommand(
-                                                    deimosgui.GUICommandType.ShowUITreePopup,
+                                                xuanshu_gui.GUICommand(
+                                                    xuanshu_gui.GUICommandType.ShowUITreePopup,
                                                     (ui_tree, ui_tree_texts),
                                                 )
                                             )
@@ -3630,13 +3633,13 @@ async def main():
 
                                 case GUIKeys.copy_logs:
                                     gui_send_queue.put(
-                                        deimosgui.GUICommand(
-                                            deimosgui.GUICommandType.CopyConsole, None
+                                        xuanshu_gui.GUICommand(
+                                            xuanshu_gui.GUICommandType.CopyConsole, None
                                         )
                                     )
                                 case _:
                                     logger.debug(f"Unknown copy value: {com.data}")
-                        case deimosgui.GUICommandType.Teleport:
+                        case xuanshu_gui.GUICommandType.Teleport:
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
@@ -3651,7 +3654,7 @@ async def main():
                                     await tp_to_freecam_hotkey()
                                 case _:
                                     logger.debug(f"Unknown teleport type: {com.data}")
-                        case deimosgui.GUICommandType.CustomTeleport:
+                        case xuanshu_gui.GUICommandType.CustomTeleport:
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
@@ -3670,7 +3673,7 @@ async def main():
                                 )
                                 await foreground_client.teleport(custom_xyz)
                                 await foreground_client.body.write_yaw(yaw_input)
-                        case deimosgui.GUICommandType.EntityTeleport:
+                        case xuanshu_gui.GUICommandType.EntityTeleport:
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
@@ -3715,17 +3718,17 @@ async def main():
                                 if target_entity:
                                     entity_pos = await target_entity.location()
                                     await foreground_client.teleport(entity_pos)
-                        case deimosgui.GUICommandType.SelectEnemy:
+                        case xuanshu_gui.GUICommandType.SelectEnemy:
                             if not walker.clients:
                                 gui_send_queue.put(
-                                    deimosgui.GUICommand(
-                                        deimosgui.GUICommandType.UpdateWindowValues,
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindowValues,
                                         ("EnemyInput", []),
                                     )
                                 )
                                 gui_send_queue.put(
-                                    deimosgui.GUICommand(
-                                        deimosgui.GUICommandType.UpdateWindowValues,
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindowValues,
                                         ("AllyInput", []),
                                     )
                                 )
@@ -3772,92 +3775,92 @@ async def main():
                                     slot_info,
                                 ) = result
                                 gui_send_queue.put(
-                                    deimosgui.GUICommand(
-                                        deimosgui.GUICommandType.UpdateWindow,
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
                                         ("stat_viewer", stat_lines),
                                     )
                                 )
                                 gui_send_queue.put(
-                                    deimosgui.GUICommand(
-                                        deimosgui.GUICommandType.UpdateWindowValues,
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindowValues,
                                         ("EnemyInput", enemy_names),
                                     )
                                 )
                                 gui_send_queue.put(
-                                    deimosgui.GUICommand(
-                                        deimosgui.GUICommandType.UpdateWindowValues,
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindowValues,
                                         ("AllyInput", ally_names),
                                     )
                                 )
                                 if enemy_i < len(enemy_names):
                                     gui_send_queue.put(
-                                        deimosgui.GUICommand(
-                                            deimosgui.GUICommandType.UpdateWindow,
+                                        xuanshu_gui.GUICommand(
+                                            xuanshu_gui.GUICommandType.UpdateWindow,
                                             ("EnemyInput", enemy_names[enemy_i]),
                                         )
                                     )
                                 if ally_i < len(ally_names):
                                     gui_send_queue.put(
-                                        deimosgui.GUICommand(
-                                            deimosgui.GUICommandType.UpdateWindow,
+                                        xuanshu_gui.GUICommand(
+                                            xuanshu_gui.GUICommandType.UpdateWindow,
                                             ("AllyInput", ally_names[ally_i]),
                                         )
                                     )
                                 # school_name not sent to dropdown — but sent as calc_school for readout
                                 gui_send_queue.put(
-                                    deimosgui.GUICommand(
-                                        deimosgui.GUICommandType.UpdateWindow,
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
                                         ("calc_school", school_name),
                                     )
                                 )
                                 gui_send_queue.put(
-                                    deimosgui.GUICommand(
-                                        deimosgui.GUICommandType.UpdateWindow,
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
                                         ("slot_info", slot_info),
                                     )
                                 )
                             else:
                                 gui_send_queue.put(
-                                    deimosgui.GUICommand(
-                                        deimosgui.GUICommandType.UpdateWindowValues,
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindowValues,
                                         ("EnemyInput", []),
                                     )
                                 )
                                 gui_send_queue.put(
-                                    deimosgui.GUICommand(
-                                        deimosgui.GUICommandType.UpdateWindowValues,
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindowValues,
                                         ("AllyInput", []),
                                     )
                                 )
-                        case deimosgui.GUICommandType.XYZSync:
+                        case xuanshu_gui.GUICommandType.XYZSync:
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
                                 )
                                 continue
                             await xyz_sync_hotkey()
-                        case deimosgui.GUICommandType.XPress:
+                        case xuanshu_gui.GUICommandType.XPress:
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
                                 )
                                 continue
                             await x_press_hotkey()
-                        case deimosgui.GUICommandType.FriendTeleport:
+                        case xuanshu_gui.GUICommandType.FriendTeleport:
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
                                 )
                                 continue
                             await friend_teleport_sync_hotkey()
-                        case deimosgui.GUICommandType.ToggleDialogueSideQuests:
+                        case xuanshu_gui.GUICommandType.ToggleDialogueSideQuests:
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
                                 )
                                 continue
                             await toggle_dialogue_side_quests_hotkey()
-                        case deimosgui.GUICommandType.RebindHotkey:
+                        case xuanshu_gui.GUICommandType.RebindHotkey:
                             action_id, new_key, new_mods = com.data
                             # Remove old binding from listener if active
                             old_binding = _active_bindings.get(action_id)
@@ -3900,7 +3903,7 @@ async def main():
                             logger.debug(
                                 f"Hotkey rebound: {action_id} -> {new_key} {new_mods}"
                             )
-                        case deimosgui.GUICommandType.AnchorCam:
+                        case xuanshu_gui.GUICommandType.AnchorCam:
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
@@ -3955,13 +3958,13 @@ async def main():
                                     await camera.write_attached_client_object(
                                         target_entity
                                     )
-                        # case deimosgui.GUICommandType.SetPetWorld:
+                        # case xuanshu_gui.GUICommandType.SetPetWorld:
                         # 	if (com.data[1] is None):
                         # 		logger.debug('Invalid pet world selected!')
                         # 	else:
                         # 		logger.debug(f'Setting Auto Pet World to {com.data[1]}')
                         # 		assign_pet_level(com.data[1])
-                        case deimosgui.GUICommandType.SetCamPosition:
+                        case xuanshu_gui.GUICommandType.SetCamPosition:
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
@@ -3993,7 +3996,7 @@ async def main():
                                 await camera.update_orientation(
                                     Orient(pitch_input, roll_input, yaw_input)
                                 )
-                        case deimosgui.GUICommandType.SetCamDistance:
+                        case xuanshu_gui.GUICommandType.SetCamDistance:
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
@@ -4022,7 +4025,7 @@ async def main():
                                     await camera.write_zoom_resolution(min_input)
                                 if com.data["Max"]:
                                     await camera.write_max_distance(max_input)
-                        case deimosgui.GUICommandType.PopulateCamera:
+                        case xuanshu_gui.GUICommandType.PopulateCamera:
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
@@ -4043,69 +4046,69 @@ async def main():
                                 current_min = await elastic_camera.min_distance()
                                 current_max = await elastic_camera.max_distance()
                                 gui_send_queue.put(
-                                    deimosgui.GUICommand(
-                                        deimosgui.GUICommandType.UpdateWindow,
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
                                         ("CamXInput", f"{camera_pos.x:.2f}"),
                                     )
                                 )
                                 gui_send_queue.put(
-                                    deimosgui.GUICommand(
-                                        deimosgui.GUICommandType.UpdateWindow,
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
                                         ("CamYInput", f"{camera_pos.y:.2f}"),
                                     )
                                 )
                                 gui_send_queue.put(
-                                    deimosgui.GUICommand(
-                                        deimosgui.GUICommandType.UpdateWindow,
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
                                         ("CamZInput", f"{camera_pos.z:.2f}"),
                                     )
                                 )
                                 gui_send_queue.put(
-                                    deimosgui.GUICommand(
-                                        deimosgui.GUICommandType.UpdateWindow,
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
                                         ("CamYawInput", f"{camera_yaw:.2f}"),
                                     )
                                 )
                                 gui_send_queue.put(
-                                    deimosgui.GUICommand(
-                                        deimosgui.GUICommandType.UpdateWindow,
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
                                         ("CamRollInput", f"{camera_roll:.2f}"),
                                     )
                                 )
                                 gui_send_queue.put(
-                                    deimosgui.GUICommand(
-                                        deimosgui.GUICommandType.UpdateWindow,
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
                                         ("CamPitchInput", f"{camera_pitch:.2f}"),
                                     )
                                 )
                                 gui_send_queue.put(
-                                    deimosgui.GUICommand(
-                                        deimosgui.GUICommandType.UpdateWindow,
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
                                         ("CamEntityInput", "Player Object"),
                                     )
                                 )
                                 gui_send_queue.put(
-                                    deimosgui.GUICommand(
-                                        deimosgui.GUICommandType.UpdateWindow,
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
                                         ("CamDistanceInput", f"{current_zoom:.2f}"),
                                     )
                                 )
                                 gui_send_queue.put(
-                                    deimosgui.GUICommand(
-                                        deimosgui.GUICommandType.UpdateWindow,
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
                                         ("CamMinInput", f"{current_min:.2f}"),
                                     )
                                 )
                                 gui_send_queue.put(
-                                    deimosgui.GUICommand(
-                                        deimosgui.GUICommandType.UpdateWindow,
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
                                         ("CamMaxInput", f"{current_max:.2f}"),
                                     )
                                 )
                                 logger.debug(
                                     "Populated camera fields with current values."
                                 )
-                        case deimosgui.GUICommandType.PopulatePlayerGID:
+                        case xuanshu_gui.GUICommandType.PopulatePlayerGID:
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
@@ -4114,12 +4117,12 @@ async def main():
                             if foreground_client:
                                 gid = await foreground_client.game_client.player_gid()
                                 gui_send_queue.put(
-                                    deimosgui.GUICommand(
-                                        deimosgui.GUICommandType.UpdateWindow,
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
                                         ("CamEntityGIDInput", str(gid)),
                                     )
                                 )
-                        case deimosgui.GUICommandType.GoToZone:
+                        case xuanshu_gui.GUICommandType.GoToZone:
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
@@ -4142,7 +4145,7 @@ async def main():
                                     logger.error(
                                         "Failed to go to zone.  It may be spelled incorrectly, or may not be supported."
                                     )
-                        case deimosgui.GUICommandType.GoToWorld:
+                        case xuanshu_gui.GUICommandType.GoToWorld:
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
@@ -4154,7 +4157,7 @@ async def main():
                                     for c in background_clients:
                                         clients.append(c)
                                 await to_world(clients, com.data[1])
-                        case deimosgui.GUICommandType.GoToBazaar:
+                        case xuanshu_gui.GUICommandType.GoToBazaar:
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
@@ -4178,7 +4181,7 @@ async def main():
                                     logger.error(
                                         "Failed to go to zone.  It may be spelled incorrectly, or may not be supported."
                                     )
-                        case deimosgui.GUICommandType.RefillPotions:
+                        case xuanshu_gui.GUICommandType.RefillPotions:
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
@@ -4195,7 +4198,7 @@ async def main():
                                         for client in clients
                                     ]
                                 )
-                        case deimosgui.GUICommandType.ExecuteFlythrough:
+                        case xuanshu_gui.GUICommandType.ExecuteFlythrough:
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
@@ -4210,8 +4213,8 @@ async def main():
                                     await foreground_client.camera_elastic()
                                 finally:
                                     gui_send_queue.put(
-                                        deimosgui.GUICommand(
-                                            deimosgui.GUICommandType.UpdateWindow,
+                                        xuanshu_gui.GUICommand(
+                                            xuanshu_gui.GUICommandType.UpdateWindow,
                                             ("FlythroughStatus", "Disabled"),
                                         )
                                     )
@@ -4219,12 +4222,12 @@ async def main():
                             if foreground_client:
                                 flythrough_task = asyncio.create_task(_flythrough())
                                 gui_send_queue.put(
-                                    deimosgui.GUICommand(
-                                        deimosgui.GUICommandType.UpdateWindow,
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
                                         ("FlythroughStatus", "Enabled"),
                                     )
                                 )
-                        case deimosgui.GUICommandType.KillFlythrough:
+                        case xuanshu_gui.GUICommandType.KillFlythrough:
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
@@ -4239,12 +4242,12 @@ async def main():
                                 await asyncio.sleep(0)
                                 await foreground_client.camera_elastic()
                             gui_send_queue.put(
-                                deimosgui.GUICommand(
-                                    deimosgui.GUICommandType.UpdateWindow,
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateWindow,
                                     ("FlythroughStatus", "Disabled"),
                                 )
                             )
-                        case deimosgui.GUICommandType.HighlightEntity:
+                        case xuanshu_gui.GUICommandType.HighlightEntity:
                             if highlight_task and not highlight_task.done():
                                 highlight_task.cancel()
                             if foreground_client and com.data:
@@ -4252,7 +4255,7 @@ async def main():
                                     _highlight_entity_loop(foreground_client, com.data)
                                 )
 
-                        case deimosgui.GUICommandType.HighlightUIWindow:
+                        case xuanshu_gui.GUICommandType.HighlightUIWindow:
                             if highlight_task and not highlight_task.done():
                                 highlight_task.cancel()
                             if foreground_client and com.data:
@@ -4262,17 +4265,17 @@ async def main():
                                     )
                                 )
 
-                        case deimosgui.GUICommandType.ClearHighlight:
+                        case xuanshu_gui.GUICommandType.ClearHighlight:
                             if highlight_task and not highlight_task.done():
                                 highlight_task.cancel()
                                 highlight_task = None
                             gui_send_queue.put(
-                                deimosgui.GUICommand(
-                                    deimosgui.GUICommandType.UpdateHighlightBox, None
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateHighlightBox, None
                                 )
                             )
 
-                        case deimosgui.GUICommandType.StartEntityStream:
+                        case xuanshu_gui.GUICommandType.StartEntityStream:
                             if entity_stream_task and not entity_stream_task.done():
                                 entity_stream_task.cancel()
                             if foreground_client:
@@ -4280,12 +4283,12 @@ async def main():
                                     _entity_stream_loop(foreground_client)
                                 )
 
-                        case deimosgui.GUICommandType.StopEntityStream:
+                        case xuanshu_gui.GUICommandType.StopEntityStream:
                             if entity_stream_task and not entity_stream_task.done():
                                 entity_stream_task.cancel()
                                 entity_stream_task = None
 
-                        case deimosgui.GUICommandType.StartFishingGroup:
+                        case xuanshu_gui.GUICommandType.StartFishingGroup:
                             if freecam_status:
                                 logger.warning("请先退出自由视角再启动钓鱼组")
                                 fishing_groups.notify()
@@ -4298,10 +4301,10 @@ async def main():
                                 logger.warning(str(exc))
                                 fishing_groups.notify()
 
-                        case deimosgui.GUICommandType.StopFishingGroup:
+                        case xuanshu_gui.GUICommandType.StopFishingGroup:
                             await fishing_groups.stop(com.data.get("clients"))
 
-                        case deimosgui.GUICommandType.ExecuteBot:
+                        case xuanshu_gui.GUICommandType.ExecuteBot:
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
@@ -4345,6 +4348,7 @@ async def main():
                                 old_task = bot_tasks.pop(old_key, None)
                                 if old_task is not None and not old_task.done():
                                     old_task.cancel()
+                                    await asyncio.gather(old_task, return_exceptions=True)
                                     logger.info(
                                         f"已停止与新任务重叠的脚本组：{'+'.join(old_key)}"
                                     )
@@ -4402,8 +4406,11 @@ async def main():
                                             )
                                         await asyncio.sleep(1)
 
+                            async def guarded_bot(run=run_bot, clients=tuple(selected_clients)):
+                                await run_with_script_popups(run, clients)
+
                             new_task = asyncio.create_task(
-                                try_task_coro(run_bot, selected_clients, True)
+                                try_task_coro(guarded_bot, selected_clients, True)
                             )
                             bot_tasks[group_key] = new_task
 
@@ -4415,7 +4422,7 @@ async def main():
 
                             new_task.add_done_callback(bot_done_callback)
                             send_bot_groups_update()
-                        case deimosgui.GUICommandType.KillBot:
+                        case xuanshu_gui.GUICommandType.KillBot:
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
@@ -4432,14 +4439,16 @@ async def main():
                             if not groups_to_stop:
                                 logger.info("所选客户端没有运行中的脚本。")
                                 continue
+                            stopping_tasks = []
                             for key in groups_to_stop:
                                 task = bot_tasks.pop(key, None)
                                 if task is not None and not task.done():
                                     task.cancel()
+                                    stopping_tasks.append(task)
                                 logger.info(f"脚本已停止：{'+'.join(key)}")
-                            await asyncio.sleep(0)
+                            await asyncio.gather(*stopping_tasks, return_exceptions=True)
                             send_bot_groups_update()
-                        case deimosgui.GUICommandType.SetPlaystyles:
+                        case xuanshu_gui.GUICommandType.SetPlaystyles:
                             playstyle_text, requested_titles = unpack_bot_command(
                                 com.data
                             )
@@ -4506,7 +4515,7 @@ async def main():
                                 f"战斗风格已应用到：{', '.join(applied_titles)}；"
                                 f"自动战斗{'已刷新' if restarted else '当前未开启'}。"
                             )
-                        case deimosgui.GUICommandType.ResetPlaystyles:
+                        case xuanshu_gui.GUICommandType.ResetPlaystyles:
                             requested_titles = None
                             if isinstance(com.data, dict):
                                 requested_titles = normalize_client_titles(
@@ -4532,8 +4541,8 @@ async def main():
                                 combat_playstyle_overrides.clear()
                             restarted = await restart_combat_task_if_running()
                             gui_send_queue.put(
-                                deimosgui.GUICommand(
-                                    deimosgui.GUICommandType.UpdateWindow,
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateWindow,
                                     ("combat_config", default_config),
                                 )
                             )
@@ -4542,7 +4551,7 @@ async def main():
                                 f"已应用到：{', '.join(reset_titles)}，"
                                 f"自动战斗{'已刷新' if restarted else '当前未开启'}。"
                             )
-                        case deimosgui.GUICommandType.SetScale:
+                        case xuanshu_gui.GUICommandType.SetScale:
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
@@ -4557,15 +4566,15 @@ async def main():
                                 ]
                             )
 
-                        case deimosgui.GUICommandType.LoadAccounts:
+                        case xuanshu_gui.GUICommandType.LoadAccounts:
                             gui_send_queue.put(
-                                deimosgui.GUICommand(
-                                    deimosgui.GUICommandType.UpdateAccountList,
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateAccountList,
                                     build_account_list_payload(),
                                 )
                             )
 
-                        case deimosgui.GUICommandType.SaveAccount:
+                        case xuanshu_gui.GUICommandType.SaveAccount:
                             if isinstance(com.data, (tuple, list)):
                                 nickname, steam_mode = com.data
                             else:
@@ -4580,13 +4589,13 @@ async def main():
                             except RuntimeError as e:
                                 logger.info(f"Account save cancelled or failed: {e}")
                             gui_send_queue.put(
-                                deimosgui.GUICommand(
-                                    deimosgui.GUICommandType.UpdateAccountList,
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateAccountList,
                                     build_account_list_payload(),
                                 )
                             )
 
-                        case deimosgui.GUICommandType.UpdateAccount:
+                        case xuanshu_gui.GUICommandType.UpdateAccount:
                             nickname, steam_mode = com.data
                             try:
                                 wizlaunch.set_account_steam(nickname, bool(steam_mode))
@@ -4598,23 +4607,23 @@ async def main():
                                     f"Could not update account '{nickname}': {e}"
                                 )
                             gui_send_queue.put(
-                                deimosgui.GUICommand(
-                                    deimosgui.GUICommandType.UpdateAccountList,
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateAccountList,
                                     build_account_list_payload(),
                                 )
                             )
 
-                        case deimosgui.GUICommandType.DeleteAccount:
+                        case xuanshu_gui.GUICommandType.DeleteAccount:
                             wizlaunch.delete_account(com.data)
                             logger.info(f"Account '{com.data}' removed.")
                             gui_send_queue.put(
-                                deimosgui.GUICommand(
-                                    deimosgui.GUICommandType.UpdateAccountList,
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateAccountList,
                                     build_account_list_payload(),
                                 )
                             )
 
-                        case deimosgui.GUICommandType.LaunchInstance:
+                        case xuanshu_gui.GUICommandType.LaunchInstance:
                             nicknames, game_path = com.data
                             if not game_path:
                                 game_path = str(utils.get_wiz_install())
@@ -4654,8 +4663,8 @@ async def main():
                             # Clear any released handles so newly launched clients get auto-hooked
                             released_handles.clear()
                             gui_send_queue.put(
-                                deimosgui.GUICommand(
-                                    deimosgui.GUICommandType.ClearLaunchCheckboxes
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.ClearLaunchCheckboxes
                                 )
                             )
                             try:
@@ -4668,10 +4677,10 @@ async def main():
                             except Exception as e:
                                 logger.error(f"Error launching instances: {e}")
 
-                        case deimosgui.GUICommandType.ReorderAccounts:
+                        case xuanshu_gui.GUICommandType.ReorderAccounts:
                             wizlaunch.reorder_accounts(com.data)
 
-                        case deimosgui.GUICommandType.ReorderClients:
+                        case xuanshu_gui.GUICommandType.ReorderClients:
                             handles = com.data
                             client_map = {c.window_handle: c for c in walker.clients}
                             new_order = [
@@ -4687,7 +4696,7 @@ async def main():
                                 c.title = f"p{i + 1}"
                             _send_hooked_clients_update()
 
-                        case deimosgui.GUICommandType.UnhookClient:
+                        case xuanshu_gui.GUICommandType.UnhookClient:
                             handle = com.data
                             for c in walker.clients[:]:
                                 if c.window_handle == handle:
@@ -4711,7 +4720,7 @@ async def main():
                                 _restart_always_on_tasks()
                                 _restart_active_toggle_tasks()
 
-                        case deimosgui.GUICommandType.HookClient:
+                        case xuanshu_gui.GUICommandType.HookClient:
                             handle = com.data
                             # Remove from released set so it can be managed
                             released_handles.discard(handle)
@@ -4766,7 +4775,7 @@ async def main():
                             _restart_always_on_tasks()
                             _restart_active_toggle_tasks()
 
-                        case deimosgui.GUICommandType.KillClient:
+                        case xuanshu_gui.GUICommandType.KillClient:
                             handle = com.data
                             await client_resizing_manager.teardown_client(handle)
                             window_config_applied.discard(handle)
@@ -4792,7 +4801,7 @@ async def main():
                                 _restart_always_on_tasks()
                                 _restart_active_toggle_tasks()
 
-                        case deimosgui.GUICommandType.RelaunchClient:
+                        case xuanshu_gui.GUICommandType.RelaunchClient:
                             handle, nickname = com.data
                             await client_resizing_manager.teardown_client(handle)
                             window_config_applied.discard(handle)
@@ -4832,7 +4841,7 @@ async def main():
                                 _restart_always_on_tasks()
                                 _restart_active_toggle_tasks()
 
-                        case deimosgui.GUICommandType.UpdateSettings:
+                        case xuanshu_gui.GUICommandType.UpdateSettings:
                             global speed_multiplier, use_potions, rpc_status, drop_status, anti_afk_status
                             global buy_potions, use_team_up, client_to_follow, client_to_boost
                             global questing_friend_tp, gear_switching_in_solo_zones, hitter_client
@@ -4934,8 +4943,8 @@ async def main():
                                     apply_questing_roles(False)
                                     questing_task = None
                                     gui_send_queue.put(
-                                        deimosgui.GUICommand(
-                                            deimosgui.GUICommandType.UpdateWindow,
+                                        xuanshu_gui.GUICommand(
+                                            xuanshu_gui.GUICommandType.UpdateWindow,
                                             ("QuestingStatus", "Disabled"),
                                         )
                                     )
@@ -4945,14 +4954,14 @@ async def main():
 
             if walker.clients:
                 gui_send_queue.put(
-                    deimosgui.GUICommand(
-                        deimosgui.GUICommandType.UpdateWindow,
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
                         ("Auto PetStatus", bool_to_string(auto_pet_status)),
                     )
                 )
                 gui_send_queue.put(
-                    deimosgui.GUICommand(
-                        deimosgui.GUICommandType.UpdateWindow,
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
                         ("Auto FishStatus", bool_to_string(auto_fish_status)),
                     )
                 )
@@ -5365,7 +5374,7 @@ async def main():
                 exc = t.exception()
                 if exc is None:
                     continue
-                elif isinstance(exc, deimosgui.ToolClosedException):
+                elif isinstance(exc, xuanshu_gui.ToolClosedException):
                     logger.info("Tool close triggered by user.")
                     should_exit = True
                 elif t == all_tasks.get("gui"):
@@ -5404,7 +5413,7 @@ async def main():
         await tool_finish()
         # Signal GUI thread that unhooking is done so it can exit cleanly
         try:
-            gui_send_queue.put(deimosgui.GUICommand(deimosgui.GUICommandType.Close))
+            gui_send_queue.put(xuanshu_gui.GUICommand(xuanshu_gui.GUICommandType.Close))
         except Exception:
             pass
 
@@ -5481,7 +5490,7 @@ def run():
     backend_thread.start()
 
     # Run GUI on the main thread (swap queue order: sending from window = receiving from backend)
-    deimosgui.manage_gui(
+    xuanshu_gui.manage_gui(
         recv_queue,
         gui_send_queue,
         theme_dict,

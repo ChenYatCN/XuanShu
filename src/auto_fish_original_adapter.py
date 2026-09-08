@@ -1,3 +1,4 @@
+# Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
 """GUI adapter for the repository's untouched standalone fishing script."""
 
 import asyncio
@@ -19,7 +20,7 @@ async def fish_bot(
     size_min: float = 0,
     size_max: float = 999,
 ):
-    """Run the original standalone loop against Deimos' selected client."""
+    """Run the original standalone loop against XuanShu' selected client."""
     config = (bool(is_chest), "Any", 0, 0, 0, 999) if is_chest else (
         False, school, rank, fish_id, size_min, size_max
     )

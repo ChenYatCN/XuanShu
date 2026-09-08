@@ -1,3 +1,4 @@
+# Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
 import os
 import sys
 import webbrowser
@@ -19,7 +20,7 @@ def resource_path(filename: str) -> str:
     """Resolve path for bundled resources (PyInstaller) or source directory."""
     if hasattr(sys, '_MEIPASS'):
         return os.path.join(sys._MEIPASS, filename)
-    return filename
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), filename)
 
 
 def terminate_thread(thread: Thread):
@@ -81,7 +82,7 @@ class _ThemedToolTipFilter(QObject):
     def show(self, watched, text):
         self.hide()
         popup = QWidget(None, Qt.WindowType.ToolTip)
-        popup.setObjectName("deimosThemedToolTip")
+        popup.setObjectName("xuanshuThemedToolTip")
         popup.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
         text_color = QColor(getattr(self.ctx, "text_color", "#ffffff"))
@@ -90,10 +91,10 @@ class _ThemedToolTipFilter(QObject):
             f"{text_color.blue()},55)"
         )
         popup.setStyleSheet(
-            "QWidget#deimosThemedToolTip {"
+            "QWidget#xuanshuThemedToolTip {"
             " background-color: transparent;"
             "}"
-            "QLabel#deimosThemedToolTipText {"
+            "QLabel#xuanshuThemedToolTipText {"
             f" background-color: {getattr(self.ctx, 'alt_bg', '#202030')};"
             f" color: {getattr(self.ctx, 'text_color', '#ffffff')};"
             f" border: 2px solid {border};"
@@ -105,7 +106,7 @@ class _ThemedToolTipFilter(QObject):
         layout = QVBoxLayout(popup)
         layout.setContentsMargins(0, 0, 0, 0)
         label = QLabel(text, popup)
-        label.setObjectName("deimosThemedToolTipText")
+        label.setObjectName("xuanshuThemedToolTipText")
         label.setFont(watched.font())
         layout.addWidget(label)
         popup.ensurePolished()

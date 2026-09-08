@@ -1,6 +1,7 @@
-"""Self-update support for Deimos.
+# Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
+"""Self-update support for XuanShu.
 
-This module is deliberately self-contained — it never imports ``Deimos`` (to
+This module is deliberately self-contained — it never imports ``XuanShu`` (to
 avoid an import cycle) and takes the version / repo coordinates as arguments.
 
 Flow (frozen builds only):
@@ -8,7 +9,7 @@ Flow (frozen builds only):
   1. ``get_latest_release`` queries the GitHub Releases API.
   2. ``is_newer`` compares it against the running version (semver-aware,
      including pre-release ordering).
-  3. ``download_update`` streams the new ``Deimos.exe`` into ``%APPDATA%`` and
+  3. ``download_update`` streams the new ``XuanShu.exe`` into ``%APPDATA%`` and
      verifies its SHA256.
   4. ``apply_and_relaunch`` extracts the embedded ``deimos-updater.exe`` helper
      and spawns it detached; the helper waits for us to exit, swaps the exe and
@@ -26,6 +27,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from src.branding import appdata_dir
 from typing import Callable, Optional
 
 import requests
@@ -43,21 +45,21 @@ _UPDATER_BINARY_NAME = "deimos-updater.exe"
 @dataclass
 class ReleaseInfo:
     version: str  # version number without leading 'v', e.g. "3.14.0"
-    exe_url: Optional[str]  # direct download URL for Deimos.exe
-    sha256: Optional[str]  # expected SHA256 of Deimos.exe (lowercase hex) or None
+    exe_url: Optional[str]  # direct download URL for XuanShu.exe
+    sha256: Optional[str]  # expected SHA256 of XuanShu.exe (lowercase hex) or None
     notes_url: str  # human-facing release page
     prerelease: bool
 
 
 def is_frozen() -> bool:
-    """True when running as a PyInstaller bundle (i.e. a real Deimos.exe)."""
+    """True when running as a PyInstaller bundle (i.e. a real XuanShu.exe)."""
     return getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")
 
 
 def update_dir() -> Path:
     """Writable scratch directory for downloads / the helper / its log."""
     appdata = os.environ.get("APPDATA", "")
-    d = Path(appdata) / "Deimos" / "update" if appdata else Path(os.getcwd()) / "update"
+    d = appdata_dir() / "update"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -182,9 +184,9 @@ def get_latest_release(
     sha_url = None
     for asset in data.get("assets", []):
         name = asset.get("name", "")
-        if name == "Deimos.exe":
+        if name == "XuanShu.exe":
             exe_url = asset.get("browser_download_url")
-        elif name in ("Deimos.exe.sha256", "Deimos.sha256"):
+        elif name in ("XuanShu.exe.sha256", "XuanShu.sha256"):
             sha_url = asset.get("browser_download_url")
 
     sha256 = None
@@ -192,7 +194,7 @@ def get_latest_release(
         try:
             r = requests.get(sha_url, timeout=timeout)
             r.raise_for_status()
-            # Accept either "<hash>" or "<hash>  Deimos.exe"
+            # Accept either "<hash>" or "<hash>  XuanShu.exe"
             sha256 = r.text.strip().split()[0].lower()
         except Exception as e:
             logger.debug(f"Could not fetch checksum: {e}")
@@ -223,7 +225,7 @@ def download_update(
     ``progress_cb`` receives an integer percentage (0-100) when the content
     length is known. Returns the downloaded path, or ``None`` on failure.
     """
-    dest = update_dir() / "Deimos.new.exe"
+    dest = update_dir() / "XuanShu.new.exe"
     hasher = hashlib.sha256()
     try:
         with requests.get(url, stream=True, timeout=timeout) as r:
@@ -282,7 +284,7 @@ def _bootloader_parent_pid() -> Optional[int]:
 
     A one-file bundle runs *two* processes off the same image: the bootloader
     that unpacks ``_MEIPASS`` and the Python child that runs this code. Both
-    hold a lock on Deimos.exe, so the helper has to wait for both — waiting only
+    hold a lock on XuanShu.exe, so the helper has to wait for both — waiting only
     on ``os.getpid()`` returns while the parent is still cleaning up, and the
     swap then burns half its retry budget on sharing violations.
 

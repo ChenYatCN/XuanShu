@@ -1,4 +1,6 @@
+# Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
 import ctypes
+import ctypes.wintypes
 import os
 import queue
 import re
@@ -53,6 +55,7 @@ from src.gui.widgets import (
     PyQtSink,
 )
 from src.lang import load_lang
+from src.branding import DISPLAY_NAME, REPOSITORY_URL, UPSTREAM_URL
 
 
 class GUIContext:
@@ -79,12 +82,14 @@ def manage_gui(
     # Set AppUserModelID so Windows uses our icon in taskbar/process list
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-            f"deimos.{tool_name}"
+            "xuanshu.XuanShu"
         )
     except Exception:
         pass
 
     app = QApplication(sys.argv)
+    app.setApplicationName("XuanShu")
+    app.setApplicationDisplayName(DISPLAY_NAME)
     app.setFont(
         QFont(
             gui_font if gui_font else "Segoe UI", gui_font_size if gui_font_size else 9
@@ -109,6 +114,7 @@ def manage_gui(
     app.setStyleSheet(styles["app_style"])
 
     window = QMainWindow()
+    window.setWindowTitle(f"{DISPLAY_NAME} v{tool_version}")
     _window_flags = Qt.WindowType.FramelessWindowHint
     if gui_on_top:
         _window_flags |= Qt.WindowType.WindowStaysOnTopHint
@@ -117,8 +123,6 @@ def manage_gui(
 
     # Enable Windows 11 rounded corners on frameless window
     try:
-        import ctypes
-        import ctypes.wintypes
 
         _hwnd = ctypes.wintypes.HWND(int(window.winId()))
         DWMWA_WINDOW_CORNER_PREFERENCE = 33
@@ -266,7 +270,7 @@ def manage_gui(
     if _icon_path and os.path.exists(_icon_path):
         app_icon_label.setPixmap(QIcon(_icon_path).pixmap(20, 20))
 
-    title_label = QLabel(f"{tool_name} v{tool_version}")
+    title_label = QLabel(f"{DISPLAY_NAME} v{tool_version}")
     title_label.setStyleSheet(
         f"QLabel {{ color: {_tc}; font-weight: bold; background: transparent; }}"
     )
@@ -367,8 +371,8 @@ def manage_gui(
     ctx.exports = {}
     ctx.svgs = svgs
     ctx.titlebar_svg_icon = _titlebar_svg_icon
-    ctx.repo_base = f"https://github.com/{tool_author}/{tool_name}-Wizard101"
-    ctx.wiki_base = f"{ctx.repo_base}/wiki"
+    ctx.repo_base = REPOSITORY_URL
+    ctx.wiki_base = f"{UPSTREAM_URL}/wiki"
     ctx.tabs = tabs
     ctx.tracked_icon_buttons = []
     ctx.tracked_svg_labels = []

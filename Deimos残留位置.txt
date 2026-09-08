@@ -1,0 +1,150 @@
+当前仓库: D:\SuabataGodTool\DeimosCN-Project\DeimosCN
+扫描源码、依赖源码与文档；不扫描 .git/.venv/myenv/build/dist/backups/logs/wheels/artifacts/target 中的历史、安装或生成数据。
+
+路径名残留（包括保留的脚本语言模块）：
+Deimos-Wizard101.wiki.git
+assets/icon/Deimos-logo.png
+src/deimoslang/ir.py
+src/deimoslang/parser.py
+src/deimoslang/sem.py
+src/deimoslang/tokenizer.py
+src/deimoslang/types.py
+src/deimoslang/vm.py
+src/deimoslang/__init__.py
+tests/test_deimos_vm_targeting.py
+Up/Deimos.exe
+
+文本残留：
+BRANDING_CHANGES.md:9: - Deimos-logo.ico → XuanShu-logo.ico
+BRANDING_CHANGES.md:10: - Deimos-logo.png → XuanShu-logo.png
+BRANDING_CHANGES.md:11: - DeimosCN.code-workspace → XuanShu.code-workspace
+BRANDING_CHANGES.md:12: - DeimosCN.py → XuanShu.py
+BRANDING_CHANGES.md:13: - DeimosCN.spec → XuanShu.spec
+BRANDING_CHANGES.md:14: - DeimosCN打包.bat → XuanShu打包.bat
+BRANDING_CHANGES.md:22: - packaging/Deimos_entry.py → packaging/XuanShu_entry.py
+BRANDING_CHANGES.md:32: - src/deimosgui.py → src/legacy_gui.py
+NOTICE.md:3: 本项目基于 [Deimos-Wizard101](https://github.com/Deimos-Wizard101/Deimos-Wizard101)。原作者及贡献者保留各自作品的版权；本次更名不转移或替换原有版权。
+README.md:3: 基于 Deimos-Wizard101 的修改版本，使用 GPL-3.0-only。原作者及贡献者保留各自版权，详见 [NOTICE.md](NOTICE.md) 和 [LICENSE](LICENSE)。
+README.md:7: 设置位于 `%APPDATA%/XuanShu/settings.json`，首次启动复制旧 DeimosCN / Deimos-CN / Deimos 目录中的设置、主题和自定义图标，不覆盖已有设置，不删除旧配置。账号存储继续由 wizlaunch 管理。
+README.md:40: The GUI also has a bot creator and flythrough creator. Information on these systems are in the bots/flythroughs channels of the Deimos discord server, or the [wiki](https://github.org/Deimos-Wizard101/Deimos-Wizard101/wiki).
+XuanShu.py:50: from src.deimoslang import vm
+XuanShu.py:114: tool_author: str = "Deimos-Wizard101"
+XuanShu.py:115: repo_name: str = "Deimos-Wizard101-main"
+XuanShu.spec:147: updater_exe = ROOT / "libs/updater/target/release/deimos-updater.exe"
+.github/workflows/ci.yml:61:         ls -la libs/updater/target/release/deimos-updater.exe
+.github/workflows/ci.yml:96:         required = {"deimos-updater.exe", "wizpatch.exe"}
+.github/workflows/develop.yml:88:         ls -la libs/updater/target/release/deimos-updater.exe
+.github/workflows/develop.yml:126:         required = {"deimos-updater.exe", "wizpatch.exe"}
+.github/workflows/release.yml:135:         ls -la libs/updater/target/release/deimos-updater.exe
+.github/workflows/release.yml:174:         required = {"deimos-updater.exe", "wizpatch.exe"}
+libs/kinif/Cargo.toml:7: repository = "https://github.com/Deimos-Wizard101/kinif"
+libs/kinif/README.md:32: kinif = { git = "https://github.com/Deimos-Wizard101/kinif" }
+libs/kinif/README.md:43: Written in-house for [Deimos](https://github.com/Deimos-Wizard101/Deimos-Wizard101),
+libs/kinif/README.md:46: from-scratch reader of just the geometry Deimos needs.
+libs/updater/.gitignore:2: # Cargo.lock is committed: deimos-updater ships as a binary that rewrites the
+libs/updater/Cargo.lock:6: name = "deimos-updater"
+libs/updater/Cargo.toml:2: name = "deimos-updater"
+libs/updater/Cargo.toml:5: description = "Self-update helper for Deimos-Wizard101: waits for the parent process to exit, swaps the executable, and relaunches."
+libs/updater/Cargo.toml:7: repository = "https://github.com/Deimos-Wizard101/updater"
+libs/updater/Cargo.toml:10: name = "deimos-updater"
+libs/updater/README.md:1: # deimos-updater
+libs/updater/README.md:3: A tiny native self-update helper for [Deimos-Wizard101](https://github.com/Deimos-Wizard101/Deimos-Wizard101).
+libs/updater/README.md:5: A running PyInstaller one-file `Deimos.exe` holds a lock on its own image and
+libs/updater/README.md:6: therefore cannot overwrite itself. Deimos embeds this helper, extracts it at
+libs/updater/README.md:9: 1. Waits for the parent Deimos process (by PID) to fully exit.
+libs/updater/README.md:14: All steps are logged to `%APPDATA%/Deimos/update/updater.log` so failures (e.g.
+libs/updater/README.md:20: deimos-updater --pid <parent_pid> --new <downloaded.exe> --target <Deimos.exe> [--relaunch] [--log <path>]
+libs/updater/README.md:27: | `--target` | Path to the executable to overwrite (the running `Deimos.exe`). |
+libs/updater/README.md:29: | `--log` | Override the log file path (defaults to `%APPDATA%/Deimos/update/updater.log`). |
+libs/updater/README.md:39: Produces `target/release/deimos-updater.exe`.
+libs/updater/src/main.rs:1: //! deimos-updater
+libs/updater/src/main.rs:3: //! A tiny, native self-update helper for Deimos-Wizard101.
+libs/updater/src/main.rs:5: //! Because a running PyInstaller one-file `Deimos.exe` holds a lock on its own
+libs/updater/src/main.rs:6: //! image, it cannot overwrite itself. Deimos extracts this helper, then spawns
+libs/updater/src/main.rs:9: //!   1. Waits for every Deimos process (by PID) to fully exit. A one-file
+libs/updater/src/main.rs:21: //!   deimos-updater --pid <pid> [--pid <pid>...] --new <downloaded.exe> --target <Deimos.exe> [--relaunch] [--log <path>]
+libs/updater/src/main.rs:109:         let dir = PathBuf::from(appdata).join("Deimos").join("update");
+libs/updater/src/main.rs:113:     env::temp_dir().join("deimos-updater.log")
+libs/updater/src/main.rs:160:     log.line("=== deimos-updater started ===");
+libs/updater/src/main.rs:208:         // (Deimos hands us the update scratch dir). Deimos resolves some paths
+libs/updater/src/main.rs:210:         // scatter them under %APPDATA%\Deimos\update after every self-update.
+libs/updater/src/main.rs:222:     log.line("=== deimos-updater finished ===");
+libs/wizlaunch/src/credential_store.rs:11: pub const TARGET_PREFIX: &str = "Deimos/account/";
+libs/wizlaunch/src/metadata.rs:56:     let dir = PathBuf::from(appdata).join("Deimos");
+libs/wizlaunch/src/python.rs:11:             credui::prompt_credentials("Deimos — Save Account", &format!("Enter credentials for '{nickname}'"))?;
+libs/wizpatch/flake.nix:45:             homepage = "https://github.com/Deimos-Wizard101/wizpatch";
+libs/wizpatch/README.md:12: nix run github:Deimos-Wizard101/wizpatch -- patch
+libs/wizpatch/README.md:18: nix profile install github:Deimos-Wizard101/wizpatch
+libs/wizpatch/README.md:27: brew install --HEAD Deimos-Wizard101/wizpatch/wizpatch
+libs/wizpatch/README.md:30: (Once a tagged release exists, `brew install Deimos-Wizard101/wizpatch/wizpatch`
+libs/wizpatch/README.md:38: cargo install --git https://github.com/Deimos-Wizard101/wizpatch --features cli
+libs/wizpatch/Formula/wizpatch.rb:4: #   brew install --HEAD Deimos-Wizard101/wizpatch/wizpatch
+libs/wizpatch/Formula/wizpatch.rb:10: #   curl -fsSL https://github.com/Deimos-Wizard101/wizpatch/archive/refs/tags/v0.1.0.tar.gz | shasum -a 256
+libs/wizpatch/Formula/wizpatch.rb:13:   homepage "https://github.com/Deimos-Wizard101/wizpatch"
+libs/wizpatch/Formula/wizpatch.rb:14:   url "https://github.com/Deimos-Wizard101/wizpatch/archive/refs/tags/v0.1.0.tar.gz"
+libs/wizpatch/Formula/wizpatch.rb:17:   head "https://github.com/Deimos-Wizard101/wizpatch.git", branch: "main"
+libs/wizsprinter/wizwalker/extensions/wizsprinter/resolution_hook.py:6: that from inside the game process using WizWalker's hook framework, so Deimos can
+libs/wizsprinter/wizwalker/extensions/wizsprinter/resolution_hook.py:24: projection) is corrected separately via the CamView frustum (see Deimos client
+libs/wizsprinter/wizwalker/extensions/wizsprinter/sprinty_combat.py:24: # Off by default; flip to True (or set the env var DEIMOS_COMBAT_DEBUG=1) to
+libs/wizsprinter/wizwalker/extensions/wizsprinter/sprinty_combat.py:27: _DEBUG = _os.environ.get("DEIMOS_COMBAT_DEBUG", "").lower() in ("1", "true", "yes")
+scripts/release_notify.ps1:9:     [string]$Repository = "https://github.com/ChenYatCN/Deimos-Wizard101-main",
+src/bot_registry.py:2: """Fetching and filtering for the approved bot registry repo (Deimos-Wizard101/bots).
+src/bot_registry.py:13: registry_repo: str = 'Deimos-Wizard101/bots'
+src/bot_registry.py:19: expertmode_marker: str = '###deimos_expertmode'
+src/branding.py:9: REPOSITORY_URL = "https://github.com/ChenYatCN/Deimos-Wizard101-main"
+src/branding.py:10: UPSTREAM_URL = "https://github.com/Deimos-Wizard101/Deimos-Wizard101"
+src/branding.py:20:         for legacy in ("DeimosCN", "Deimos-CN", "Deimos"):
+src/collecting.py:264:         previous = getattr(self.client, '_deimos_collect_search', None)
+src/collecting.py:266:         self.client._deimos_collect_search = self.state
+src/legacy_gui.py:219:     # deimos -> window
+src/settings_manager.py:348: DeimosSettings = XuanShuSettings
+src/updater.py:14:   4. ``apply_and_relaunch`` extracts the embedded ``deimos-updater.exe`` helper
+src/updater.py:42: _UPDATER_BINARY_NAME = "deimos-updater.exe"
+src/deimoslang/ir.py:33:     deimos_call = auto()
+src/deimoslang/ir.py:49:     compound_deimos_call = auto()
+src/deimoslang/ir.py:127:     def emit_deimos_call(self, com: Command):
+src/deimoslang/ir.py:128:         self.emit(InstructionKind.deimos_call, [com.player_selector, com.kind.name, com.data])
+src/deimoslang/ir.py:141:                 self.emit(InstructionKind.deimos_call, [com.player_selector, com.kind.name, com.data])
+src/deimoslang/ir.py:143:                 self.emit(InstructionKind.deimos_call, [com.player_selector, com.kind.name, com.data])
+src/deimoslang/ir.py:145:                 self.emit(InstructionKind.deimos_call, [com.player_selector, com.kind.name, com.data])
+src/deimoslang/ir.py:147:                 self.emit(InstructionKind.deimos_call, [com.player_selector, com.kind.name, com.data])
+src/deimoslang/ir.py:156:                 self.emit(InstructionKind.compound_deimos_call, command_entries)
+src/deimoslang/ir.py:158:                 self.emit(InstructionKind.deimos_call, [com.player_selector, com.kind.name, com.data])
+src/deimoslang/ir.py:176:                 self.emit_deimos_call(com)
+src/deimoslang/ir.py:179:                 self.emit_deimos_call(com)
+src/deimoslang/ir.py:186:                 self.emit_deimos_call(non_inverted_com)
+src/deimoslang/ir.py:188:                     self.emit_deimos_call(com)
+src/deimoslang/ir.py:376:                 self.emit(InstructionKind.compound_deimos_call, command_entries)
+src/deimoslang/parser.py:1464:     toks = Tokenizer().tokenize(Path("./deimoslang/testbot.txt").read_text())
+src/deimoslang/vm.py:1266:     async def exec_deimos_call(self, instruction: Instruction):
+src/deimoslang/vm.py:1267:         assert instruction.kind == InstructionKind.deimos_call
+src/deimoslang/vm.py:1603:                 raise VMError(f"Unimplemented deimos call: {instruction}")
+src/deimoslang/vm.py:1605:     async def exec_compound_deimos_call(self, command_entries):
+src/deimoslang/vm.py:1612:                 kind=InstructionKind.deimos_call,
+src/deimoslang/vm.py:1616:             tasks.append(self.exec_deimos_call(instruction))
+src/deimoslang/vm.py:1839:             case InstructionKind.deimos_call:
+src/deimoslang/vm.py:1841:                 deimos_call_instruction = Instruction(
+src/deimoslang/vm.py:1842:                     kind=InstructionKind.deimos_call,
+src/deimoslang/vm.py:1845:                 await self.exec_deimos_call(deimos_call_instruction)
+src/deimoslang/vm.py:1847:             case InstructionKind.compound_deimos_call:
+src/deimoslang/vm.py:1849:                 await self.exec_compound_deimos_call(instruction.data)
+src/gui/commands.py:10:     # deimos <-> window
+src/gui/commands.py:15:     # window -> deimos
+src/gui/commands.py:67:     # deimos -> window
+src/gui/main.py:77:     tool_author="Deimos-Wizard101",
+tests/test_branding.py:8:    base=Path(tmp);old=base/'Deimos';old.mkdir();(old/'settings.json').write_text('{"x":1}');(old/'default_theme.json').write_text('{}')
+tests/test_branding.py:14:   from src.settings_manager import XuanShuSettings,DeimosSettings
+tests/test_branding.py:15:   self.assertIs(XuanShuSettings,DeimosSettings)
+tests/test_deimos_vm_targeting.py:4: from src.deimoslang.types import PlayerSelector
+tests/test_deimos_vm_targeting.py:5: from src.deimoslang.vm import VM
+tests/test_deimos_vm_targeting.py:8: class DeimosVMTargetingTests(unittest.TestCase):
+tests/test_friendtp_parser.py:3: from src.deimoslang.parser import Parser, ParserError
+tests/test_friendtp_parser.py:4: from src.deimoslang.tokenizer import Tokenizer
+tests/test_friendtp_parser.py:5: from src.deimoslang.types import CommandKind, IdentExpression, TeleportKind
+tests/test_waitforzonechange.py:5: from src.deimoslang.parser import Parser, ParserError
+tests/test_waitforzonechange.py:6: from src.deimoslang.tokenizer import Tokenizer
+tests/test_waitforzonechange.py:7: from src.deimoslang.types import WaitforKind, StringExpression
+tests/test_waitforzonechange.py:8: from src.deimoslang.ir import Instruction, InstructionKind
+tests/test_waitforzonechange.py:9: from src.deimoslang.vm import VM
+tests/test_waitforzonechange.py:40:         instruction = Instruction(InstructionKind.deimos_call, [command.player_selector, 'waitfor', command.data])
+tests/test_waitforzonechange.py:41:         await vm.exec_deimos_call(instruction)

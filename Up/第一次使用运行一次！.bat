@@ -1,15 +1,15 @@
 @echo off
 setlocal EnableExtensions
 chcp 65001 >nul
-title 替换 Deimos 配置并安装字体
+title 替换 XuanShu 配置并安装字体
 
 echo ========================================
-echo 正在替换 Deimos 配置文件并安装字体
+echo 正在替换 XuanShu 配置文件并安装字体
 echo ========================================
 echo.
 
 set "SOURCE_DIR=%~dp0"
-set "TARGET_DIR=%APPDATA%\Deimos"
+set "TARGET_DIR=%APPDATA%\XuanShu"
 
 set "FONT_FILE=DreamHanSansCN-W21.ttf"
 set "FONT_NAME=Dream Han Sans CN W21"
@@ -21,18 +21,18 @@ set "FONT_REG_KEY=HKCU\Software\Microsoft\Windows NT\CurrentVersion\Fonts"
 echo 当前 BAT 所在目录：
 echo %SOURCE_DIR%
 echo.
-echo Deimos 配置目录：
+echo XuanShu 配置目录：
 echo %TARGET_DIR%
 echo.
 echo 用户字体目录：
 echo %USER_FONT_DIR%
 echo.
 
-echo 正在关闭 Deimos...
-taskkill /F /IM Deimos.exe >nul 2>nul
+echo 正在关闭 XuanShu...
+taskkill /F /IM XuanShu.exe >nul 2>nul
 
 if not exist "%TARGET_DIR%" (
-    echo 未找到 Deimos 配置目录，正在创建...
+    echo 未找到 XuanShu 配置目录，正在创建...
     mkdir "%TARGET_DIR%"
 )
 
@@ -62,7 +62,7 @@ if exist "%TARGET_DIR%\default_theme.json" (
 )
 
 echo.
-echo 正在替换 Deimos 配置文件...
+echo 正在替换 XuanShu 配置文件...
 
 if exist "%SOURCE_DIR%settings.json" (
     copy /Y "%SOURCE_DIR%settings.json" "%TARGET_DIR%\settings.json" >nul
@@ -129,8 +129,8 @@ echo 已安装字体：%FONT_NAME%
 echo.
 echo 注意：
 echo Windows 字体缓存可能不会立刻刷新。
-echo 请重新打开 Deimos。
-echo 如果字体仍然没有生效，请重启电脑后再打开 Deimos。
+echo 请重新打开 XuanShu。
+echo 如果字体仍然没有生效，请重启电脑后再打开 XuanShu。
 
 :FINISH
 echo.
@@ -140,8 +140,8 @@ echo.
 echo 原配置备份位置：
 echo %BACKUP_DIR%
 echo.
-echo 请重新打开 Deimos。
-echo 如果字体仍然没有生效，请重启电脑后再打开 Deimos。
+echo 请重新打开 XuanShu。
+echo 如果字体仍然没有生效，请重启电脑后再打开 XuanShu。
 echo ========================================
 echo.
 

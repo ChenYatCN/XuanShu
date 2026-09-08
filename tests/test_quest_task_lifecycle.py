@@ -1,3 +1,4 @@
+# Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
 import asyncio
 import ast
 from pathlib import Path
@@ -40,8 +41,8 @@ class QuestTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(stopped.is_set())
 
     async def test_queued_quest_loop_cannot_reenable_after_stop(self):
-        tree = ast.parse(Path('DeimosCN.py').read_text(encoding='utf-8'))
+        tree = ast.parse(Path('XuanShu.py').read_text(encoding='utf-8'))
         function = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == 'questing_loop')
         namespace = {'questing_status': False}
-        exec(compile(ast.Module(body=[function], type_ignores=[]), 'DeimosCN.py', 'exec'), namespace)
+        exec(compile(ast.Module(body=[function], type_ignores=[]), 'XuanShu.py', 'exec'), namespace)
         await namespace['questing_loop']()

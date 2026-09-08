@@ -1,8 +1,10 @@
+# Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from src.branding import appdata_dir
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon
@@ -10,20 +12,13 @@ from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
 from src.gui.helpers import resource_path
 
-APP_NAME = "Deimos"
+APP_NAME = "XuanShu"
 CUSTOM_ICON_NAME = "custom_icon.ico"
-DEFAULT_ICON_NAME = "Deimos-logo.ico"
+DEFAULT_ICON_NAME = "XuanShu-logo.ico"
 
 
 def get_appdata_dir() -> Path:
-    appdata = os.getenv("APPDATA")
-    if appdata:
-        path = Path(appdata) / APP_NAME
-    else:
-        path = Path.home() / APP_NAME
-
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return appdata_dir()
 
 
 def get_custom_icon_path() -> Path:
@@ -37,7 +32,7 @@ def get_default_icon_path() -> str:
 def get_current_icon_path() -> str:
     """
     优先使用用户自定义图标。
-    如果用户没有设置，就使用默认 Deimos-logo.ico。
+    如果用户没有设置，就使用默认 XuanShu-logo.ico。
     """
     custom_icon = get_custom_icon_path()
 
@@ -197,7 +192,7 @@ def _ps_escape(value: str) -> str:
     return value.replace("'", "''")
 
 
-def update_desktop_shortcut(ctx, shortcut_name: str = "DeimosCN.lnk", parent=None):
+def update_desktop_shortcut(ctx, shortcut_name: str = "XuanShu.lnk", parent=None):
     """
     创建或更新桌面快捷方式图标。
     注意：改的是 .lnk 快捷方式图标，不是 exe 本体图标。
@@ -216,6 +211,11 @@ def update_desktop_shortcut(ctx, shortcut_name: str = "DeimosCN.lnk", parent=Non
     if not icon_path or not os.path.exists(icon_path):
         QMessageBox.warning(parent, "图标不存在", "没有找到可用的软件图标。")
         return
+
+    # The default icon lives in a temporary extraction directory; shortcuts
+    # must use the permanent EXE icon instead. Custom icons live in AppData.
+    if Path(icon_path) != get_custom_icon_path():
+        icon_path = str(exe_path)
 
     ps_script = f"""
 $WshShell = New-Object -ComObject WScript.Shell
