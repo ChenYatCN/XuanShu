@@ -1470,17 +1470,29 @@ class VM:
                 else:
                     match args[0]:
                         case WaitforKind.zonechange:
-                            if completion:
-                                async with asyncio.TaskGroup() as tg:
-                                    for client in clients:
-                                        tg.create_task(waitfor_coro(client.is_loading, True))
-                            else:
-                                async with asyncio.TaskGroup() as tg:
-                                    for client in clients:
-                                        starting_zone = await client.zone_name()
-                                        async def proxy():
-                                            return starting_zone != (await client.zone_name())
-                                        tg.create_task(waitfor_coro(proxy, False))
+                            target = args[1] if len(args) > 2 else None
+
+                            async def wait_for_zone(client, starting_zone):
+                                expected = await eval_arg(target, client) if target is not None else None
+                                if expected is not None:
+                                    expected = str(expected).casefold()
+                                while True:
+                                    if expected is not None:
+                                        zone = await client.zone_name()
+                                        reached = zone is not None and zone.casefold() == expected
+                                        if reached and (not completion or not await client.is_loading()):
+                                            return
+                                    elif completion:
+                                        if not await client.is_loading():
+                                            return
+                                    elif await client.zone_name() != starting_zone:
+                                        return
+                                    await asyncio.sleep(.25)
+
+                            async with asyncio.TaskGroup() as tg:
+                                for client in clients:
+                                    starting_zone = await client.zone_name() if target is None and not completion else None
+                                    tg.create_task(wait_for_zone(client, starting_zone))
                         case WaitforKind.window:
                             window_path = await eval_arg(args[1], clients[0] if clients else None)
                             async with asyncio.TaskGroup() as tg:

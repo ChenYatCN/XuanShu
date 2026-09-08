@@ -153,3 +153,13 @@ def resolve_portal_destination(value, allowed):
     if len(matches) != 1:
         return None  # Unknown or ambiguous: never guess the first option.
     return next(iter(matches))
+
+
+def quest_interaction_matches(objective, title):
+    """Match the visible interaction's name to the tracked objective, not its zone."""
+    goal, _ = split_quest_location(objective)
+    name = plain_text(title).casefold().strip()
+    goal = plain_text(goal).casefold()
+    if not name or quest_has_action(objective, "defeat"):
+        return False
+    return bool(re.search(r"(?<![a-z0-9])" + re.escape(name) + r"(?![a-z0-9])", goal))

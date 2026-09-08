@@ -1,3 +1,4 @@
+from src.task_lifecycle import gather_owned
 # pyright: reportMissingImports=false
 import asyncio
 import ctypes
@@ -76,6 +77,7 @@ from src.utils import (
     change_equipment_set,
     click_window_by_path,
     close_endorsement_window,
+    close_npc_quest_menu,
     collect_wisps_with_limit,
     FriendBusyOrInstanceClosed,
     get_window_from_path,
@@ -985,7 +987,7 @@ async def main():
         global gui_send_queue
 
         if not freecam_status:
-            if questing_task is not None and not questing_task.done():
+            if questing_status or (questing_task is not None and not questing_task.done()):
                 questing_status = False
                 apply_questing_roles(False)
                 logger.debug("Questing hotkey pressed, disabling auto questing.")
@@ -995,8 +997,12 @@ async def main():
                         ("QuestingStatus", "Disabled"),
                     )
                 )
-                questing_task.cancel()
-                questing_task = None
+                task_to_stop = questing_task
+                if task_to_stop is not None:
+                    task_to_stop.cancel()
+                    await asyncio.gather(task_to_stop, return_exceptions=True)
+                if questing_task is task_to_stop:
+                    questing_task = None
 
             else:
                 party = apply_questing_roles(True)
@@ -1342,6 +1348,8 @@ async def main():
         async def async_dialogue(client: Client):
             while True:
                 if not freecam_status:
+                    if await close_npc_quest_menu(client):
+                        continue
                     if await is_visible_by_path(client, advance_dialog_path):
                         has_decline_button = await is_visible_by_path(
                             client, decline_quest_path
@@ -1363,6 +1371,8 @@ async def main():
     # logger.catch()
     async def questing_loop():
         global questing_status
+        if not questing_status:
+            return
         party = apply_questing_roles(True)
         if not party.questers:
             questing_status = False
@@ -2011,7 +2021,7 @@ async def main():
                         client.quest_party_quest_worker_task = None
 
         if quest_party_enabled:
-            await asyncio.gather(
+            await gather_owned(
                 *[async_questing(client) for client in party.questers],
                 *[
                     follow_quester(
@@ -2023,7 +2033,7 @@ async def main():
                 ],
             )
         else:
-            await asyncio.gather(*[async_questing(p) for p in walker.clients])
+            await gather_owned(*[async_questing(p) for p in walker.clients])
 
     async def anti_afk_questing_loop():
         restart_lock = asyncio.Lock()
@@ -2092,7 +2102,7 @@ async def main():
                                     questing_task = None
                                 await asyncio.sleep(1.0)
 
-                                if questing_task is None:
+                                if questing_status and client.questing_status and questing_task is None:
                                     questing_task = asyncio.create_task(
                                         try_task_coro(
                                             questing_loop, walker.clients, True

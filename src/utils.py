@@ -35,6 +35,7 @@ from wizwalker.utils import (
 from src.dance_game_hook import attempt_deactivate_dance_hook
 from src.interaction_prompts import portal_kind, resolve_portal_destination, matches_text
 from src.paths import *
+from src.window_text import read_control_text
 from src.sprinty_client import SprintyClient
 
 # from src.teleport_math import calc_Distance
@@ -405,6 +406,20 @@ async def exit_menus(c: Client, paths):
             if await click_button.is_visible():
                 async with c.mouse_handler:
                     await c.mouse_handler.click_window(click_button)
+
+
+async def close_npc_quest_menu(client: Client) -> bool:
+    """Dismiss the NPC quest list using its own Exit button."""
+    if await client.is_loading() or await client.in_battle():
+        return False
+    if not await is_visible_by_path(client, cancel_multiple_quest_menu_path):
+        return False
+    # An active quest dialogue takes priority over the list behind it.
+    if await is_visible_by_path(client, advance_dialog_path):
+        return False
+    await safe_click_window(client, cancel_multiple_quest_menu_path)
+    await asyncio.sleep(0.2)
+    return True
 
 
 async def safe_click_window(client: Client, path):
@@ -1178,21 +1193,17 @@ async def select_quest_from_questbook(
         await asyncio.sleep(0.5)
 
 
-async def get_popup_title(client: Client) -> str:
-    if await is_visible_by_path(client, popup_title_path):
-        # popup_str = str(await get_window_from_path(client.root_window, popup_title_path))
+async def get_popup_title(client: Client) -> Optional[str]:
+    try:
+        if not await is_visible_by_path(client, popup_title_path):
+            return None
         popup_window = await get_window_from_path(client.root_window, popup_title_path)
-        popup_str = await popup_window.maybe_text()
-
-        try:
-            popup_str = popup_str.replace("<center>", "")
-            popup_str = popup_str.replace("</center>", "")
-        except:
-            await asyncio.sleep(0.1)
-
-        return popup_str
-
-    else:
+        if popup_window is None:
+            return None
+        popup_str = await read_control_text(popup_window)
+        return popup_str.replace("<center>", "").replace("</center>", "")
+    except (wizwalker.errors.MemoryReadError, ValueError, UnicodeError):
+        # The popup can be replaced between visibility and text reads.
         return None
 
 

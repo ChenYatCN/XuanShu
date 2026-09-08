@@ -1061,7 +1061,11 @@ class Parser:
             case TokenKind.command_waitfor_zonechange:
                 result.kind = CommandKind.waitfor
                 self.i += 1
-                result.data = [WaitforKind.zonechange, self.parse_completion_optional()]
+                result.data = [WaitforKind.zonechange]
+                if self.i < len(self.tokens) and self.tokens[self.i].kind == TokenKind.logical_to:
+                    self.i += 1
+                    result.data.append(self.parse_value([TokenKind.path, TokenKind.string, TokenKind.identifier]))
+                result.data.append(self.parse_completion_optional())
                 self.end_line()
             case TokenKind.command_waitfor_battle:
                 result.kind = CommandKind.waitfor

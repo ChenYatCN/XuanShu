@@ -196,7 +196,7 @@ async def teleport_move_adjust(client: Client, xyz : XYZ, delay : float = 0.7):
         # print("teleport started")
         try:
             await client.teleport(xyz, wait_on_inuse= True, purge_on_after_unuser_fixer = True)
-        except:
+        except Exception:
             pass
         # print("teleport completed")
         await asyncio.sleep(delay)
@@ -283,7 +283,7 @@ async def navmap_tp(client: Client, xyz: XYZ = None, leader_client: Client = Non
         wad = await load_wad(starting_zone)
         nav_file = await wad.get_file("zone.nav")
         vertices, edges = parse_nav_data(nav_file)
-    except:
+    except Exception:
         # Unable to load nav data. Fall back to primitive spiral pattern
         await fallback_spiral_tp(client, target_xyz)
         return
@@ -742,66 +742,30 @@ async def collision_tp(client: Client, xyz: XYZ = None, leader_client: Client = 
 
 
 def calc_chunks(points: list[XYZ], entity_distance: float = 3147.0) -> list[XYZ]:
-    # Returns a list of center points of "chunks" of the map, as defined by the input points.
-    min_pos = XYZ(0, 0, 0)
-    max_pos = XYZ(0, 0, 0)
-
-    # find the extremes, they act as corners
+    """Cover actual navigation bounds, including small maps and separate floors."""
+    if not math.isfinite(entity_distance) or entity_distance <= 0:
+        raise ValueError("entity_distance must be positive and finite")
+    points = [p for p in points if all(math.isfinite(v) for v in (p.x, p.y, p.z))]
+    if not points:
+        return []
+    min_x = min(p.x for p in points)
+    min_y = min(p.y for p in points)
+    min_z = min(p.z for p in points)
+    cells = {}
     for point in points:
-        if point.x < min_pos.x:
-            min_pos.x = point.x
-        if point.y < min_pos.y:
-            min_pos.y = point.x
-
-        if point.x > max_pos.x:
-            max_pos.x = point.x
-        if point.y > max_pos.y:
-            max_pos.y = point.y
-
-    # we use an inscribed square for chunking so corners are correctly included, using circles makes dealing with them way more annnoying
-    side_length = math.sqrt(2) * entity_distance
-    half_side_length = side_length / 2
-
-    # start half a side length into the base square
-    min_pos.x += half_side_length
-    min_pos.y += half_side_length
-    max_pos.x -= half_side_length
-    max_pos.y -= half_side_length
-
-    def point_in_rect(top_left: XYZ, bottom_right: XYZ, point: XYZ) -> bool:
-        return point.x >= top_left.x and point.x < bottom_right.x and point.y >= top_left.y and point.y < bottom_right.y
-
-    # place the first square outside the area, it is adjusted at the start of the loop anyways
-    current_point = XYZ(min_pos.x - side_length, min_pos.y, 0)
-    chunk_points = []
-    leftover_points = set(points)
-    # Turning the given points into a grid would be more efficient than this algorithm
-    while True:
-        # move the center of the rectangle to next rectangle
-        current_point.x += side_length
-        if current_point.x - half_side_length > max_pos.x:
-            # next row
-            current_point.x = min_pos.x
-            current_point.y += side_length
-            if current_point.y - half_side_length > max_pos.y:
-                # scanned until the end
-                break
-
-        # filter squares that do not contain any points
-        square_top_left = XYZ(current_point.x - half_side_length, current_point.y - half_side_length, 0)
-        square_bottom_right = XYZ(current_point.x + half_side_length, current_point.y + half_side_length, 0)
-        contained_points = set([])
-        for p in leftover_points:
-            if point_in_rect(square_top_left, square_bottom_right, p):
-                contained_points.add(p)
-        # a point cannot be in multiple squares at once
-        leftover_points = leftover_points - contained_points
-
-        if len(contained_points) > 0:
-            chunk_points.append(copy(current_point))
-
-    print(f'chunks:{len(chunk_points)}')
-    return chunk_points
+        key = (math.floor((point.x - min_x) / entity_distance),
+               math.floor((point.y - min_y) / entity_distance),
+               math.floor((point.z - min_z) / (entity_distance / 2)))
+        cells.setdefault(key, []).append(point)
+    chunks = []
+    for key in sorted(cells):
+        members = cells[key]
+        chunks.append(XYZ(
+            (min(p.x for p in members) + max(p.x for p in members)) / 2,
+            (min(p.y for p in members) + max(p.y for p in members)) / 2,
+            (min(p.z for p in members) + max(p.z for p in members)) / 2,
+        ))
+    return chunks
 
 
 def calculate_yaw(xyz_1: XYZ, xyz_2: XYZ) -> float:

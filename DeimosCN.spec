@@ -148,6 +148,7 @@ datas = []
 add_data_if_exists(datas, "Deimos-logo.ico", ".")
 add_data_if_exists(datas, "Deimos-logo.png", ".")
 add_data_if_exists(datas, "locale", "locale")
+add_data_if_exists(datas, "src/data/collect_names.json", "src/data")
 
 # Optional-at-runtime but required for this build: the launcher setting
 # "verify/patch game files before launch" calls this official helper.
