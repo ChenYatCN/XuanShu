@@ -5,14 +5,14 @@ import re
 from loguru import logger
 
 from src.interaction_prompts import plain_text
-from src.utils import close_endorsement_window
+from src.utils import close_endorsement_window, get_window_from_path
 from src.window_text import read_control_text
 
 
 def popup_kind(title, caption):
     title, caption = plain_text(title).casefold(), plain_text(caption).casefold()
     # Root GUI_HarassmentTitle and GUI_ConfirmAddCharacterToFriends.
-    if title.rstrip('!！。.') in ('you have been reported', '你已经被举报', '你已被举报', '你已經被舉報'):
+    if title.rstrip('!！。. ') in ('you have been reported', '你已经被举报', '你已被举报', '你已經被舉報'):
         return 'reported'
     if ((caption.startswith('accept ') and caption.endswith('as your friend?'))
             or (caption.startswith('是否接受') and re.search(r'成为你的好友[？?]$|成為你的好友[？?]$', caption))):
@@ -36,7 +36,24 @@ async def modal_kind(window):
     return popup_kind(*values)
 
 
-async def close_script_popup(client):
+_BUTTON_LAYOUT = ['messageBoxBG', 'messageBoxLayout', 'AdjustmentWindow', 'Layout']
+
+
+async def modal_close_button(window, kind):
+    # Exact hierarchy from GUI/MessageBoxWindow.gui, scoped to this modal.
+    visible = {}
+    for name in ('leftButton', 'centerButton', 'rightButton'):
+        button = await get_window_from_path(window, [*_BUTTON_LAYOUT, name])
+        if button and await button.is_visible():
+            visible[name] = button
+    if kind == 'friend_request':
+        return visible.get('rightButton')
+    if kind in ('reported', 'friend_added') and len(visible) == 1:
+        return next(iter(visible.values()))
+    return None
+
+
+async def close_automation_popup(client):
     if await client.is_loading():
         return False
     if await close_endorsement_window(client):
@@ -47,19 +64,21 @@ async def close_script_popup(client):
         kind = await modal_kind(window)
         if kind is None:
             continue
-        # Close an incoming invitation with No; acknowledge one-button notices.
-        button_name = 'rightButton' if kind == 'friend_request' else 'centerButton'
-        for button in await window.get_windows_with_name(button_name):
-            if not await button.is_visible():
-                continue
+        button = await modal_close_button(window, kind)
+        if button is not None:
             async with client.mouse_handler:
                 # Recheck after waiting for the mouse: a script may have already
                 # replaced this dialog with a purchase or teleport confirmation.
                 if (not await client.is_loading() and await window.is_visible()
                         and await button.is_visible() and await modal_kind(window) == kind):
-                    await client.mouse_handler.click_window(button)
-                    return True
+                    current_button = await modal_close_button(window, kind)
+                    if current_button is not None:
+                        await client.mouse_handler.click_window(current_button)
+                        return True
     return False
+
+
+close_script_popup = close_automation_popup
 
 
 async def watch_script_popups(client):

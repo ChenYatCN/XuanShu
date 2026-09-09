@@ -11,7 +11,7 @@ class ScriptPopupTests(unittest.IsolatedAsyncioTestCase):
         self.title = SimpleNamespace(value='You have been reported!', is_visible=AsyncMock(return_value=True))
         self.caption = SimpleNamespace(value='Remember, the use of foul language...', is_visible=AsyncMock(return_value=True))
         self.confirm = SimpleNamespace(is_visible=AsyncMock(return_value=True))
-        self.reject = SimpleNamespace(is_visible=AsyncMock(return_value=True))
+        self.reject = SimpleNamespace(is_visible=AsyncMock(return_value=False))
         self.window = SimpleNamespace(is_visible=AsyncMock(return_value=True),
             get_windows_with_name=AsyncMock(side_effect=lambda name: {
                 'TitleText': [self.title], 'CaptionText': [self.caption],
@@ -26,16 +26,49 @@ class ScriptPopupTests(unittest.IsolatedAsyncioTestCase):
         text = patch('src.script_popups.read_control_text', AsyncMock(side_effect=lambda w: w.value))
         text.start()
         self.addCleanup(text.stop)
+        async def resolve(window, path):
+            self.assertIs(window, self.window)
+            self.assertEqual(path[:-1], ['messageBoxBG', 'messageBoxLayout', 'AdjustmentWindow', 'Layout'])
+            return {'centerButton': self.confirm, 'rightButton': self.reject}.get(path[-1], False)
+        paths = patch('src.script_popups.get_window_from_path', AsyncMock(side_effect=resolve))
+        self.resolve_path = paths.start()
+        self.addCleanup(paths.stop)
 
     async def test_report_notice_acknowledged(self):
         self.assertTrue(await close_script_popup(self.client))
         self.client.mouse_handler.click_window.assert_awaited_once_with(self.confirm)
 
     async def test_friend_request_declined(self):
+        self.reject.is_visible.return_value = True
         self.title.value = 'Friends'
         self.caption.value = 'Accept<br>Amber Level 100<br>as your friend?'
         self.assertTrue(await close_script_popup(self.client))
         self.client.mouse_handler.click_window.assert_awaited_once_with(self.reject)
+
+    async def test_screenshot_report_uses_right_button_and_spaced_title(self):
+        self.title.value = '你已经被举报 ！'
+        self.confirm.is_visible.return_value = False
+        self.reject.is_visible.return_value = True
+        self.assertTrue(await close_script_popup(self.client))
+        self.client.mouse_handler.click_window.assert_awaited_once_with(self.reject)
+
+    async def test_matching_text_without_correct_ui_path_is_not_clicked(self):
+        self.resolve_path.side_effect = None
+        self.resolve_path.return_value = False
+        self.assertFalse(await close_script_popup(self.client))
+        self.client.mouse_handler.click_window.assert_not_awaited()
+
+    async def test_multi_button_dialog_is_not_treated_as_report_acknowledgement(self):
+        self.reject.is_visible.return_value = True
+        self.assertFalse(await close_script_popup(self.client))
+        self.client.mouse_handler.click_window.assert_not_awaited()
+
+    async def test_buttons_changed_while_waiting_for_mouse(self):
+        async def replace():
+            self.reject.is_visible.return_value = True
+        self.client.mouse_handler.__aenter__.side_effect = replace
+        self.assertFalse(await close_script_popup(self.client))
+        self.client.mouse_handler.click_window.assert_not_awaited()
 
     async def test_endorsement_uses_existing_closer(self):
         self.close_endorsement.return_value = True
@@ -73,6 +106,29 @@ class ScriptPopupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(popup_kind('', '你和 某人 成为了好友！'), 'friend_added')
         self.assertIsNone(popup_kind('举报玩家', '你确定要举报此玩家吗？'))
         self.assertIsNone(popup_kind('', '该玩家未被禁言，但已被举报.'))
+
+
+class QuestPopupIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_solo_handles_notice_before_dungeon_confirmation(self):
+        from src.questing import Quester
+        client = SimpleNamespace(title='p1')
+        quester = SimpleNamespace(client=client, handle_pending_dungeon_confirmation=AsyncMock())
+        with patch('src.questing.close_npc_quest_menu', AsyncMock(return_value=False)), patch(
+            'src.questing.close_automation_popup', AsyncMock(return_value=True)
+        ) as close:
+            await Quester.auto_quest_solo(quester)
+        close.assert_awaited_once_with(client)
+        quester.handle_pending_dungeon_confirmation.assert_not_awaited()
+
+    async def test_group_checks_each_quest_client(self):
+        from src.questing import Quester
+        clients = [SimpleNamespace(title='p1'), SimpleNamespace(title='p2')]
+        quester = SimpleNamespace(current_leader_client=clients[0], clients=clients)
+        with patch('src.questing.close_npc_quest_menu', AsyncMock(return_value=False)), patch(
+            'src.questing.close_automation_popup', AsyncMock(side_effect=[False, True])
+        ) as close:
+            await Quester.handle_normal_quests(quester, clients[1:], False)
+        self.assertEqual([call.args[0] for call in close.await_args_list], clients)
 
 
 class ScriptPopupLifecycleTests(unittest.IsolatedAsyncioTestCase):

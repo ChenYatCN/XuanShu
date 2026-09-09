@@ -21,6 +21,7 @@ from src.sprinty_client import SprintyClient
 from src.utils import *
 from src.paths import *
 from src.collecting import collect_one
+from src.script_popups import close_automation_popup
 from thefuzz import fuzz
 
 
@@ -1054,7 +1055,7 @@ class Quester():
     async def handle_normal_quests(self, follower_clients: list[Client], questing_friend_tp: bool):
         if await close_npc_quest_menu(self.current_leader_client):
             return
-        if await close_endorsement_window(self.current_leader_client):
+        if any(await gather_owned(*[close_automation_popup(c) for c in self.clients])):
             return
         if await is_spiral_door_open(self.current_leader_client):
             self._krok_exit_watch.pop(id(self.current_leader_client), None)
@@ -1554,7 +1555,7 @@ class Quester():
     async def auto_quest_solo(self, auto_pet_disabled=False, ignore_pet_level_up=False, play_dance_game=False):
         if await close_npc_quest_menu(self.client):
             return
-        if await close_endorsement_window(self.client):
+        if await close_automation_popup(self.client):
             return
         # The confirmation can appear shortly after the movement that opened
         # it, after handle_questing_zone_change already checked once.  Handle it

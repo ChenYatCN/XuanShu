@@ -1,5 +1,4 @@
 # Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
-from src.task_lifecycle import gather_owned
 # pyright: reportMissingImports=false
 import asyncio
 import ctypes
@@ -30,7 +29,6 @@ from src import gui as xuanshu_gui
 from src import wizpatch_runner
 from src.auto_fish_original_adapter import fish_bot
 from src.auto_pet import nomnom
-from src.fishing_groups import FishingGroups
 from src.bot_targeting import (
     bot_group_key,
     normalize_client_titles,
@@ -38,7 +36,6 @@ from src.bot_targeting import (
     resolve_bot_clients,
     unpack_bot_command,
 )
-from src.script_popups import run_with_script_popups
 from src.client_resizing import ClientResizingManager
 from src.command_parser import execute_flythrough, parse_command
 from src.config_combat import (
@@ -49,6 +46,7 @@ from src.config_combat import (
 )
 from src.deimoslang import vm
 from src.drop_logger import logging_loop
+from src.fishing_groups import FishingGroups
 from src.gui import GUIKeys
 from src.gui_inputs import param_input, trunc
 from src.paths import (
@@ -58,30 +56,32 @@ from src.paths import (
     play_button_path,
     spiral_door_teleport_path,
 )
-from src.questing import Quester
 from src.quest_party import (
     friend_follow_retry_delay,
     resolve_quest_party,
     resolve_quester_friend_icon,
     stable_client_identity,
 )
+from src.questing import Quester
+from src.script_popups import close_automation_popup, run_with_script_popups
 from src.settings_manager import XuanShuSettings
 from src.sigil import Sigil
 from src.sprinty_client import SprintyClient
 
 # from src.combat_new import Fighter
 from src.stat_viewer import total_stats
+from src.task_lifecycle import gather_owned
 from src.teleport_math import calc_Distance, navmap_tp
 from src.tokenizer import tokenize
 from src.utils import auto_potions  # , assign_pet_level
 from src.utils import (
+    FriendBusyOrInstanceClosed,
     auto_potions_force_buy,
     change_equipment_set,
     click_window_by_path,
     close_endorsement_window,
     close_npc_quest_menu,
     collect_wisps_with_limit,
-    FriendBusyOrInstanceClosed,
     get_window_from_path,
     index_with_str,
     is_free,
@@ -109,10 +109,10 @@ from wizwalker.utils import get_all_wizard_handles, get_foreground_window
 
 cMessageBox = ctypes.windll.user32.MessageBoxW
 
-tool_version: str = "2.1.3"
+tool_version: str = "4.0.0"
 tool_name: str = "XuanShu"
-tool_author: str = "Deimos-Wizard101"
-repo_name: str = "Deimos-Wizard101-main"
+tool_author: str = "ChenYatCN"
+repo_name: str = "XuanShu"
 repo_owner: str = "ChenYatCN"
 branch: str = "main"
 repo_path_raw: str = (
@@ -227,10 +227,7 @@ questing_client_titles = list(
     _json_settings.get("questing_clients", questing_client_titles) or []
 )
 questing_hitter_client_titles = list(
-    _json_settings.get(
-        "questing_hitter_clients", questing_hitter_client_titles
-    )
-    or []
+    _json_settings.get("questing_hitter_clients", questing_hitter_client_titles) or []
 )
 quest_hitter_assignment_mode = str(
     _json_settings.get("quest_hitter_assignment_mode", "auto")
@@ -990,7 +987,9 @@ async def main():
         global gui_send_queue
 
         if not freecam_status:
-            if questing_status or (questing_task is not None and not questing_task.done()):
+            if questing_status or (
+                questing_task is not None and not questing_task.done()
+            ):
                 questing_status = False
                 apply_questing_roles(False)
                 logger.debug("Questing hotkey pressed, disabling auto questing.")
@@ -1043,10 +1042,13 @@ async def main():
 
                 logger.debug("Questing hotkey pressed, enabling auto questing.")
                 if quest_party_enabled:
-                    assignments = ", ".join(
-                        f"{hitter.title}->{quester.title}"
-                        for hitter, quester in party.hitter_assignments
-                    ) or "无打手"
+                    assignments = (
+                        ", ".join(
+                            f"{hitter.title}->{quester.title}"
+                            for hitter, quester in party.hitter_assignments
+                        )
+                        or "无打手"
+                    )
                     logger.info(
                         "已加载任务编队：做任务="
                         + ", ".join(client.title for client in party.questers)
@@ -1120,22 +1122,32 @@ async def main():
     def publish_fishing_groups(groups):
         global auto_fish_status
         auto_fish_status = bool(groups)
-        gui_send_queue.put(xuanshu_gui.GUICommand(
-            xuanshu_gui.GUICommandType.UpdateWindow, ("FishingGroups", groups)))
+        gui_send_queue.put(
+            xuanshu_gui.GUICommand(
+                xuanshu_gui.GUICommandType.UpdateWindow, ("FishingGroups", groups)
+            )
+        )
 
-    fishing_groups = FishingGroups(fish_bot, lambda: walker.clients, publish_fishing_groups)
+    fishing_groups = FishingGroups(
+        fish_bot, lambda: walker.clients, publish_fishing_groups
+    )
 
     async def toggle_auto_fish_hotkey():
         if not freecam_status:
-            gui_send_queue.put(xuanshu_gui.GUICommand(
-                xuanshu_gui.GUICommandType.UpdateWindow, ("FishingToggle", None)))
+            gui_send_queue.put(
+                xuanshu_gui.GUICommand(
+                    xuanshu_gui.GUICommandType.UpdateWindow, ("FishingToggle", None)
+                )
+            )
 
     # Generic hotkey callback factory — sends InvokeAction to GUI thread,
     # which calls the button's click handler. Works for ANY registered action.
     def _make_hotkey_callback(action_id):
         async def _callback():
             gui_send_queue.put(
-                xuanshu_gui.GUICommand(xuanshu_gui.GUICommandType.InvokeAction, action_id)
+                xuanshu_gui.GUICommand(
+                    xuanshu_gui.GUICommandType.InvokeAction, action_id
+                )
             )
 
         return _callback
@@ -1286,9 +1298,7 @@ async def main():
             if not await client.in_battle():
                 await client.send_key(key=Keycode.D, seconds=0.25)
             client.post_combat_movement_at = asyncio.get_running_loop().time()
-            logger.debug(
-                f"Client {client.title} - post-combat A/D movement completed."
-            )
+            logger.debug(f"Client {client.title} - post-combat A/D movement completed.")
         finally:
             client.post_combat_movement_active = False
 
@@ -1397,7 +1407,10 @@ async def main():
         def update_party_status(hitter: Client, quester: Client, state: str):
             # A previous questing loop can take a moment to finish after a
             # restart.  Do not let its late status overwrite the active loop.
-            if getattr(hitter, "quest_party_status_session", None) is not status_session:
+            if (
+                getattr(hitter, "quest_party_status_session", None)
+                is not status_session
+            ):
                 return
             value = f"{hitter.title} → {quester.title}｜{state}"
             if runtime_status.get(hitter.title) == value:
@@ -1411,7 +1424,10 @@ async def main():
             )
 
         def remove_party_status(hitter: Client):
-            if getattr(hitter, "quest_party_status_session", None) is not status_session:
+            if (
+                getattr(hitter, "quest_party_status_session", None)
+                is not status_session
+            ):
                 return
             runtime_status.pop(hitter.title, None)
             hitter.quest_party_status_session = None
@@ -1438,8 +1454,7 @@ async def main():
                 return True
             except asyncio.TimeoutError:
                 logger.warning(
-                    f"{client.title} 换装界面 15 秒内未完成；"
-                    "将关闭界面并继续任务。"
+                    f"{client.title} 换装界面 15 秒内未完成；" "将关闭界面并继续任务。"
                 )
                 try:
                     await client.send_key(Keycode.B, 0.1)
@@ -1468,13 +1483,9 @@ async def main():
             hitter: Client, quester: Client, is_probe_hitter: bool
         ):
             """Follow the quester without ever reading the hitter's quest target."""
-            logger.info(
-                f"打手 {hitter.title} 开始跟随做任务客户端 {quester.title}。"
-            )
+            logger.info(f"打手 {hitter.title} 开始跟随做任务客户端 {quester.title}。")
             loop = asyncio.get_running_loop()
-            last_quester_zone = getattr(
-                quester, "quest_party_observed_zone", None
-            )
+            last_quester_zone = getattr(quester, "quest_party_observed_zone", None)
             quester_zone_stable_since = None
             last_objective = None
             objective_stable_since = None
@@ -1490,11 +1501,8 @@ async def main():
                 try:
                     if solo_zone:
                         quester.in_solo_zone = True
-                        if (
-                            gear_switching_in_solo_zones
-                            and not getattr(
-                                quester, "quest_party_solo_gear_active", False
-                            )
+                        if gear_switching_in_solo_zones and not getattr(
+                            quester, "quest_party_solo_gear_active", False
                         ):
                             update_party_status(hitter, quester, "单人区域，正在换装")
                             logger.info(
@@ -1504,9 +1512,7 @@ async def main():
                                 quester.quest_party_solo_gear_active = True
                     else:
                         quester.in_solo_zone = False
-                        if getattr(
-                            quester, "quest_party_solo_gear_active", False
-                        ):
+                        if getattr(quester, "quest_party_solo_gear_active", False):
                             update_party_status(
                                 hitter, quester, "已离开单人区域，恢复装备"
                             )
@@ -1618,12 +1624,17 @@ async def main():
                     await asyncio.sleep(0.5)
                     if hitter not in walker.clients or quester not in walker.clients:
                         return
-                    if not await hitter.is_loading() and await close_endorsement_window(hitter):
+                    if not await hitter.is_loading() and await close_automation_popup(
+                        hitter
+                    ):
                         update_party_status(hitter, quester, "正在关闭评价窗口")
                         continue
-                    if not await hitter.is_loading() and await Quester(
-                        hitter, [hitter], None
-                    ).handle_pending_dungeon_confirmation():
+                    if (
+                        not await hitter.is_loading()
+                        and await Quester(
+                            hitter, [hitter], None
+                        ).handle_pending_dungeon_confirmation()
+                    ):
                         update_party_status(hitter, quester, "正在确认地牢切换")
                         failure_count = 0
                         next_retry_at = 0.0
@@ -1661,9 +1672,7 @@ async def main():
                         await hitter.is_loading()
                         or await hitter.in_battle()
                         or hitter.entity_detect_combat_status
-                        or getattr(
-                            hitter, "quest_party_battle_rescue_active", False
-                        )
+                        or getattr(hitter, "quest_party_battle_rescue_active", False)
                     ):
                         update_party_status(hitter, quester, "等待战斗或加载")
                         continue
@@ -1694,9 +1703,8 @@ async def main():
                         is_probe_hitter
                         and getattr(quester, "quest_party_probe_pending", False)
                     )
-                    if (
-                        not is_probe_hitter
-                        and getattr(quester, "quest_party_probe_pending", False)
+                    if not is_probe_hitter and getattr(
+                        quester, "quest_party_probe_pending", False
                     ):
                         update_party_status(hitter, quester, "等待单人区域探测")
                         continue
@@ -1709,8 +1717,7 @@ async def main():
                         # list so equal zone paths from separate instances are
                         # not mistaken for the same area.
                         same_live_area = (
-                            not probe_pending
-                            or await hitter_is_in_quester_area()
+                            not probe_pending or await hitter_is_in_quester_area()
                         )
 
                     if same_live_area:
@@ -1750,7 +1757,9 @@ async def main():
                         continue
 
                     try:
-                        objective = await quest_reader.get_truncated_quest_objectives(quester)
+                        objective = await quest_reader.get_truncated_quest_objectives(
+                            quester
+                        )
                     except Exception:
                         objective = ""
                     if objective != last_objective:
@@ -1776,9 +1785,11 @@ async def main():
                         update_party_status(
                             hitter,
                             quester,
-                            "等待打手传送检测"
-                            if probe_pending
-                            else "等待区域和任务就绪",
+                            (
+                                "等待打手传送检测"
+                                if probe_pending
+                                else "等待区域和任务就绪"
+                            ),
                         )
                         continue
 
@@ -1792,9 +1803,8 @@ async def main():
                     ):
                         await prepare_quester_name(quester)
                     if (
-                        (not quester.wizard_name and friend_icon is None)
-                        or not await is_free(hitter)
-                    ):
+                        not quester.wizard_name and friend_icon is None
+                    ) or not await is_free(hitter):
                         update_party_status(hitter, quester, "等待好友传送可用")
                         continue
 
@@ -1820,8 +1830,7 @@ async def main():
                                 timeout=15.0,
                             )
                         same_zone_probe = bool(
-                            probe_pending
-                            and hitter_zone_before_probe == quester_zone
+                            probe_pending and hitter_zone_before_probe == quester_zone
                         )
                         # Original leader mode waited long enough for the game's
                         # "friend busy / closed instance" response to appear even
@@ -1850,9 +1859,7 @@ async def main():
                                     break
                                 await asyncio.sleep(0.25)
                             else:
-                                raise RuntimeError(
-                                    "好友传送未到达任务客户端所在区域"
-                                )
+                                raise RuntimeError("好友传送未到达任务客户端所在区域")
 
                         if probe_pending:
                             await complete_zone_probe(False)
@@ -1865,9 +1872,7 @@ async def main():
                         blocked_instance_zone = quester_zone
                         blocked_instance_retry_at = loop.time() + 60.0
                         await complete_zone_probe(True)
-                        update_party_status(
-                            hitter, quester, "单人区域，任务端独立执行"
-                        )
+                        update_party_status(hitter, quester, "单人区域，任务端独立执行")
                         logger.debug(
                             f"打手 {hitter.title} 无法进入 {quester.title} 当前区域，"
                             f"将在任务客户端离开该区域后重试：{exc}"
@@ -1909,9 +1914,7 @@ async def main():
             """Keep the follower alive across transient memory/UI read failures."""
             while questing_status and hitter.questing_status:
                 try:
-                    await _follow_quester_session(
-                        hitter, quester, is_probe_hitter
-                    )
+                    await _follow_quester_session(hitter, quester, is_probe_hitter)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -1943,17 +1946,13 @@ async def main():
                     f"Client {client.title} - Handling assigned questing role."
                 )
                 questing = Quester(client, [client], None)
-                await questing.auto_quest(
-                    ignore_pet_level_up, only_play_dance_game
-                )
+                await questing.auto_quest(ignore_pet_level_up, only_play_dance_game)
             elif questing_leader_pid is not None and len(walker.clients) > 1:
                 if client.process_id == questing_leader_pid:
                     logger.debug(
                         f"Client {client.title} - Handling questing for all clients."
                     )
-                    questing = Quester(
-                        client, walker.clients, questing_leader_pid
-                    )
+                    questing = Quester(client, walker.clients, questing_leader_pid)
                     await questing.auto_quest_leader(
                         questing_friend_tp,
                         gear_switching_in_solo_zones,
@@ -1964,9 +1963,7 @@ async def main():
             else:
                 logger.debug(f"Client {client.title} - Handling questing.")
                 questing = Quester(client, walker.clients, None)
-                await questing.auto_quest(
-                    ignore_pet_level_up, only_play_dance_game
-                )
+                await questing.auto_quest(ignore_pet_level_up, only_play_dance_game)
 
         # Supervise each quest client separately.  A solo-zone probe can cancel
         # and recreate only the affected worker without stopping hitter follow.
@@ -1993,9 +1990,7 @@ async def main():
                             False,
                         )
                     )
-                    parent_is_cancelling = bool(
-                        asyncio.current_task().cancelling()
-                    )
+                    parent_is_cancelling = bool(asyncio.current_task().cancelling())
                     if (
                         restart_requested
                         and not parent_is_cancelling
@@ -2066,7 +2061,9 @@ async def main():
                             # Hitters are expected to stand still while waiting
                             # outside a solo area.  Only an assigned quest client
                             # may request recovery in party mode.
-                            recovery_candidate = client in current_quest_party().questers
+                            recovery_candidate = (
+                                client in current_quest_party().questers
+                            )
                             recovery_candidate = recovery_candidate and not getattr(
                                 client, "quest_party_probe_pending", False
                             )
@@ -2105,7 +2102,11 @@ async def main():
                                     questing_task = None
                                 await asyncio.sleep(1.0)
 
-                                if questing_status and client.questing_status and questing_task is None:
+                                if (
+                                    questing_status
+                                    and client.questing_status
+                                    and questing_task is None
+                                ):
                                     questing_task = asyncio.create_task(
                                         try_task_coro(
                                             questing_loop, walker.clients, True
@@ -2302,9 +2303,7 @@ async def main():
                             if hitter in quester.helper_clients:
                                 quester.helper_clients.remove(hitter)
                             if saved_original_position:
-                                original_client_locations.pop(
-                                    hitter.process_id, None
-                                )
+                                original_client_locations.pop(hitter.process_id, None)
                             logger.warning(
                                 f"打手 {hitter.title} 本次入战恢复未进入战斗，"
                                 "稍后将再次尝试。"
@@ -2338,9 +2337,7 @@ async def main():
                         if not await hitter.in_battle():
                             await hitter.teleport(await quester.body.position())
                     except Exception:
-                        logger.debug(
-                            f"打手 {hitter.title} 暂时无法离开入战恢复坐标。"
-                        )
+                        logger.debug(f"打手 {hitter.title} 暂时无法离开入战恢复坐标。")
                     if saved_original_position:
                         original_client_locations.pop(hitter.process_id, None)
                     logger.warning(
@@ -4294,9 +4291,14 @@ async def main():
                                 fishing_groups.notify()
                                 continue
                             try:
-                                fishing_groups.add(com.data.get("clients"), com.data.get("settings", {}))
+                                fishing_groups.add(
+                                    com.data.get("clients"),
+                                    com.data.get("settings", {}),
+                                )
                                 if auto_fish_task is None or auto_fish_task.done():
-                                    auto_fish_task = asyncio.create_task(auto_fish_loop())
+                                    auto_fish_task = asyncio.create_task(
+                                        auto_fish_loop()
+                                    )
                             except ValueError as exc:
                                 logger.warning(str(exc))
                                 fishing_groups.notify()
@@ -4348,7 +4350,9 @@ async def main():
                                 old_task = bot_tasks.pop(old_key, None)
                                 if old_task is not None and not old_task.done():
                                     old_task.cancel()
-                                    await asyncio.gather(old_task, return_exceptions=True)
+                                    await asyncio.gather(
+                                        old_task, return_exceptions=True
+                                    )
                                     logger.info(
                                         f"已停止与新任务重叠的脚本组：{'+'.join(old_key)}"
                                     )
@@ -4406,7 +4410,9 @@ async def main():
                                             )
                                         await asyncio.sleep(1)
 
-                            async def guarded_bot(run=run_bot, clients=tuple(selected_clients)):
+                            async def guarded_bot(
+                                run=run_bot, clients=tuple(selected_clients)
+                            ):
                                 await run_with_script_popups(run, clients)
 
                             new_task = asyncio.create_task(
@@ -4446,7 +4452,9 @@ async def main():
                                     task.cancel()
                                     stopping_tasks.append(task)
                                 logger.info(f"脚本已停止：{'+'.join(key)}")
-                            await asyncio.gather(*stopping_tasks, return_exceptions=True)
+                            await asyncio.gather(
+                                *stopping_tasks, return_exceptions=True
+                            )
                             send_bot_groups_update()
                         case xuanshu_gui.GUICommandType.SetPlaystyles:
                             playstyle_text, requested_titles = unpack_bot_command(
@@ -4887,10 +4895,14 @@ async def main():
                                         questing_client_titles = list(value or [])
                                         quest_party_changed = True
                                     case "questing_hitter_clients":
-                                        questing_hitter_client_titles = list(value or [])
+                                        questing_hitter_client_titles = list(
+                                            value or []
+                                        )
                                         quest_party_changed = True
                                     case "quest_hitter_assignment_mode":
-                                        quest_hitter_assignment_mode = str(value or "auto")
+                                        quest_hitter_assignment_mode = str(
+                                            value or "auto"
+                                        )
                                         quest_party_changed = True
                                     case "quest_hitter_assignments":
                                         quest_hitter_assignments = dict(value or {})
