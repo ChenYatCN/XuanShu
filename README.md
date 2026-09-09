@@ -6,35 +6,38 @@
 
 设置位于 `%APPDATA%/XuanShu/settings.json`，首次启动复制旧 DeimosCN / Deimos-CN / Deimos 目录中的设置、主题和自定义图标，不覆盖已有设置，不删除旧配置。账号存储继续由 wizlaunch 管理。
 
-## [Discord](https://discord.gg/59UrPJwYDm)
+## 使用方法
 
-# Tutorial
-## Instructions
-1. Be sure all your clients are logged onto the desired wizard.
-2. Run the ```XuanShu.exe``` by double clicking it.
+1. 确保所有游戏客户端都已登录，并进入需要操作的角色。
+2. 双击运行 `XuanShu.exe`。
 
-## Hotkeys
-- Configure hotkeys in the application settings.
-- Any change to the config will require a restart of the tool.
-- Refer to the discord server's reference channel for proper key names, they are case sensitive.
-### Hotkey List
-- X Press to all clients (`X` key by default)
-- Sync XYZ of all clients (syncs client positions with selected client, `F8` by default)
-- Navmap quest TP (selected client, `F7` by default)
-- Navmap quest TP for all clients. Which client the teleport obeys varies depending on the scenario. (`F6` by default)
-- Toggle speed multiplier (`F5` by default)
-- Kill XuanShu (`F9` by default)
-- Toggle auto combat (`NINE` by default)
-- Auto dialogue (`F4` by default)
-- Auto questing (`F3` by default)
-- Auto sigil (`F2` by default)
-- Freecam (`F1` by default)
-- TP to freecam position (`Shift + Freecam` Key by default)
+## 快捷键
 
-## Important
-- Don't bug the community or myself for when updates are coming. This is a free tool and will stay that way.
-- There's also more advanced features in the GUI that are difficult to explain in writing. Those are intended for more advanced users and/or script developers. No support will be provided on them.
-- Additionally, minimal support will be provided on auto questing and auto sigil. This is highly generalized code by design and it is impossible to fix every issue or every circumstance.
+可在软件设置中配置快捷键。修改配置后，请重启工具以确保设置生效。手动填写按键名称时，请注意区分大小写。
 
-## Other
-The GUI also has a bot creator and flythrough creator. Information on these systems are in the bots/flythroughs channels of the Deimos discord server, or the [wiki](https://github.org/Deimos-Wizard101/Deimos-Wizard101/wiki).
+### 默认快捷键
+
+| 功能 | 默认按键 |
+| --- | --- |
+| 向所有客户端发送交互键 X | `X` |
+| 将所有客户端的位置同步到当前选中的客户端 | `F8` |
+| 将选中的客户端传送到任务目标（使用导航地图） | `F7` |
+| 将所有客户端传送到任务目标，参考客户端根据当前场景确定 | `F6` |
+| 开启或关闭移动速度倍率 | `F5` |
+| 退出玄枢 | `F9` |
+| 开启或关闭自动战斗 | `NINE`（数字键 `9`） |
+| 开启或关闭自动对话 | `F4` |
+| 开启或关闭自动任务 | `F3` |
+| 开启或关闭自动副本 | `F2` |
+| 开启或关闭自由视角 | `F1` |
+| 将角色传送到自由视角所在位置 | `Shift + F1`（随自由视角快捷键调整） |
+
+## 使用说明
+
+- 本工具免费提供，更新没有固定时间，请勿催促维护者或社区成员。
+- 界面中还包含面向进阶用户和脚本开发者的高级功能，这些功能不提供使用支持。
+- 自动任务和自动副本采用通用逻辑，无法覆盖所有任务和特殊场景，相关支持有限。
+
+## 更多功能
+
+软件还提供脚本编辑器和镜头飞行路线编辑器。相关资料可参考[上游项目 Wiki](https://github.org/Deimos-Wizard101/Deimos-Wizard101/wiki)。
