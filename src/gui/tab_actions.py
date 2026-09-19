@@ -2,16 +2,17 @@
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPlainTextEdit, QFileDialog,
-    QPushButton, QLabel, QSizePolicy,
+    QPushButton, QLabel, QSizePolicy, QLineEdit,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QSize
 
 from src.gui.commands import GUICommand, GUICommandType
 from src.gui.helpers import centered_label, repo_icon_btn, add_recent, show_recent_menu
-from src.gui.widgets import FlowLayout, ThemedCheckBox
+from src.gui.widgets import FlowLayout, ThemedCheckBox, ClientStatusLayout
 
 
-def _build_client_toolbar(ctx, wiki_tooltip_key, wiki_path, with_status=False):
+def _build_client_toolbar(ctx, wiki_tooltip_key, wiki_path, with_status=False,
+                          horizontal_spacing=10):
     """Create the compact, wrapping client selector shared by Bot and Combat."""
     toolbar = QWidget()
     toolbar.setSizePolicy(
@@ -30,10 +31,14 @@ def _build_client_toolbar(ctx, wiki_tooltip_key, wiki_path, with_status=False):
     flow = FlowLayout(
         flow_host,
         margin=0,
-        horizontal_spacing=10,
+        horizontal_spacing=horizontal_spacing,
         vertical_spacing=2,
     )
-    flow.addWidget(QLabel(ctx.tl('bot_target_clients')))
+    if wiki_path is not None:
+        flow.max_clients_per_row = 5
+    client_label = QLabel(ctx.tl('client'))
+    client_label.setStyleSheet("color: #a6a6b0; font-weight: normal;")
+    flow.addWidget(client_label)
 
     all_clients = ThemedCheckBox(
         ctx.tl('bot_target_all'),
@@ -52,9 +57,20 @@ def _build_client_toolbar(ctx, wiki_tooltip_key, wiki_path, with_status=False):
         status_label.setFont(status_font)
         status_label.setStyleSheet(f"color: {ctx.stroke_color};")
         status_label.hide()
-        flow.addWidget(status_label)
+        if wiki_path is None:
+            flow.addWidget(status_label)
 
-    toolbar_row.addWidget(flow_host, 1)
+    if wiki_path is None:
+        toolbar_row.addWidget(flow_host, 1)
+    else:
+        status_host = QWidget()
+        status_layout = ClientStatusLayout(status_host)
+        status_layout.addWidget(flow_host)
+        toolbar_row.addWidget(status_host, 1)
+    if status_label is not None and wiki_path is not None:
+        status_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        status_label.setWordWrap(True)
+        status_layout.addWidget(status_label)
     if wiki_path is not None:
         info_tooltip = (
             f"{ctx.tl('advanced_warning')}\n"
@@ -182,6 +198,13 @@ def build_bot_tab(ctx):
     )
     client_checks = {}
     layout.addWidget(client_toolbar)
+    mount_row = QHBoxLayout()
+    stop_mount = ThemedCheckBox('获得坐骑后停止', ctx.stroke_color, ctx.text_color, ctx.alt_bg)
+    mount_name = QLineEdit()
+    mount_name.setPlaceholderText('目标坐骑完整名称（留空：任意坐骑）')
+    mount_row.addWidget(stop_mount)
+    mount_row.addWidget(mount_name)
+    layout.addLayout(mount_row)
 
     active_groups = []
     initialized_clients = [False]
@@ -256,7 +279,8 @@ def build_bot_tab(ctx):
             )
             check.toggled.connect(sync_all_check)
             client_checks[title] = check
-            target_flow.insertWidget(target_flow.count() - 1, check)
+            check.setProperty('clientOption', True)
+            target_flow.addWidget(check)
 
         all_clients.setEnabled(bool(new_titles))
         if not new_titles:
@@ -271,10 +295,17 @@ def build_bot_tab(ctx):
         active_groups.clear()
         active_groups.extend(tuple(group) for group in (groups or []))
         if active_groups:
-            display = '、'.join('+'.join(group) for group in active_groups)
+            def title_key(title):
+                folded = title.casefold()
+                return (0, int(folded[1:])) if folded.startswith('p') and folded[1:].isdigit() else (1, folded)
+
+            ordered_groups = [sorted(group, key=title_key) for group in active_groups]
+            ordered_groups.sort(key=lambda group: tuple(title_key(title) for title in group))
+            display = '、'.join('+'.join(group) for group in ordered_groups)
             running_groups_label.setText(
                 ctx.tl('bot_running_groups').replace('{groups}', display)
             )
+            running_groups_label.setToolTip(running_groups_label.text())
             running_groups_label.show()
         else:
             running_groups_label.clear()
@@ -324,7 +355,8 @@ def build_bot_tab(ctx):
             return
         ctx.send_queue.put(GUICommand(
             GUICommandType.ExecuteBot,
-            {'text': editor.toPlainText(), 'clients': targets},
+            {'text': editor.toPlainText(), 'clients': targets,
+             'stop_on_mount': stop_mount.isChecked(), 'mount_name': mount_name.text().strip()},
         ))
 
     def kill_bot_callback():
@@ -335,30 +367,6 @@ def build_bot_tab(ctx):
             return
         ctx.send_queue.put(GUICommand(GUICommandType.KillBot, {'clients': targets}))
 
-    def bot_search():
-        from src.gui.popups import show_bot_search_popup
-        existing = getattr(ctx, 'bot_search_dialog', None)
-        if existing is not None:
-            try:
-                existing.close()
-            except RuntimeError:
-                pass
-        ctx.bot_search_dialog = show_bot_search_popup(ctx, tab)
-        ctx.send_queue.put(GUICommand(GUICommandType.SearchBots))
-
-    def bot_publish():
-        from src.gui.popups import show_bot_publish_popup
-        if not editor.toPlainText().strip():
-            return
-        existing = getattr(ctx, 'bot_publish_dialog', None)
-        if existing is not None:
-            try:
-                existing.close()
-            except RuntimeError:
-                pass
-        ctx.bot_publish_dialog = show_bot_publish_popup(ctx, editor.toPlainText())
-        ctx.send_queue.put(GUICommand(GUICommandType.PrepareBotPublish))
-
     run_btn = ctx.registry.action_icon_btn(
         ctx.svgs['play'], ctx.tl('run_bot_selected'), run_bot_callback,
         action_id='toggle_bot',
@@ -367,16 +375,16 @@ def build_bot_tab(ctx):
         ctx.svgs['kill'], ctx.tl('kill_bot_selected'), kill_bot_callback,
         action_id='kill_selected_bot',
     )
+    run_btn.setFixedSize(44, 44)
+    run_btn.setIconSize(QSize(24, 24))
 
     recent_btn = ctx.registry.action_icon_btn(ctx.svgs['recent'], ctx.tl('recent_imports'), lambda: None)
     recent_btn.clicked.disconnect()
     recent_btn.clicked.connect(lambda: show_recent_menu(ctx, 'bot', editor, recent_btn))
     btn_row.addStretch()
-    btn_row.addWidget(ctx.registry.action_icon_btn(ctx.svgs['search'], ctx.tl('search_bots'), bot_search))
     btn_row.addWidget(recent_btn)
     btn_row.addWidget(ctx.registry.action_icon_btn(ctx.svgs['import'], ctx.tl('import_bot'), bot_import))
     btn_row.addWidget(ctx.registry.action_icon_btn(ctx.svgs['export'], ctx.tl('export_bot'), bot_export))
-    btn_row.addWidget(ctx.registry.action_icon_btn(ctx.svgs['publish'], ctx.tl('publish_bot'), bot_publish))
     btn_row.addWidget(run_btn)
     btn_row.addWidget(kill_btn)
     btn_row.addStretch()
@@ -483,6 +491,7 @@ def build_combat_tab(ctx):
             )
             check.toggled.connect(sync_all_check)
             client_checks[title] = check
+            check.setProperty('clientOption', True)
             target_flow.addWidget(check)
 
         all_clients.setEnabled(bool(new_titles))

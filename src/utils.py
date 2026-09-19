@@ -33,10 +33,14 @@ from wizwalker.utils import (
 )
 
 from src.dance_game_hook import attempt_deactivate_dance_hook
-from src.interaction_prompts import portal_kind, resolve_portal_destination, matches_text
+from src.interaction_prompts import (
+    matches_text,
+    portal_kind,
+    resolve_portal_destination,
+)
 from src.paths import *
-from src.window_text import read_control_text
 from src.sprinty_client import SprintyClient
+from src.window_text import read_control_text
 
 # from src.teleport_math import calc_Distance
 
@@ -119,7 +123,9 @@ async def close_endorsement_window(client: Client) -> bool:
     for window in windows:
         if not await window.is_visible():
             continue
-        for button in await window.get_windows_with_name("CloseEndorsementWindowButton"):
+        for button in await window.get_windows_with_name(
+            "CloseEndorsementWindowButton"
+        ):
             if await button.is_visible():
                 async with client.mouse_handler:
                     await client.mouse_handler.click_window(button)
@@ -130,10 +136,9 @@ async def close_endorsement_window(client: Client) -> bool:
 async def is_friend_teleport_error(client: Client) -> bool:
     # A Yes/No dungeon confirmation also has rightButton (No).
     # Its centerButton (Yes) distinguishes it from the one-button error.
-    return (
-        await is_visible_by_path(client, friend_is_busy_and_dungeon_reset_path)
-        and not await is_visible_by_path(client, exit_dungeon_path)
-    )
+    return await is_visible_by_path(
+        client, friend_is_busy_and_dungeon_reset_path
+    ) and not await is_visible_by_path(client, exit_dungeon_path)
 
 
 async def read_control_checkbox_text(checkbox: Window) -> str:
@@ -143,7 +148,9 @@ async def read_control_checkbox_text(checkbox: Window) -> str:
 # Teleport to given world through spiral door
 async def go_to_new_world(p, destinationWorld, open_window: bool = True):
     if open_window:
-        while portal_kind(await get_popup_title(p)) != "world_gate" and not await is_visible_by_path(p, spiral_door_path):
+        while portal_kind(
+            await get_popup_title(p)
+        ) != "world_gate" and not await is_visible_by_path(p, spiral_door_path):
             await asyncio.sleep(0.1)
 
         while not await is_visible_by_path(p, spiral_door_path):
@@ -257,7 +264,9 @@ async def go_to_new_world(p, destinationWorld, open_window: bool = True):
             for child in await option_window[0].children():
                 if await child.name() in ["opt0", "opt1", "opt2", "opt3"]:
                     name = await read_control_checkbox_text(child)
-                    if name == spiralGateName or matches_text(name, f"WorldNames_{destinationWorld}"):
+                    if name == spiralGateName or matches_text(
+                        name, f"WorldNames_{destinationWorld}"
+                    ):
                         await p.mouse_handler.click_window_with_name(
                             zoneDoorOptions[worldIndex]
                         )
@@ -289,7 +298,9 @@ async def go_to_new_world(p, destinationWorld, open_window: bool = True):
 
 async def new_portals_cycle(client: Client, location: str):
     if not location:
-        raise ValueError("Cannot select a portal without a recognized quest destination")
+        raise ValueError(
+            "Cannot select a portal without a recognized quest destination"
+        )
     option_window = await client.root_window.get_windows_with_name("optionWindow")
     assert len(option_window) == 1, str(option_window)
     for child in await option_window[0].children():
@@ -485,7 +496,9 @@ async def spiral_door(
 ):
     # optionally open the spiral door window
     if open_window:
-        while portal_kind(await get_popup_title(client)) != "world_gate" and not await is_visible_by_path(client, spiral_door_path):
+        while portal_kind(
+            await get_popup_title(client)
+        ) != "world_gate" and not await is_visible_by_path(client, spiral_door_path):
             await asyncio.sleep(0.1)
 
         while not await is_visible_by_path(client, spiral_door_path):
@@ -632,9 +645,11 @@ async def buy_potions(client: Client, recall: bool = True, original_zone=None):
                     await click_window_by_path(client, potion_usage_path, True)
                     await asyncio.sleep(3.0)
 
-    except:
-        print(traceback.print_exc())
-        raise KeyboardInterrupt
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception(f"Client {client.title} - 购买药水失败")
+        return False
 
     # Return only after the recall key has caused a confirmed loading/zone change.
     if recall:
@@ -745,13 +760,12 @@ async def auto_potions_force_buy(
             recall = False
         else:
             recall = True
-            if mark:
-                if not await ensure_teleport_mark(client):
-                    logger.warning(
-                        f"Client {client.title} - Teleport mark was not "
-                        "confirmed after two attempts; continuing the safe "
-                        "potion refill without a guaranteed return mark."
-                    )
+            if not await ensure_teleport_mark(client):
+                logger.error(f"Client {client.title} - 药水补充失败：原地图标记未确认，取消出发。")
+                return False
+        if recall and await client.zone_name() != original_zone:
+            logger.error(f"Client {client.title} - 放置标记期间地图改变，取消补药。")
+            return False
         # Navigate to ravenwood
         await navigate_to_ravenwood(client)
         # Navigate to commons
@@ -862,8 +876,15 @@ async def teleport_mark_is_available(client: Client) -> bool:
         recall_window = await get_window_from_path(
             client.root_window, teleport_mark_recall_path
         )
-        return bool(recall_window) and not await recall_window.is_control_grayed()
-    except Exception:
+        if not recall_window:
+            logger.debug(f"Client {client.title} - Recall 按钮路径未找到。")
+            return False
+        grayed = await recall_window.is_control_grayed()
+        if grayed:
+            logger.debug(f"Client {client.title} - Recall 按钮存在，但读取为灰色。")
+        return not grayed
+    except Exception as exc:
+        logger.warning(f"Client {client.title} - 无法读取 Recall 按钮：{exc}")
         return False
 
 
@@ -876,11 +897,11 @@ async def wait_for_teleport_mark_timer(client: Client, timeout: float = 90.0):
                 client.root_window, teleport_mark_recall_timer_path
             )
             if not timer_window:
-                return
+                return True
             timer_text = (await timer_window.maybe_text()) or ""
             match = re.search(r"-?\d+", timer_text)
             if not match or int(match.group()) <= 0:
-                return
+                return True
             remaining = int(match.group())
             logger.debug(
                 f"Client {client.title} - Waiting {remaining}s for teleport "
@@ -888,18 +909,20 @@ async def wait_for_teleport_mark_timer(client: Client, timeout: float = 90.0):
             )
             await asyncio.sleep(max(0.25, min(float(remaining - 1), 5.0)))
         except (TypeError, ValueError):
-            return
+            return True
         except Exception:
             await asyncio.sleep(0.25)
 
     logger.warning(
         f"Client {client.title} - Timed out waiting for teleport mark cooldown."
     )
+    return False
 
 
 async def ensure_teleport_mark(client: Client, attempts: int = 2) -> bool:
     """Place a mark and verify the game accepted it before leaving the area."""
-    if await client.zone_name() == "WizardCity/WC_Hub":
+    mark_zone = await client.zone_name()
+    if mark_zone == "WizardCity/WC_Hub":
         return False
 
     loading_deadline = time.monotonic() + 30.0
@@ -911,16 +934,27 @@ async def ensure_teleport_mark(client: Client, attempts: int = 2) -> bool:
         )
         return False
 
-    await wait_for_teleport_mark_timer(client)
+    if not await wait_for_teleport_mark_timer(client):
+        return False
 
     for attempt in range(1, attempts + 1):
         if attempt > 1:
             logger.debug(
-                f"Client {client.title} - Moving backward before the second "
-                "teleport mark attempt."
+                f"Client {client.title} - Moving backward for 3 seconds "
+                "before the second teleport mark attempt."
             )
             await client.send_key(Keycode.S, 3.0)
             await asyncio.sleep(0.75)
+            if (
+                await client.is_loading()
+                or await client.in_battle()
+                or await client.zone_name() != mark_zone
+            ):
+                logger.error(
+                    f"Client {client.title} - 地图在第二次放置标记前发生变化，"
+                    "取消补药。"
+                )
+                return False
 
         mana_before = await client.stats.current_mana()
         mark_before = await teleport_mark_is_available(client)
@@ -962,27 +996,30 @@ async def ensure_teleport_mark(client: Client, attempts: int = 2) -> bool:
 async def recall_to_teleport_mark(
     client: Client, expected_zone: Optional[str] = None, attempts: int = 3
 ) -> bool:
-    """Recall with bounded retries and verify that the game starts travelling."""
+    """Use the original double-PAGE_UP recall and verify the zone transition."""
     for attempt in range(1, attempts + 1):
+        ready_deadline = time.monotonic() + 30.0
+        while await client.is_loading() and time.monotonic() < ready_deadline:
+            await asyncio.sleep(.2)
+        if await client.is_loading() or await client.in_battle():
+            logger.error(f"Client {client.title} - 当前仍在加载或战斗，无法安全回传。")
+            return False
         departure_zone = await client.zone_name()
         if expected_zone is not None and departure_zone == expected_zone:
             return True
 
-        if not await teleport_mark_is_available(client):
-            logger.error(
-                f"Client {client.title} - Recall is unavailable; cannot return "
-                "to the saved location."
-            )
+        if not await wait_for_teleport_mark_timer(client):
             return False
 
-        await wait_for_teleport_mark_timer(client)
         logger.debug(
             f"Client {client.title} - Recalling to teleport mark "
             f"(attempt {attempt}/{attempts})."
         )
-        await asyncio.sleep(2)
-        await client.send_key(Keycode.PAGE_UP, 0.2)
-        await asyncio.sleep(0.75)
+        # The original WizSprinter flow sends the shortcut twice.  Reading the
+        # Recall button's grayed state is unreliable immediately after closing
+        # the potion shop, while the game still accepts this key sequence.
+        await client.send_key(Keycode.PAGE_UP, 0.1)
+        await client.send_key(Keycode.PAGE_UP, 0.1)
 
         travel_started = False
         start_deadline = time.monotonic() + 12.0
@@ -1006,7 +1043,7 @@ async def recall_to_teleport_mark(
         await asyncio.sleep(1.25)
 
         arrival_zone = await client.zone_name()
-        if expected_zone is None or arrival_zone == expected_zone:
+        if not await client.is_loading() and (expected_zone is None or arrival_zone == expected_zone):
             logger.debug(f"Client {client.title} - Return to teleport mark confirmed.")
             return True
 
@@ -1041,23 +1078,17 @@ async def refill_potions(
         if original_zone is None:
             original_zone = starting_zone
 
-        if mark:
-            if starting_zone != "WizardCity/WC_Hub":
-                if not await ensure_teleport_mark(client):
-                    logger.warning(
-                        f"Client {client.title} - Teleport mark was not "
-                        "confirmed after two attempts; continuing the safe "
-                        "potion refill without a guaranteed return mark."
-                    )
-        elif recall and starting_zone != "WizardCity/WC_Hub":
-            # Some callers place marks for several clients first, then refill
-            # them together.  Verify that precondition before anyone leaves.
-            if not await teleport_mark_is_available(client):
-                logger.warning(
-                    f"Client {client.title} - No usable teleport mark was "
-                    "detected; continuing the safe potion refill."
-                )
+        if recall and original_zone != starting_zone:
+            logger.error(f"Client {client.title} - 原地图 {original_zone!r} 与出发地图 {starting_zone!r} 不符，取消补药。")
+            return False
+        if (recall or mark) and starting_zone != "WizardCity/WC_Hub":
+            if not await ensure_teleport_mark(client):
+                logger.error(f"Client {client.title} - 药水补充失败：原地图标记未确认，取消出发。")
+                return False
 
+        if recall and await client.zone_name() != original_zone:
+            logger.error(f"Client {client.title} - 放置标记期间地图改变，取消补药。")
+            return False
         # Navigate to ravenwood
         await navigate_to_ravenwood(client)
         # Navigate to commons from ravenwood
@@ -1074,17 +1105,22 @@ async def refill_potions_if_needed(
     p: Client, mark: bool = False, recall: bool = True, original_zone=None
 ):
     if await p.stats.potion_charge() < 1.0 and await p.stats.reference_level() >= 6:
-        await refill_potions(p, mark, recall, original_zone)
+        return await refill_potions(p, mark, recall, original_zone)
+    return True
 
 
 async def auto_potions(
     client: Client, mark: bool = False, minimum_mana: int = 16, buy: bool = True
 ):
+    # No unlocked potion slots is a normal state, not a refill failure.
+    if await client.stats.potion_max() <= 0:
+        return True
     if await is_potion_needed(client, minimum_mana):
         await use_potion(client)
     # If we have less than 1 potion left, get potions
-    if await client.stats.potion_charge() < 1.0 and buy:
-        await refill_potions(client, mark=mark)
+    if buy:
+        return await refill_potions_if_needed(client, mark=mark)
+    return True
 
 
 async def wait_for_window_by_path(
@@ -1291,17 +1327,16 @@ async def _cycle_to_online_friends(client, friends_list):
         current_text = await list_label.maybe_text()
         if current_text is None:
             raise ValueError("Friend's list has no label")
-        return (
-            current_text.replace("<center>", "")
-            .replace("</center>", "")
-            .strip()
-        )
+        return current_text.replace("<center>", "").replace("</center>", "").strip()
 
     # There are only a few list types.  The fixed bound prevents a translated
     # or changed label from leaving the follower stuck in an endless loop.
     for _ in range(8):
         current_page = await _get_text()
-        if matches_text(current_page, "GUI_00000510", "GUI_FriendsOnline") or current_page.casefold() in online_labels:
+        if (
+            matches_text(current_page, "GUI_00000510", "GUI_FriendsOnline")
+            or current_page.casefold() in online_labels
+        ):
             return
         await client.mouse_handler.click_window(right_button)
         deadline = asyncio.get_running_loop().time() + 5.0

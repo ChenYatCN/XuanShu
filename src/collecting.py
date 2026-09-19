@@ -28,6 +28,7 @@ class SearchState:
     recent: dict = field(default_factory=dict)
     verified_templates: set = field(default_factory=set)
     last_warning: float = -float('inf')
+    anchor: XYZ | None = None
 
 
 @dataclass
@@ -83,7 +84,8 @@ class CollectSearch:
 
     async def same_goal(self):
         goal = await self.snapshot()
-        return goal is not None and goal.key == self.goal.key and goal.total == self.goal.total
+        return (goal is not None and goal.key == self.goal.key and goal.total == self.goal.total
+                and (goal.total is None or goal.current < goal.total))
 
     async def loaded_entities(self):
         # Do not equate completion of teleport() with completion of scene loading.
@@ -213,6 +215,16 @@ class CollectSearch:
         for attempt in range(3):
             if not await self.active() or not await self.prompt_ready(candidate):
                 break
+            try:
+                # Freshly spawned objects can expose their name before their
+                # interaction is ready; validate the live entity again after settling.
+                if calc_Distance(await candidate.entity.location(), candidate.xyz) > 100:
+                    break
+                await asyncio.sleep(.1)
+                if not await self.active() or not await self.same_goal() or not await self.prompt_ready(candidate):
+                    break
+            except (ValueError, OSError):
+                return False
             await self.client.send_key(Keycode.X, .1)
             for _ in range(8):
                 await asyncio.sleep(.25)
@@ -236,7 +248,8 @@ class CollectSearch:
                         return True
             if not await is_free(self.client):
                 break
-        logger.debug(f'Client {self.client.title}: {candidate.internal} 交互后未确认进度，继续搜索。')
+        action = '继续搜索'
+        logger.debug(f'Client {self.client.title}: {candidate.internal} 交互后未确认进度，{action}。')
         return False
 
     async def scan(self, entities):
@@ -246,7 +259,19 @@ class CollectSearch:
             success = await self.collect(candidate)
             self.state.recent[candidate.key] = time.monotonic() + (15 if success else 30)
             if success:
+                self.state.anchor = None
                 return True
+        return False
+
+    async def wait_at_anchor(self):
+        """Stay at the verified pickup point; re-read entities after every respawn."""
+        while await self.active() and await self.same_goal():
+            if await is_free(self.client):
+                if await self.scan(await self.client.get_base_entity_list()):
+                    return True
+            # No entity or no confirmed progress is not permission to roam.
+            # active/same_goal are rechecked every two seconds, and cancellation propagates.
+            await asyncio.sleep(2)
         return False
 
     async def run(self):
@@ -266,6 +291,7 @@ class CollectSearch:
         self.client._deimos_collect_search = self.state
         if not await self.active() or not await self.same_goal():
             return False
+        self.state.anchor = None
         # Search the currently loaded region first, even if navigation data is absent.
         if await self.scan(await self.client.get_base_entity_list()):
             return True

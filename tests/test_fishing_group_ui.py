@@ -64,7 +64,7 @@ class FishingGroupUITests(unittest.TestCase):
         self.checks['p1'].setChecked(True)
         self.api['set_available_clients'](['p1','p3'])
         checks = {c.text(): c for c in self.tab.findChildren(QCheckBox)}
-        self.assertEqual(set(checks), {'bot_target_all', 'p1','p3'})
+        self.assertEqual(set(checks), {'bot_target_all', 'p1','p3', '获得坐骑后停止'})
         self.assertTrue(checks['p1'].isChecked())
         self.assertFalse(checks['p3'].isChecked())
 
@@ -88,7 +88,7 @@ class FishingGroupUITests(unittest.TestCase):
         for control in controls:
             self.assertGreaterEqual(control.height(), 32)
 
-    def test_selector_and_status_share_bottom_action_row(self):
+    def test_selector_below_chest_hint_and_status_in_bottom_action_row(self):
         from PyQt6.QtWidgets import QWidget, QLabel
         from PyQt6.QtCore import QPoint
         self.api['set_running_groups']([{'clients': ['p1'], 'settings': {'fish_school': 'Ice'}}])
@@ -99,18 +99,45 @@ class FishingGroupUITests(unittest.TestCase):
         status = self.tab.findChild(QLabel, 'FishingRunningGroups')
         selector_pos = selector.mapTo(self.tab, QPoint(0, 0))
         status_pos = status.mapTo(self.tab, QPoint(0, 0))
-        field_pos = self.school.mapTo(self.tab, QPoint(0, self.school.height()))
-        self.assertGreater(selector_pos.y(), field_pos.y())
+        hint = self.tab.findChild(QLabel, 'FishingChestHint')
+        hint_bottom = hint.mapTo(self.tab, QPoint(0, hint.height()))
+        panel = self.tab.findChild(QWidget, 'FishingChestPanel')
+        self.assertIs(selector.parentWidget(), panel)
+        self.assertGreaterEqual(selector_pos.y(), hint_bottom.y())
         self.assertGreater(status_pos.x(), selector_pos.x() + selector.width())
         self.assertIn('p1', status.toolTip())
         from PyQt6.QtWidgets import QPushButton
         button = self.tab.findChild(QPushButton, 'ToggleFishingGroup')
         button_pos = button.mapTo(self.tab, QPoint(0, 0))
-        self.assertEqual(selector_pos.x(), 8)
         self.assertEqual(status_pos.x() + status.width(), self.tab.width() - 8)
         self.assertEqual(button_pos.y() + button.height(), self.tab.height() - 8)
-        self.assertLessEqual(abs(selector_pos.y() + selector.height()/2 - button_pos.y() - button.height()/2), 1)
+        self.assertLess(selector_pos.y() + selector.height(), button_pos.y())
         self.assertLessEqual(abs(status_pos.y() + status.height()/2 - button_pos.y() - button.height()/2), 1)
+
+    def test_many_clients_wrap_inside_left_panel(self):
+        from PyQt6.QtWidgets import QWidget
+        self.api['set_available_clients']([f'p{i}' for i in range(1, 25)])
+        self.tab.resize(1000, 420)
+        self.tab.show()
+        self.app.processEvents()
+        selector = self.tab.findChild(QWidget, 'FishingClientSelector')
+        checks = selector.findChildren(QCheckBox)
+        self.assertGreater(len({check.y() for check in checks}), 1)
+        for check in checks:
+            self.assertLessEqual(check.geometry().right(), check.parentWidget().width())
+            self.assertLessEqual(check.geometry().bottom(), check.parentWidget().height())
+
+    def test_chest_hint_is_small_single_line_without_group_title(self):
+        from PyQt6.QtWidgets import QLabel, QGroupBox
+        hint = self.tab.findChild(QLabel, 'FishingChestHint')
+        hint.ensurePolished()
+        self.assertFalse(hint.wordWrap())
+        self.assertEqual(hint.font().pointSizeF(),
+                         max(8.0, self.tab.font().pointSizeF() - 2.0) + 1.0)
+        self.assertFalse(hint.font().italic())
+        from PyQt6.QtCore import Qt
+        self.assertEqual(hint.alignment(), Qt.AlignmentFlag.AlignCenter)
+        self.assertNotIn('fish_chest_filter', [g.title() for g in self.tab.findChildren(QGroupBox)])
 
     def test_fishing_actions_are_icon_only_with_state_tooltips(self):
         from PyQt6.QtWidgets import QPushButton
@@ -127,7 +154,8 @@ class FishingGroupUITests(unittest.TestCase):
         button.click()
         self.ctx.send_queue.put.assert_not_called()
         self.assertEqual(stop_selected.toolTip(), 'fish_stop_selected')
-        self.assertEqual(button.width(), 40)
+        self.assertEqual(button.width(), 44)
+        self.assertEqual(button.iconSize().width(), 24)
         stop_selected.click()
         command = self.ctx.send_queue.put.call_args.args[0]
         self.assertEqual(command.com_type, GUICommandType.StopFishingGroup)

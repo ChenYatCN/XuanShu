@@ -14,6 +14,14 @@ from src.gui.helpers import (
 )
 
 
+def update_account_selection_order(order: list[str], nickname: str, checked: bool):
+    """Track account selection by click order instead of visual row order."""
+    if nickname in order:
+        order.remove(nickname)
+    if checked:
+        order.append(nickname)
+
+
 def build_launcher_tab(ctx):
     tab = QWidget()
     launcher_layout = QVBoxLayout(tab)
@@ -63,6 +71,8 @@ def build_launcher_tab(ctx):
     account_list.setDefaultDropAction(Qt.DropAction.MoveAction)
     account_list.setStyleSheet(_launcher_list_style)
     ctx.widget_tags['AccountList'] = account_list
+    account_selection_order: list[str] = []
+    account_checkboxes: dict[str, QCheckBox] = {}
 
     def _on_account_rows_moved(*_args):
         nicknames = []
@@ -166,6 +176,12 @@ def build_launcher_tab(ctx):
         row_layout.setSpacing(4)
 
         cb = QCheckBox()
+        account_checkboxes[nickname] = cb
+        cb.toggled.connect(
+            lambda checked, nick=nickname: update_account_selection_order(
+                account_selection_order, nick, checked
+            )
+        )
         row_layout.addWidget(cb)
 
         lbl = QLabel(nickname)
@@ -210,6 +226,9 @@ def build_launcher_tab(ctx):
     def _populate_account_list(accounts: list):
         remember = ctx.settings and ctx.settings.get_setting('remember_chosen_clients')
         managed = ctx.widget_tags.get('managed_accounts', set())
+        previous_selection_order = list(account_selection_order)
+        account_selection_order.clear()
+        account_checkboxes.clear()
         account_list.setUpdatesEnabled(False)
         account_list.clear()
         for entry in accounts:
@@ -231,6 +250,11 @@ def build_launcher_tab(ctx):
             )
             account_list.addItem(item)
             account_list.setItemWidget(item, row_widget)
+        # Reapply existing checks in their original click order after rebuilding.
+        for nickname in previous_selection_order:
+            checkbox = account_checkboxes.get(nickname)
+            if checkbox is not None and checkbox.isEnabled():
+                checkbox.setChecked(True)
         account_list.setUpdatesEnabled(True)
 
     def _refresh_account_eligibility(managed_accounts):
@@ -405,15 +429,13 @@ def build_launcher_tab(ctx):
 
     # Launch & Login button
     def _launch_and_login():
-        selected = []
-        for i in range(account_list.count()):
-            item = account_list.item(i)
-            w = account_list.itemWidget(item)
-            if w:
-                cb = w.findChild(QCheckBox)
-                lbl = w.findChild(QLabel)
-                if cb and lbl and cb.isChecked():
-                    selected.append(lbl.text())
+        selected = [
+            nickname
+            for nickname in account_selection_order
+            if nickname in account_checkboxes
+            and account_checkboxes[nickname].isEnabled()
+            and account_checkboxes[nickname].isChecked()
+        ]
         if selected:
             game_path = game_path_input.text().strip()
             send_queue.put(GUICommand(GUICommandType.LaunchInstance, (selected, game_path)))

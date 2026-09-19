@@ -14,6 +14,7 @@ class GUICommandType(Enum):
 
     # window -> deimos
     ToggleOption = auto()
+    ToggleHotkeyGroup = auto()
     Copy = auto()
     SelectEnemy = auto()
 
@@ -39,6 +40,11 @@ class GUICommandType(Enum):
 
     StartFishingGroup = auto()
     StopFishingGroup = auto()
+    StartIbaoGroup = auto()
+    StopIbaoGroup = auto()
+    GetIbaoData = auto()
+    ClearIbaoRound = auto()
+    SaveIbaoConfig = auto()
 
     ExecuteBot = auto()  # data: legacy text or {'text': str, 'clients': [title, ...]}
     KillBot = auto()     # data: None (all) or {'clients': [title, ...]}

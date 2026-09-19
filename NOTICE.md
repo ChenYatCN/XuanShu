@@ -1,4 +1,4 @@
-# 玄枢 XuanShu — 来源与修改说明
+# 玄枢 · XuanShu — 来源与修改说明
 
 本项目基于 [Deimos-Wizard101](https://github.com/Deimos-Wizard101/Deimos-Wizard101)。原作者及贡献者保留各自作品的版权；本次更名不转移或替换原有版权。
 

@@ -3,14 +3,19 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from src.automation_ownership import automation_owner
 from src.script_popups import close_script_popup, popup_kind, run_with_script_popups
 
 
 class ScriptPopupTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        pet = patch('src.script_popups.close_pet_level_popup', AsyncMock(return_value=False))
+        pet.start()
+        self.addCleanup(pet.stop)
         self.title = SimpleNamespace(value='You have been reported!', is_visible=AsyncMock(return_value=True))
         self.caption = SimpleNamespace(value='Remember, the use of foul language...', is_visible=AsyncMock(return_value=True))
         self.confirm = SimpleNamespace(is_visible=AsyncMock(return_value=True))
+        self.accept = SimpleNamespace(is_visible=AsyncMock(return_value=False))
         self.reject = SimpleNamespace(is_visible=AsyncMock(return_value=False))
         self.window = SimpleNamespace(is_visible=AsyncMock(return_value=True),
             get_windows_with_name=AsyncMock(side_effect=lambda name: {
@@ -29,7 +34,11 @@ class ScriptPopupTests(unittest.IsolatedAsyncioTestCase):
         async def resolve(window, path):
             self.assertIs(window, self.window)
             self.assertEqual(path[:-1], ['messageBoxBG', 'messageBoxLayout', 'AdjustmentWindow', 'Layout'])
-            return {'centerButton': self.confirm, 'rightButton': self.reject}.get(path[-1], False)
+            return {
+                'leftButton': self.accept,
+                'centerButton': self.confirm,
+                'rightButton': self.reject,
+            }.get(path[-1], False)
         paths = patch('src.script_popups.get_window_from_path', AsyncMock(side_effect=resolve))
         self.resolve_path = paths.start()
         self.addCleanup(paths.stop)
@@ -44,6 +53,24 @@ class ScriptPopupTests(unittest.IsolatedAsyncioTestCase):
         self.caption.value = 'Accept<br>Amber Level 100<br>as your friend?'
         self.assertTrue(await close_script_popup(self.client))
         self.client.mouse_handler.click_window.assert_awaited_once_with(self.reject)
+
+    async def test_group_invite_declined(self):
+        self.confirm.is_visible.return_value = False
+        self.accept.is_visible.return_value = True
+        self.reject.is_visible.return_value = True
+        self.title.value = 'Join a group?'
+        self.caption.value = 'Emma has invited you to join a group.  Would you like to join?'
+        self.assertTrue(await close_script_popup(self.client))
+        self.client.mouse_handler.click_window.assert_awaited_once_with(self.reject)
+
+    async def test_group_invite_requires_verified_yes_no_buttons(self):
+        self.confirm.is_visible.return_value = False
+        self.accept.is_visible.return_value = False
+        self.reject.is_visible.return_value = True
+        self.title.value = 'Join a group?'
+        self.caption.value = 'Emma has invited you to join a group.  Would you like to join?'
+        self.assertFalse(await close_script_popup(self.client))
+        self.client.mouse_handler.click_window.assert_not_awaited()
 
     async def test_screenshot_report_uses_right_button_and_spaced_title(self):
         self.title.value = '你已经被举报 ！'
@@ -100,12 +127,31 @@ class ScriptPopupTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await close_script_popup(self.client))
         self.client.mouse_handler.click_window.assert_not_awaited()
 
+    async def test_popup_guard_waits_for_combat_owner(self):
+        async with automation_owner(self.client, 'auto-combat-round'):
+            close_task = asyncio.create_task(close_script_popup(self.client))
+            done, _ = await asyncio.wait({close_task}, timeout=0.05)
+            self.assertFalse(done)
+            self.client.mouse_handler.click_window.assert_not_awaited()
+
+        self.assertTrue(await asyncio.wait_for(close_task, 1))
+        self.client.mouse_handler.click_window.assert_awaited_once_with(self.confirm)
+
     def test_verified_bilingual_text_and_unrelated_report(self):
         self.assertEqual(popup_kind('你已经被举报！', ''), 'reported')
         self.assertEqual(popup_kind('', '是否接受<br>某人 等级 100<br>成为你的好友？'), 'friend_request')
         self.assertEqual(popup_kind('', '你和 某人 成为了好友！'), 'friend_added')
+        self.assertEqual(
+            popup_kind('加入一个队伍？', '艾玛 邀请你加入一个队伍，是否同意？'),
+            'group_invite',
+        )
+        self.assertEqual(
+            popup_kind('Join a group?', 'Emma has invited you to join a group. Would you like to join?'),
+            'group_invite',
+        )
         self.assertIsNone(popup_kind('举报玩家', '你确定要举报此玩家吗？'))
         self.assertIsNone(popup_kind('', '该玩家未被禁言，但已被举报.'))
+        self.assertIsNone(popup_kind('Join a group?', 'This is not a group invitation.'))
 
 
 class QuestPopupIntegrationTests(unittest.IsolatedAsyncioTestCase):

@@ -120,6 +120,7 @@ def main() -> None:
         "_wizsprinter_compat/wizwalker/extensions/wizsprinter/resolution_hook.py",
         "pyqt6/qtcore.pyd",
         "pyqt6/qt6/bin/qt6core.dll",
+        "src/data/mainline_quests.json",
     )
     for suffix in required_suffixes:
         if not any(name.endswith(suffix) for name in archive_names):

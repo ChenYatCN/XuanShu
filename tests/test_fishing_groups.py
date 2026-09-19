@@ -51,7 +51,7 @@ class FishingGroupTests(unittest.IsolatedAsyncioTestCase):
         await self.wait_started(2)
         removed = self.clients.pop(0)
         async with asyncio.timeout(2):
-            while ('p1',) in self.manager.groups:
+            while ('p1',) in self.manager.groups or removed.is_fishing:
                 await asyncio.sleep(.01)
         self.assertFalse(removed.is_fishing)
         self.assertTrue(self.clients[0].is_fishing)

@@ -154,7 +154,7 @@ class Compiler:
                         sub_command.data
                     ])
                 self.emit(InstructionKind.compound_deimos_call, command_entries)
-            case CommandKind.autopet:
+            case CommandKind.autopet | CommandKind.stop_if_mount:
                 self.emit(InstructionKind.deimos_call, [com.player_selector, com.kind.name, com.data])
             case CommandKind.kill:
                 self.emit(InstructionKind.kill)

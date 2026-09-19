@@ -321,6 +321,11 @@ def _load_recent(filepath, editor, category):
         with open(filepath) as f:
             editor.setPlainText(f.read())
         add_recent(category, filepath)
+    except FileNotFoundError:
+        recent = _recent_imports[category]
+        recent[:] = [path for path in recent if path != filepath]
+        if _settings_ref:
+            _settings_ref.remove_recent_import(category, filepath)
     except Exception:
         pass
 

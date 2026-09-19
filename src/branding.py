@@ -1,13 +1,15 @@
 # Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
 """XuanShu branding and non-destructive legacy settings migration (2026-09-09)."""
+
 import os
 import shutil
 from pathlib import Path
 
 APP_NAME = "XuanShu"
-DISPLAY_NAME = "玄枢 XuanShu"
+DISPLAY_NAME = "玄枢 · XuanShu"
 REPOSITORY_URL = "https://github.com/ChenYatCN/Deimos-Wizard101-main"
 UPSTREAM_URL = "https://github.com/Deimos-Wizard101/Deimos-Wizard101"
+
 
 def appdata_dir() -> Path:
     base = Path(os.environ.get("APPDATA") or Path.home())

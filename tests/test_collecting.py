@@ -215,3 +215,51 @@ class CollectWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(again.state, state)
         self.assertEqual(again.state.cursor, 0)
         self.quester.get_zone_chunks.assert_awaited_once()
+
+    async def lock_point(self):
+        self.client.get_base_entity_list.return_value = [self.entity()]
+        self.client.send_key.side_effect = self.pickup
+        self.assertTrue(await self.engine.run())
+        self.assertIsNone(self.engine.state.anchor)
+        self.engine.state.recent.clear()
+        self.client.teleport.reset_mock()
+
+    async def test_next_pickup_searches_other_points(self):
+        await self.lock_point()
+        self.client.get_base_entity_list.side_effect = [[self.entity(x=500)]]
+        again = CollectSearch(self.quester, self.client)
+        self.assertTrue(await again.run())
+        self.assertEqual(self.count, 2)
+        self.client.teleport.assert_not_awaited()
+        self.quester.get_zone_chunks.assert_not_awaited()
+
+    async def test_missing_respawn_returns_to_rescan_without_input(self):
+        await self.lock_point()
+        self.client.send_key.reset_mock()
+        calls = 0
+        async def missing():
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                self.client.questing_status = False
+            return []
+        self.client.get_base_entity_list.side_effect = missing
+        self.assertFalse(await CollectSearch(self.quester, self.client).run())
+        self.assertEqual(calls, 1)
+        self.client.send_key.assert_not_awaited()
+
+    async def test_completed_counter_exits_without_more_pickups(self):
+        await self.lock_point()
+        self.count = 4
+        self.client.send_key.reset_mock()
+        self.assertFalse(await CollectSearch(self.quester, self.client).run())
+        self.client.send_key.assert_not_awaited()
+
+    async def test_goal_change_during_wait_exits_without_moving(self):
+        await self.lock_point()
+        async def changed():
+            self.text = '拜访 校长 地点：广场'
+            return []
+        self.client.get_base_entity_list.side_effect = changed
+        self.assertFalse(await CollectSearch(self.quester, self.client).run())
+        self.client.teleport.assert_not_awaited()

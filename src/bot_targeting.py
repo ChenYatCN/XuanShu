@@ -42,16 +42,20 @@ def unpack_bot_command(data: Any) -> tuple[str, tuple[str, ...] | None]:
 def resolve_bot_clients(
     clients: Sequence[Any], requested_titles: tuple[str, ...] | None
 ) -> list[Any]:
-    """Resolve requested titles against live clients in the live client order."""
+    """Resolve clients in numeric title order, independent of discovery order."""
 
-    if requested_titles is None:
-        return list(clients)
-    requested = {title.casefold() for title in requested_titles}
-    return [
+    requested = None if requested_titles is None else {title.casefold() for title in requested_titles}
+    selected = [
         client
         for client in clients
-        if str(getattr(client, "title", "")).casefold() in requested
+        if requested is None or str(getattr(client, "title", "")).casefold() in requested
     ]
+    def title_key(client):
+        title = str(getattr(client, "title", "")).casefold()
+        if title.startswith('p') and title[1:].isdigit():
+            return (0, int(title[1:]))
+        return (1, title)
+    return sorted(selected, key=title_key)
 
 
 def bot_group_key(clients: Sequence[Any]) -> tuple[str, ...]:

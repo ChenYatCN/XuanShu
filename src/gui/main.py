@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -45,6 +46,7 @@ from src.gui.tab_camera import build_camera_tab
 from src.gui.tab_dev_utils import build_dev_utils_tab
 from src.gui.tab_hotkeys import build_hotkeys_tab
 from src.gui.tab_fishing import build_fishing_tab
+from src.gui.ibao_dialog import build_ibao_dialog, TripleClickGate
 from src.gui.tab_launcher import build_launcher_tab
 from src.gui.tab_stats import build_stats_tab
 from src.gui.theme import compute_styles
@@ -323,16 +325,20 @@ def manage_gui(
     # ==================== Content Area ====================
     content_widget = QWidget()
     content_layout = QVBoxLayout(content_widget)
-    content_layout.setContentsMargins(8, 8, 8, 8)
+    content_layout.setContentsMargins(8, 2, 8, 8)
     content_layout.setSpacing(4)
     main_layout.addWidget(content_widget)
 
     free_tool_label = QLabel(tl("free_tool"))
     free_tool_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    free_tool_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+    free_tool_label.setContentsMargins(0, 0, 0, 0)
     content_layout.addWidget(free_tool_label)
 
     tabs = AnimatedTabWidget(duration=200)
-    tabs.setStyleSheet("QTabWidget::tab-bar { alignment: center; }")
+    tabs.divider_color = _stroke_color
+    tabs.setStyleSheet("QTabWidget::tab-bar { alignment: center; }"
+                      "QTabWidget::pane { padding-top: 8px; }")
     content_layout.addWidget(tabs)
 
     # Widget tag registry for backend updates
@@ -438,6 +444,14 @@ def manage_gui(
     ctx.current_tab_name = tl("fishing")
     fishing_tab = build_fishing_tab(ctx)
     tabs.addTab(fishing_tab, tl("fishing"))
+    ibao_dialog = build_ibao_dialog(ctx)
+    ibao_clicks = TripleClickGate()
+    def reveal_ibao(index):
+        if ibao_clicks.click(tabs.widget(index) is bot_tab):
+            ibao_dialog.show()
+            ibao_dialog.raise_()
+            ibao_dialog.activateWindow()
+    tabs.tabBarClicked.connect(reveal_ibao)
 
     ctx.current_tab_name = ""
 
@@ -708,6 +722,12 @@ def manage_gui(
                             bot_exports.get("set_running_groups", lambda v: None)(value)
                         elif tag == "FishingGroups":
                             fishing_exports.get("set_running_groups", lambda v: None)(value)
+                        elif tag == "IbaoGroups":
+                            ctx.exports['ibao']['set_running_groups'](value)
+                        elif tag == "IbaoData":
+                            ctx.exports['ibao']['set_saved_configs'](value)
+                        elif tag == "IbaoError":
+                            ctx.exports['ibao']['show_error'](value)
                         elif tag == "FishingToggle":
                             fishing_exports.get("toggle_selected", lambda: None)()
                         elif tag == "Auto FishStatus":
@@ -860,6 +880,8 @@ def manage_gui(
                         fishing_exports.get("set_available_clients", lambda v: None)([
                             info.get("title", "") for info in _last_hooked_data.get("hooked", [])
                         ])
+                        ctx.exports['ibao']['set_available_clients']([
+                            info for info in _last_hooked_data.get('hooked', [])])
                         _update_combat_clients = combat_exports.get(
                             "set_available_clients"
                         )

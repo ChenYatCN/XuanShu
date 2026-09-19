@@ -879,7 +879,17 @@ class Quester():
     async def teleport_to_quest_target(self, client, xyz, leader_client=None):
         zone = await client.zone_name()
         key = id(client)
-        if zone != "Krokotopia/KT_WorldTeleporter":
+        floating_exit = zone == 'Celestia/CL_Z05_The_Floating_Land'
+        crystal_exit = zone == 'DragonSpire/DS_A3_Kings/Interiors/DS_Crystal_T9'
+        special_targets = {
+            'Krokotopia/KI_Selenopolis/Interiors/KI_Z04101_BlendedGrove': XYZ(3124.726, -4718.231, 36.200),
+            'Celestia/CL_Z09_Science_Center': XYZ(-1067.512, 343.759, -449.800),
+            'Celestia/Interiors/CL_Z10i3_Kingdom_Of_The_Crabs': XYZ(3184.987, -9931.280, -1014.007),
+        }
+        special_exit = zone in special_targets
+        stuck = XYZ(6420.986, -6956.173, -399.699)
+        if (zone != "Krokotopia/KT_WorldTeleporter" and not floating_exit and not crystal_exit and not special_exit
+                or floating_exit and calc_Distance(await client.body.position(), stuck) > 150):
             self._krok_exit_watch.pop(key, None)
             await self.move_until_quest_interaction(client, xyz, leader_client=leader_client)
             return
@@ -899,15 +909,16 @@ class Quester():
         target = (xyz.x, xyz.y, xyz.z)
         before = await client.body.position()
         state = self._krok_exit_watch.get(key)
-        if state is None or state['objective'] != objective or state['target'] != target:
-            state = dict(objective=objective, target=target, anchor=before,
+        if state is None or state.get('zone') != zone or state['objective'] != objective or state['target'] != target:
+            state = dict(zone=zone, objective=objective, target=target, anchor=before,
                          since=time.monotonic(), attempts=0, end_sent=False)
             self._krok_exit_watch[key] = state
 
         transition = [False]
         async def watch_transition():
             while True:
-                if await client.is_loading() or await client.zone_name() != zone:
+                if (await client.is_loading() or await client.zone_name() != zone
+                        or (crystal_exit or special_exit) and (await interaction_pending() or not await is_free(client))):
                     transition[0] = True
                     return
                 await asyncio.sleep(.1)
@@ -933,6 +944,9 @@ class Quester():
             return
 
         after = await client.body.position()
+        if floating_exit and calc_Distance(after, stuck) > 150:
+            self._krok_exit_watch.pop(key, None)
+            return
         # Both endpoints must stay within the same small area across attempts.
         if max(calc_Distance(before, state['anchor']),
                calc_Distance(after, state['anchor'])) > 100:
@@ -943,6 +957,32 @@ class Quester():
             return
 
         state['end_sent'] = True
+        if special_exit:
+            logger.info(f'Client {client.title}: 连续任务传送至少 3 次且 10 秒无进展，执行区域脱困。')
+            await client.teleport(special_targets[zone])
+            if zone.endswith('CL_Z10i3_Kingdom_Of_The_Crabs'):
+                try:
+                    async with asyncio.timeout(10):
+                        while not await is_visible_by_path(client, npc_range_path):
+                            if await client.is_loading() or await client.zone_name() != zone:
+                                return
+                            await asyncio.sleep(.25)
+                        await client.send_key(Keycode.X, .1)
+                        while await get_quest_name(leader_client or client) == objective:
+                            if await client.is_loading() or not await is_free(client):
+                                return
+                            await asyncio.sleep(.25)
+                except TimeoutError:
+                    pass
+            return
+        if crystal_exit:
+            logger.info(f'Client {client.title}: 水晶塔连续任务传送受阻，执行脱困传送。')
+            await client.teleport(XYZ(34.461, 1382.432, 0.123))
+            return
+        if floating_exit:
+            logger.info(f'Client {client.title}: 漂浮大陆连续任务传送受阻，执行出口脱困传送。')
+            await client.teleport(XYZ(6592.342, -6749.908, -250.054))
+            return
         logger.debug(f"Client {client.title}: 克洛克传送室连续任务传送受阻，按 END 返回主城。")
         await client.send_key(Keycode.END, 0.1)
         try:
@@ -1306,6 +1346,8 @@ class Quester():
 
     # TODO: Slay the beast
     async def auto_quest_leader(self, questing_friend_tp: bool, gear_switching_in_solo_zones: bool, hitting_client, ignore_pet_level_up: bool, play_dance_game: bool):
+        from src.mainline_progress import log_mainline_progress
+        await log_mainline_progress(self.client)
         follower_clients = await self.get_follower_clients()
         questing_clients = await self.get_questing_clients()
 
@@ -1553,6 +1595,8 @@ class Quester():
         return bool(getattr(self.client, "quest_party_probe_pending", False))
 
     async def auto_quest_solo(self, auto_pet_disabled=False, ignore_pet_level_up=False, play_dance_game=False):
+        from src.mainline_progress import log_mainline_progress
+        await log_mainline_progress(self.client)
         if await close_npc_quest_menu(self.client):
             return
         if await close_automation_popup(self.client):
@@ -1581,7 +1625,9 @@ class Quester():
                 await collect_wisps(self.client)
 
             if self.client.use_potions:
-                await auto_potions(self.client, True, buy=self.client.buy_potions)
+                if await auto_potions(self.client, True, buy=self.client.buy_potions) is False:
+                    logger.error(f"Client {self.client.title} - 补药或回传失败，跳过本轮任务移动。")
+                    return
 
             quest_xyz = await self.client.quest_position.position()
 

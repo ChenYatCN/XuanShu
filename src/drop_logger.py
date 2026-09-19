@@ -15,6 +15,7 @@ drop_types = [
     'Reagent',
     'Housing',
     'Pet',
+    'Mount',
     'Shoes',
     'Seed',
     'Jewel',
@@ -78,6 +79,7 @@ def filter_drops(input_list: List[str]) -> List[str]:
 
             if i:
                 # Matches everything after ; and before >, excluding both
+                drop_type = ''
                 if ';' in i:
                     drop_type: str = re.findall('(?<=;).*?[^>]*|$', i)[0]
 
@@ -118,6 +120,7 @@ def find_new_stuff(old: str, new: str) -> str:
 async def logging_loop(client: Client):
     # TODO: Finish this loop and create a system for determining new drops
     chat_text = await get_chat(client)
+    client.latest_drops = ''
     if chat_text:
         temp_drops = filter_drops(chat_text.split('\n'))
         client.latest_drops = '\n'.join(temp_drops)
@@ -127,6 +130,7 @@ async def logging_loop(client: Client):
 
         if await is_visible_by_path(client, chat_window_path):
             chat_text = await get_chat(client)
+            chat_text = chat_text or ''
             #if chat_text:
             temp_drops = filter_drops(chat_text.split('\n'))
             temp_channel = await get_current_active_chat_channel(client)

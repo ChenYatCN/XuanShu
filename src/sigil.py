@@ -110,7 +110,10 @@ class Sigil():
 
 			# Automatically use and buy potions if needed
 			if self.client.use_potions:
-				await auto_potions(self.client, buy = self.client.buy_potions)
+				if await auto_potions(self.client, buy=self.client.buy_potions) is False:
+					logger.error(f"Client {self.client.title} - 补药或回传失败，停止传送阵流程。")
+					self.client.sigil_status = False
+					return
 
 			# Join sigil and wait for the zone to change either via team up or sigil countdown
 			await self.join_sigil()
@@ -201,7 +204,10 @@ class Sigil():
 			# Automatically use and buy potions if needed
 			if self.client.use_potions:
 				for client in self.clients:
-					await auto_potions(client, mark=True, buy = self.client.buy_potions)
+					if await auto_potions(client, mark=True, buy=self.client.buy_potions) is False:
+						logger.error(f"Client {client.title} - 补药或回传失败，停止传送阵流程。")
+						self.client.sigil_status = False
+						return
 
 			# await asyncio.gather(*[auto_potions(p) for p in self.clients])
 

@@ -68,6 +68,7 @@ class TokenKind(Enum):
     keyword_reset_counter = auto()
 
     command_kill = auto()
+    command_stop_if_mount = auto()
     command_sleep = auto()
     command_log = auto()
     command_goto = auto()
@@ -452,6 +453,8 @@ class Tokenizer:
                                     # commands
                                     case "kill" | "killbot" | "stop" | "stopbot" | "end" | "exit":
                                         put_simple(TokenKind.command_kill, full)
+                                    case "stopifmount":
+                                        put_simple(TokenKind.command_stop_if_mount, full)
                                     case "sleep" | "wait" | "delay":
                                         put_simple(TokenKind.command_sleep, full)
                                     case "log" | "debug" | "print":

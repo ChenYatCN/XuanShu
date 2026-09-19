@@ -26,6 +26,7 @@ from src.utils import is_visible_by_path, is_free, get_window_from_path, refill_
                     , logout_and_in, click_window_by_path, get_quest_name
 from src.command_parser import teleport_to_friend_from_list
 from src.config_combat import delegate_combat_configs, default_config
+from src.automation_ownership import automation_owner
 
 from loguru import logger
 
@@ -68,6 +69,20 @@ class UntilInfo:
 
 
 class VM:
+    _OWNED_DEIMOS_CALLS = frozenset({
+        "autopet",
+        "teleport",
+        "goto",
+        "sendkey",
+        "usepotion",
+        "buypotions",
+        "relog",
+        "cursor",
+        "click",
+        "tozone",
+        "select_friend",
+    })
+
     def __init__(self, clients: list[Client], group_any_as_mass: bool = False):
         self._clients = upgrade_clients(clients) # guarantee it's usable
         # Targeted GUI bot groups use ``any`` as a group-wide action selector.
@@ -1263,15 +1278,43 @@ class VM:
             case EvalKind.any_player_list:
                 return [c.title for c in self._any_player_client] if self._any_player_client else [self._clients[0].title]
 
-    async def exec_deimos_call(self, instruction: Instruction):
+    async def exec_deimos_call(
+        self,
+        instruction: Instruction,
+        *,
+        _clients_override=None,
+        _ownership_acquired: bool = False,
+    ):
         assert instruction.kind == InstructionKind.deimos_call
         assert type(instruction.data) == list
 
         selector: PlayerSelector = instruction.data[0]
-        clients = self._select_action_players(selector)
+        clients = (
+            list(_clients_override)
+            if _clients_override is not None
+            else self._select_action_players(selector)
+        )
         
         # Skip execution if no valid clients were selected
         if not clients:
+            return
+
+        command_name = instruction.data[1]
+        if (
+            not _ownership_acquired
+            and command_name in self._OWNED_DEIMOS_CALLS
+        ):
+            async def exec_owned(client):
+                async with automation_owner(client, "script-vm"):
+                    await self.exec_deimos_call(
+                        instruction,
+                        _clients_override=(client,),
+                        _ownership_acquired=True,
+                    )
+
+            async with asyncio.TaskGroup() as tg:
+                for client in clients:
+                    tg.create_task(exec_owned(client))
             return
 
         
@@ -1295,7 +1338,15 @@ class VM:
             return arg
 
         # TODO: is eval always fast enough to run in order during a TaskGroup
-        match instruction.data[1]:     
+        match command_name:
+            case "stop_if_mount":
+                from src.mount_stop import has_mount
+                for client in clients:
+                    name = await has_mount(client, instruction.data[2][0])
+                    if name:
+                        logger.info('{} 已持有坐骑 {}，正常结束当前脚本。', client.title, name)
+                        self.kill()
+                        return
             case "set_zone":
                 for client in clients:
                     zone_name = await client.zone_name()
@@ -1464,9 +1515,17 @@ class VM:
                     method = method_map[args[0]]
                     async with asyncio.TaskGroup() as tg:
                         for client in clients:
-                            async def proxy(): # type: ignore
+                            async def proxy(client=client, method=method): # type: ignore
                                 return await method(client)
-                            tg.create_task(waitfor_impl(proxy))
+                            if args[0] == WaitforKind.battle and completion:
+                                async def wait_for_battle_cycle(proxy=proxy):
+                                    # A completion barrier is an observed battle
+                                    # cycle, not merely "currently out of battle".
+                                    await waitfor_coro(proxy, False)
+                                    await waitfor_coro(proxy, True)
+                                tg.create_task(wait_for_battle_cycle())
+                            else:
+                                tg.create_task(waitfor_impl(proxy))
                 else:
                     match args[0]:
                         case WaitforKind.zonechange:
@@ -1497,7 +1556,7 @@ class VM:
                             window_path = await eval_arg(args[1], clients[0] if clients else None)
                             async with asyncio.TaskGroup() as tg:
                                 for client in clients:
-                                    async def proxy():
+                                    async def proxy(client=client, window_path=window_path):
                                         return await is_visible_by_path(client, window_path)
                                     tg.create_task(waitfor_impl(proxy))
                         case _:
@@ -1535,12 +1594,16 @@ class VM:
             case "buypotions":
                 args = instruction.data[2]
                 ifneeded = await eval_arg(args[0], clients[0]) if clients else False
+                refill_tasks = []
                 async with asyncio.TaskGroup() as tg:
                     for client in clients:
                         if ifneeded:
-                            tg.create_task(refill_potions_if_needed(client, mark=True, recall=True))
+                            refill_tasks.append(tg.create_task(refill_potions_if_needed(client, mark=True, recall=True)))
                         else:
-                            tg.create_task(refill_potions(client, mark=True, recall=True))
+                            refill_tasks.append(tg.create_task(refill_potions(client, mark=True, recall=True)))
+                failed = [c.title for c, task in zip(clients, refill_tasks) if task.result() is False]
+                if failed:
+                    raise RuntimeError('补药或返回原地图失败，停止脚本：' + ', '.join(failed))
             case "relog":
                 async with asyncio.TaskGroup() as tg:
                     for client in clients:
@@ -1747,8 +1810,9 @@ class VM:
             case InstructionKind.setdeck:
                 async def setdeck(client: SprintyClient, token: str):
                     logger.debug(f"Setting {client.title}'s deck...")
-                    async with DeckBuilder(client) as deck_builder:
-                        await deck_builder.set_deck_preset(deck)
+                    async with automation_owner(client, "script-vm"):
+                        async with DeckBuilder(client) as deck_builder:
+                            await deck_builder.set_deck_preset(deck)
                 assert type(instruction.data) == list
                 clients = self._select_action_players(instruction.data[0])
                 token = instruction.data[1]
@@ -1763,11 +1827,12 @@ class VM:
 
             case InstructionKind.getdeck:
                 async def getdeck(client:SprintyClient):
-                    async with DeckBuilder(client) as deck_builder:
-                        deck = await deck_builder.get_deck_preset()
-                        coder = DeckEncoderDecoder(deck=deck)
-                        token = coder.encode()
-                        logger.debug(f"{client.title}: --> {token} <--");
+                    async with automation_owner(client, "script-vm"):
+                        async with DeckBuilder(client) as deck_builder:
+                            deck = await deck_builder.get_deck_preset()
+                            coder = DeckEncoderDecoder(deck=deck)
+                            token = coder.encode()
+                            logger.debug(f"{client.title}: --> {token} <--");
 
                 assert type(instruction.data) == list
                 clients = self._select_action_players(instruction.data[0])
@@ -1824,9 +1889,13 @@ class VM:
                 clients = self._select_action_players(selector)
                 
                 if clients:
+                    async def set_yaw_owned(client):
+                        async with automation_owner(client, "script-vm"):
+                            await client.body.write_yaw(yaw)
+
                     async with TaskGroup() as tg:
                         for client in clients:
-                            tg.create_task(client.body.write_yaw(yaw))
+                            tg.create_task(set_yaw_owned(client))
                 self.current_task.ip += 1
             case InstructionKind.load_playstyle:
                 logger.debug("Loading playstyle")

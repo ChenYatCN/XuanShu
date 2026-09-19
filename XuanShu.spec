@@ -154,6 +154,7 @@ add_data_if_exists(datas, "locale", "locale")
 add_data_if_exists(datas, "LICENSE", ".")
 add_data_if_exists(datas, "NOTICE.md", ".")
 add_data_if_exists(datas, "src/data/collect_names.json", "src/data")
+add_data_if_exists(datas, "src/data/mainline_quests.json", "src/data")
 
 # Optional-at-runtime but required for this build: the launcher setting
 # "verify/patch game files before launch" calls this official helper.

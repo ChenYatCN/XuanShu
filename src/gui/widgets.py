@@ -42,6 +42,7 @@ from PyQt6.QtGui import (
     QPixmap,
     QIcon,
     QPainter,
+    QLinearGradient,
     QColor,
     QPen,
     QBrush,
@@ -158,6 +159,7 @@ class FlowLayout(QLayout):
         x = area.x()
         y = area.y()
         line_height = 0
+        client_count = 0
 
         for item in self._items:
             if item.isEmpty():
@@ -166,22 +168,76 @@ class FlowLayout(QLayout):
             next_x = x + hint.width() + self._horizontal_spacing
             if (
                 line_height > 0
-                and next_x - self._horizontal_spacing > area.right() + 1
+                and (next_x - self._horizontal_spacing > area.right() + 1
+                     or (getattr(self, 'max_clients_per_row', 0)
+                         and item.widget().property('clientOption')
+                         and client_count >= self.max_clients_per_row))
             ):
                 x = area.x()
                 y += line_height + self._vertical_spacing
                 next_x = x + hint.width() + self._horizontal_spacing
                 line_height = 0
+                client_count = 0
 
             if not test_only:
                 item.setGeometry(QRect(x, y, hint.width(), hint.height()))
             x = next_x
             line_height = max(line_height, hint.height())
+            if item.widget().property('clientOption'):
+                client_count += 1
 
         return (
             y + line_height - rect.y()
             + margins.bottom()
         )
+
+
+class ClientStatusLayout(FlowLayout):
+    """Keep status beside a full client row, or place it below without overlap."""
+
+    def minimumSize(self):
+        return QSize(100, 0)
+
+    def _do_layout(self, rect, test_only):
+        selector = self.itemAt(0)
+        flow = selector.widget().layout()
+        width = rect.width()
+        preferred, row_width, count = 0, 0, 0
+        for index in range(flow.count()):
+            item = flow.itemAt(index)
+            if item.isEmpty():
+                continue
+            is_client = bool(item.widget().property('clientOption'))
+            if is_client and count == 5:
+                preferred = max(preferred, row_width)
+                row_width, count = 0, 0
+            row_width += (flow._horizontal_spacing if row_width else 0) + item.sizeHint().width()
+            count += int(is_client)
+        preferred = max(preferred, row_width)
+        status = self.itemAt(1) if self.count() > 1 else None
+        visible = status is not None and not status.isEmpty()
+        status_width = (status.widget().fontMetrics().horizontalAdvance(status.widget().text()) + 4
+                        if visible else 0)
+        beside = visible and preferred + 12 + status_width <= width
+        selector_width = width - status_width - 12 if beside else width
+        height = flow.heightForWidth(selector_width)
+        if not test_only:
+            selector.setGeometry(QRect(rect.x(), rect.y(), selector_width, height))
+        if visible:
+            status_width = status_width if beside else width
+            # A wrapping QLabel's sizeHint may describe two lines even when
+            # its actual allocated width fits the complete text on one line.
+            status_height = max(status.widget().fontMetrics().height(),
+                                status.heightForWidth(status_width))
+            first_row_height = max((flow.itemAt(i).sizeHint().height()
+                                    for i in range(flow.count())
+                                    if not flow.itemAt(i).isEmpty()), default=0)
+            y = (rect.y() + max(0, (first_row_height - status_height) // 2)
+                 if beside else rect.y() + height + 2)
+            if not test_only:
+                status.setGeometry(QRect(rect.right() + 1 - status_width, y, status_width, status_height))
+            height = max(height, status_height) if beside else height + 2 + status_height
+        return height
 
 
 class ToggleNameLabel(QLabel):
@@ -356,6 +412,26 @@ class AnimatedTabWidget(QTabWidget):
         self._animating = False
         self._prev_index = 0
         self.currentChanged.connect(self._on_tab_changed)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        color = getattr(self, 'divider_color', None)
+        if not color:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        y = self.tabBar().geometry().bottom() + 4
+        gradient = QLinearGradient(8, 0, self.width() - 8, 0)
+        for stop, alpha in ((0, 0), (.12, 65), (.5, 90),
+                            (.88, 65), (1, 0)):
+            tint = QColor(color)
+            tint.setAlpha(alpha)
+            gradient.setColorAt(stop, tint)
+        pen = QPen(QBrush(gradient), 1.0)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.drawLine(8, y, self.width() - 8, y)
+        painter.end()
 
     def _on_tab_changed(self, index):
         if self._animating:
@@ -1348,7 +1424,7 @@ class PyQtSink:
         self.refresh()
 
     def write(self, message):
-        ansi_pattern = r"\033\[\d+m"
+        ansi_pattern = r"\033\[[0-9;]*m"
         clean_message = re.sub(ansi_pattern, "", message)
 
         split_msg = clean_message.split("|")
@@ -1362,15 +1438,24 @@ class PyQtSink:
         else:
             level = split_msg[1].lstrip().rstrip()
 
-        def collapse_log(input: str) -> str:
-            if "-" not in input:
-                return input
-            split_input = input.split("-")
-            if len(split_input) < 4:
-                return input
-            return split_input[3].lstrip()
-
-        truncated_message = level + " - " + collapse_log(clean_message)
+        # Strip only the Loguru header, never split hyphens inside the body.
+        header = re.match(
+            r'^\d{4}-\d{2}-\d{2}[^\n|]*\|\s*(\w+)\s*\|[^\n]*? - ',
+            clean_message,
+        )
+        record = getattr(message, 'record', None)
+        if record is not None:
+            level = record['level'].name
+        if header:
+            level = record['level'].name if record is not None else header.group(1)
+            body = clean_message[header.end():]
+        elif record is not None:
+            body = record['message']
+            if not body.endswith('\n'):
+                body += '\n'
+        else:
+            body = clean_message
+        truncated_message = level + " - " + body
 
         self.buffer.append((clean_message, truncated_message, level))
         if len(self.buffer) > self.max_lines:

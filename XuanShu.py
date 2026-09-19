@@ -37,6 +37,7 @@ from src.bot_targeting import (
     unpack_bot_command,
 )
 from src.client_resizing import ClientResizingManager
+from src.combat_targeting import TargetingSprintyCombat
 from src.command_parser import execute_flythrough, parse_command
 from src.config_combat import (
     StrCombatConfigProvider,
@@ -49,6 +50,7 @@ from src.drop_logger import logging_loop
 from src.fishing_groups import FishingGroups
 from src.gui import GUIKeys
 from src.gui_inputs import param_input, trunc
+from src.ibao_runtime import IbaoGroups
 from src.paths import (
     advance_dialog_path,
     decline_quest_path,
@@ -98,7 +100,6 @@ from src.utils import (
 from src.world_to_screen import get_camera_state, project_point, world_to_screen
 from wizwalker import XYZ, HotkeyListener, Keycode, ModifierKeys, Orient, utils
 from wizwalker.client_handler import Client, ClientHandler
-from wizwalker.extensions.wizsprinter.sprinty_combat import SprintyCombat
 from wizwalker.extensions.wizsprinter.wiz_navigator import toZone, toZoneDisplayName
 from wizwalker.memory.memory_objects.camera_controller import (
     DynamicCameraController,
@@ -109,7 +110,7 @@ from wizwalker.utils import get_all_wizard_handles, get_foreground_window
 
 cMessageBox = ctypes.windll.user32.MessageBoxW
 
-tool_version: str = "4.0.0"
+tool_version: str = "4.1.5"
 tool_name: str = "XuanShu"
 tool_author: str = "ChenYatCN"
 repo_name: str = "XuanShu"
@@ -951,9 +952,9 @@ async def main():
                     camera_pos, wait_on_inuse=True, purge_on_after_unuser_fixer=True
                 )
 
-    def current_quest_party():
+    def current_quest_party(members=None):
         return resolve_quest_party(
-            walker.clients,
+            walker.clients if members is None else members,
             enabled=quest_party_enabled,
             quester_titles=questing_client_titles,
             hitter_titles=questing_hitter_client_titles,
@@ -961,11 +962,11 @@ async def main():
             manual_assignments=quest_hitter_assignments,
         )
 
-    def apply_questing_roles(active: bool):
-        party = current_quest_party()
+    def apply_questing_roles(active: bool, members=None):
+        party = current_quest_party(members)
         participants = party.questers + party.hitters if party.questers else []
         participant_ids = {id(client) for client in participants}
-        for client in walker.clients:
+        for client in (walker.clients if members is None else members):
             client.questing_status = active and id(client) in participant_ids
             client.quest_party_hitters = []
             client.quest_party_quest_worker_zone = None
@@ -1131,6 +1132,15 @@ async def main():
     fishing_groups = FishingGroups(
         fish_bot, lambda: walker.clients, publish_fishing_groups
     )
+    ibao_groups = IbaoGroups(
+        lambda: walker.clients,
+        lambda groups: gui_send_queue.put(
+            xuanshu_gui.GUICommand(
+                xuanshu_gui.GUICommandType.UpdateWindow, ("IbaoGroups", groups)
+            )
+        ),
+        store=settings,
+    )
 
     async def toggle_auto_fish_hotkey():
         if not freecam_status:
@@ -1139,6 +1149,152 @@ async def main():
                     xuanshu_gui.GUICommandType.UpdateWindow, ("FishingToggle", None)
                 )
             )
+
+    from src.hotkey_groups import HotkeyGroups
+
+    async def run_hotkey_group(action, members):
+        status_tags = {
+            "toggle_speed": "Speedhack",
+            "toggle_combat": "Combat",
+            "toggle_dialogue": "Dialogue",
+            "toggle_dialogue_side_quests": "SideQuestAccept",
+            "toggle_sigil": "Sigil",
+            "toggle_questing": "Questing",
+            "toggle_auto_pet": "Auto Pet",
+            "toggle_auto_potion": "Auto Potion",
+            "toggle_freecam": "Freecam",
+        }
+        exclusive = {
+            "toggle_questing",
+            "toggle_sigil",
+            "toggle_auto_pet",
+            "toggle_freecam",
+        }
+        if any(
+            getattr(c, "is_ibao", False)
+            or getattr(c, "is_fishing", False)
+            or any(c.title in key for key in bot_tasks)
+            for c in members
+        ):
+            raise ValueError("请先停止所选客户端的生产线、钓鱼或脚本。")
+        if action in exclusive and any(
+            getattr(c, "questing_status", False)
+            or getattr(c, "sigil_status", False)
+            or getattr(c, "auto_pet_status", False)
+            or getattr(c, "hotkey_freecam", False)
+            for c in members
+        ):
+            raise ValueError(
+                "所选客户端已有自动任务、传送阵、宠物或自由视角，请先停止冲突功能。"
+            )
+        flags = {
+            "toggle_combat": "combat_status",
+            "toggle_sigil": "sigil_status",
+            "toggle_auto_pet": "auto_pet_status",
+            "toggle_dialogue_side_quests": "hotkey_accept_sidequests",
+            "toggle_freecam": "hotkey_freecam",
+        }
+        flag = flags.get(action)
+        old_flags = [(c, getattr(c, flag, None)) for c in members] if flag else []
+        for c, _ in old_flags:
+            setattr(c, flag, True)
+        if action == "toggle_questing":
+            for c in members:
+                c.hotkey_quest_clients = members
+        if action in status_tags:
+            gui_send_queue.put(
+                xuanshu_gui.GUICommand(
+                    xuanshu_gui.GUICommandType.UpdateWindow,
+                    (status_tags[action] + "Status", "Enabled"),
+                )
+            )
+        try:
+            match action:
+                case "toggle_speed":
+                    await speed_switching(members)
+                case "toggle_combat":
+                    await combat_loop(members)
+                case "toggle_dialogue":
+                    await dialogue_loop(members)
+                case "toggle_dialogue_side_quests":
+                    await asyncio.Event().wait()
+                case "toggle_sigil":
+                    await sigil_loop(members)
+                case "toggle_questing":
+                    await questing_loop(members)
+                case "toggle_auto_pet":
+                    await auto_pet_loop(members)
+                case "toggle_auto_potion":
+
+                    async def scoped_potions(client):
+                        while True:
+                            await asyncio.sleep(1)
+                            if (
+                                await is_free(client)
+                                and not client.questing_status
+                                and not client.sigil_status
+                                and not getattr(client, "hotkey_freecam", False)
+                            ):
+                                await auto_potions(client, buy=False)
+
+                    await gather_owned(*[scoped_potions(c) for c in members])
+                case "toggle_freecam":
+
+                    async def scoped_camera(client):
+                        if not await is_free(client):
+                            raise ValueError(f"{client.title} 当前不能启用自由视角")
+                        position = await client.body.position()
+                        orientation = await client.body.orientation()
+                        try:
+                            await sync_camera(client)
+                            await client.camera_freecam()
+                            await client._unpatch_movement_update()
+                            await lock_freecam_player(client, position, orientation)
+                        finally:
+                            if client in walker.clients:
+                                try:
+                                    await client.camera_elastic()
+                                except Exception as exc:
+                                    logger.debug("自由视角清理：{}", exc)
+
+                    await gather_owned(*[scoped_camera(c) for c in members])
+                case _:
+                    raise ValueError("不支持的分组快捷键")
+        finally:
+            for c, value in old_flags:
+                if value is None:
+                    delattr(c, flag)
+                else:
+                    setattr(c, flag, value)
+            if action == "toggle_questing":
+                apply_questing_roles(False, members)
+                for c in members:
+                    c.hotkey_quest_clients = None
+            if action == "toggle_speed":
+                for c in members:
+                    if c in walker.clients:
+                        try:
+                            await c.client_object.write_speed_multiplier(
+                                client_speeds[c.process_id]
+                            )
+                        except Exception as exc:
+                            logger.debug("分组加速清理：{}", exc)
+            logger.info(
+                "快捷键 {} 已停止：{}", action, ", ".join(c.title for c in members)
+            )
+            if action in status_tags:
+                remaining = any(
+                    key[0] == action and task is not asyncio.current_task()
+                    for key, (_, task) in hotkey_groups.groups.items()
+                )
+                gui_send_queue.put(
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
+                        (status_tags[action] + "Status", bool_to_string(remaining)),
+                    )
+                )
+
+    hotkey_groups = HotkeyGroups(lambda: walker.clients, run_hotkey_group)
 
     # Generic hotkey callback factory — sends InvokeAction to GUI thread,
     # which calls the button's click handler. Works for ANY registered action.
@@ -1243,7 +1399,7 @@ async def main():
             background_clients = get_background_clients()
             await asyncio.sleep(0.1)
 
-    async def speed_switching():
+    async def speed_switching(members=None):
         # handles updating the speed multiplier if a zone or realm change happens
         modified_speed = (int(speed_multiplier) - 1) * 100
         while True:
@@ -1251,7 +1407,7 @@ async def main():
             # if speed multiplier is enabled, rewrite the multiplier value if the speed changes. If speed mult is disabled, rewrite the original untouched speed multiplier only if it equals the multiplier speed
             if not freecam_status:
                 await asyncio.sleep(0.2)
-                for c in walker.clients:
+                for c in (walker.clients if members is None else members):
                     if await c.client_object.speed_multiplier() != modified_speed:
                         await c.client_object.write_speed_multiplier(modified_speed)
 
@@ -1294,15 +1450,19 @@ async def main():
             if await client.in_battle():
                 return
 
-            await client.send_key(key=Keycode.A, seconds=0.25)
-            if not await client.in_battle():
-                await client.send_key(key=Keycode.D, seconds=0.25)
+            if getattr(client, "questing_status", False):
+                # Auto-quest only: back away from the encounter before healing.
+                await client.send_key(key=Keycode.S, seconds=0.3)
+            else:
+                await client.send_key(key=Keycode.A, seconds=0.3)
+                if not await client.in_battle():
+                    await client.send_key(key=Keycode.D, seconds=0.3)
             client.post_combat_movement_at = asyncio.get_running_loop().time()
-            logger.debug(f"Client {client.title} - post-combat A/D movement completed.")
+            logger.debug(f"Client {client.title} - post-combat movement completed.")
         finally:
             client.post_combat_movement_active = False
 
-    async def combat_loop():
+    async def combat_loop(members=None):
         logger.catch()
 
         # waits for combat for every client and handles them seperately.
@@ -1319,7 +1479,7 @@ async def main():
                                 f"Client {client.title} in combat, handling combat."
                             )
 
-                            battle = SprintyCombat(
+                            battle = TargetingSprintyCombat(
                                 client,
                                 StrCombatConfigProvider(client.combat_config),
                                 True,
@@ -1336,7 +1496,9 @@ async def main():
                     )
                     await asyncio.sleep(1.0)
 
-        await asyncio.gather(*[async_combat(p) for p in walker.clients])
+        await gather_owned(
+            *[async_combat(p) for p in (walker.clients if members is None else members)]
+        )
 
     async def restart_combat_task_if_running() -> bool:
         """Reload combat configuration without changing the enabled state."""
@@ -1356,7 +1518,7 @@ async def main():
         )
         return True
 
-    async def dialogue_loop():
+    async def dialogue_loop(members=None):
         # auto advances dialogue for every client, individually and concurrently
         async def async_dialogue(client: Client):
             while True:
@@ -1367,7 +1529,9 @@ async def main():
                         has_decline_button = await is_visible_by_path(
                             client, decline_quest_path
                         )
-                        if has_decline_button and not side_quest_status:
+                        if has_decline_button and not getattr(
+                            client, "hotkey_accept_sidequests", side_quest_status
+                        ):
                             await client.send_key(key=Keycode.ESC)
                             await asyncio.sleep(0.5)
                             if await is_visible_by_path(client, advance_dialog_path):
@@ -1379,15 +1543,24 @@ async def main():
                         continue
                 await asyncio.sleep(0.05)
 
-        await asyncio.gather(*[async_dialogue(p) for p in walker.clients])
+        await gather_owned(
+            *[
+                async_dialogue(p)
+                for p in (walker.clients if members is None else members)
+            ]
+        )
 
     # logger.catch()
-    async def questing_loop():
+    async def questing_loop(members=None):
         global questing_status
-        if not questing_status:
+        if members is None and not questing_status:
             return
-        party = apply_questing_roles(True)
+        roster = walker.clients if members is None else list(members)
+        party = apply_questing_roles(True, members)
         if not party.questers:
+            if members is not None:
+                logger.warning("快捷键分组内没有符合当前任务编队设置的做任务客户端。")
+                return
             questing_status = False
             apply_questing_roles(False)
             logger.error("任务编队中没有可用的做任务客户端，自动任务已停止。")
@@ -1620,7 +1793,9 @@ async def main():
 
             update_party_status(hitter, quester, "准备跟随")
             try:
-                while questing_status and hitter.questing_status:
+                while (
+                    members is not None or questing_status
+                ) and hitter.questing_status:
                     await asyncio.sleep(0.5)
                     if hitter not in walker.clients or quester not in walker.clients:
                         return
@@ -1912,7 +2087,7 @@ async def main():
             hitter: Client, quester: Client, is_probe_hitter: bool
         ):
             """Keep the follower alive across transient memory/UI read failures."""
-            while questing_status and hitter.questing_status:
+            while (members is not None or questing_status) and hitter.questing_status:
                 try:
                     await _follow_quester_session(hitter, quester, is_probe_hitter)
                 except asyncio.CancelledError:
@@ -1947,12 +2122,16 @@ async def main():
                 )
                 questing = Quester(client, [client], None)
                 await questing.auto_quest(ignore_pet_level_up, only_play_dance_game)
-            elif questing_leader_pid is not None and len(walker.clients) > 1:
+            elif (
+                questing_leader_pid is not None
+                and len(roster) > 1
+                and any(c.process_id == questing_leader_pid for c in roster)
+            ):
                 if client.process_id == questing_leader_pid:
                     logger.debug(
                         f"Client {client.title} - Handling questing for all clients."
                     )
-                    questing = Quester(client, walker.clients, questing_leader_pid)
+                    questing = Quester(client, roster, questing_leader_pid)
                     await questing.auto_quest_leader(
                         questing_friend_tp,
                         gear_switching_in_solo_zones,
@@ -1962,7 +2141,7 @@ async def main():
                     )
             else:
                 logger.debug(f"Client {client.title} - Handling questing.")
-                questing = Quester(client, walker.clients, None)
+                questing = Quester(client, roster, None)
                 await questing.auto_quest(ignore_pet_level_up, only_play_dance_game)
 
         # Supervise each quest client separately.  A solo-zone probe can cancel
@@ -1974,7 +2153,9 @@ async def main():
             while True:
                 await asyncio.sleep(next_start_delay)
                 next_start_delay = 3.0
-                if client not in walker.clients or not questing_status:
+                if client not in walker.clients or (
+                    members is None and not questing_status
+                ):
                     continue
 
                 client.quest_party_quest_worker_restart_requested = False
@@ -1994,7 +2175,7 @@ async def main():
                     if (
                         restart_requested
                         and not parent_is_cancelling
-                        and questing_status
+                        and (members is not None or questing_status)
                         and client.questing_status
                     ):
                         client.quest_party_quest_worker_restart_requested = False
@@ -2031,7 +2212,7 @@ async def main():
                 ],
             )
         else:
-            await gather_owned(*[async_questing(p) for p in walker.clients])
+            await gather_owned(*[async_questing(p) for p in roster])
 
     async def anti_afk_questing_loop():
         restart_lock = asyncio.Lock()
@@ -2117,13 +2298,15 @@ async def main():
         await asyncio.gather(*[async_afk_questing(p) for p in walker.clients])
 
     # logger.catch()
-    async def auto_pet_loop():
+    async def auto_pet_loop(members=None):
         # Auto questing on a per client basis.
         async def async_auto_pet(client: Client):
             while True:
                 await asyncio.sleep(1)
 
-                if client in walker.clients and auto_pet_status:
+                if client in walker.clients and (
+                    members is not None or auto_pet_status
+                ):
                     try:
                         await nomnom(
                             client,
@@ -2137,7 +2320,12 @@ async def main():
                         )
                         return
 
-        await asyncio.gather(*[async_auto_pet(p) for p in walker.clients])
+        await gather_owned(
+            *[
+                async_auto_pet(p)
+                for p in (walker.clients if members is None else members)
+            ]
+        )
 
     async def auto_fish_loop():
         await fishing_groups.run()
@@ -2201,6 +2389,9 @@ async def main():
 
     async def entity_detect_combat_loop():
         def combat_group_for(client: Client):
+            scoped = getattr(client, "hotkey_quest_clients", None)
+            if scoped is not None:
+                return [c for c in scoped if c in walker.clients and c.questing_status]
             if not quest_party_enabled:
                 return list(walker.clients)
             party = current_quest_party()
@@ -2237,7 +2428,7 @@ async def main():
             if loop.time() - quester.quest_party_battle_started_at < 3.0:
                 return
 
-            party = current_quest_party()
+            party = current_quest_party(getattr(quester, "hotkey_quest_clients", None))
             assigned_hitters = [
                 hitter
                 for hitter, assigned_quester in party.hitter_assignments
@@ -2585,7 +2776,7 @@ async def main():
 
         await asyncio.gather(*[detect_combat(p) for p in walker.clients])
 
-    async def sigil_loop():
+    async def sigil_loop(members=None):
         # Auto sigil on a per client basis.
         async def async_sigil(client: Client):
             while True:
@@ -2595,10 +2786,18 @@ async def main():
                     and client.sigil_status
                     and not freecam_status
                 ):
-                    sigil = Sigil(client, walker.clients, sigil_leader_pid)
+                    roster = walker.clients if members is None else members
+                    leader = (
+                        sigil_leader_pid
+                        if any(c.process_id == sigil_leader_pid for c in roster)
+                        else None
+                    )
+                    sigil = Sigil(client, roster, leader)
                     await sigil.wait_for_sigil()
 
-        await asyncio.gather(*[async_sigil(p) for p in walker.clients])
+        await gather_owned(
+            *[async_sigil(p) for p in (walker.clients if members is None else members)]
+        )
 
     async def anti_afk_loop():
         # anti AFK implementation on a per client basis.
@@ -2758,7 +2957,7 @@ async def main():
         elif active_combat_playstyle is None:
             client.combat_config = default_config
         else:
-            current_clients = list(walker.clients)
+            current_clients = resolve_bot_clients(walker.clients, None)
             combat_configs = delegate_combat_configs(
                 active_combat_playstyle, max(len(current_clients), 1)
             )
@@ -2806,6 +3005,134 @@ async def main():
         if client_to_boost and client_to_boost in client.title:
             global questing_leader_pid
             questing_leader_pid = client.process_id
+
+    async def _relaunch_managed_client(
+        handle: int, nickname: str, preserved_title: str | None = None
+    ) -> Client:
+        """Relaunch one vault account, hook it, and preserve its client slot."""
+        old_client = next(
+            (c for c in walker.clients if c.window_handle == handle), None
+        )
+        old_index = (
+            walker.clients.index(old_client)
+            if old_client in walker.clients
+            else len(walker.clients)
+        )
+        if preserved_title is None and old_client is not None:
+            preserved_title = str(old_client.title)
+
+        await client_resizing_manager.teardown_client(handle)
+        window_config_applied.discard(handle)
+        if old_client is not None:
+            try:
+                async with asyncio.timeout(10):
+                    await old_client.close()
+            except Exception:
+                pass
+            if handle in walker._managed_handles:
+                walker._managed_handles.remove(handle)
+            if old_client in walker.clients:
+                walker.clients.remove(old_client)
+        launched_account_map.pop(handle, None)
+        _hooking_in_progress.discard(handle)
+        _kill_process_by_handle(handle)
+        for _ in range(50):
+            if handle not in get_all_wizard_handles():
+                break
+            await asyncio.sleep(0.1)
+        else:
+            raise RuntimeError("原客户端未能关闭，已取消自动登录以避免重复启动")
+        released_handles.discard(handle)
+        logger.info(
+            f"Killed client for relaunch (handle {handle}, account '{nickname}')."
+        )
+        _send_hooked_clients_update()
+
+        game_path = str(utils.get_wiz_install())
+        await asyncio.sleep(1)
+        new_handle = await asyncio.to_thread(
+            wizlaunch.launch_instance, nickname, game_path
+        )
+        launched_account_map[new_handle] = nickname
+        released_handles.discard(new_handle)
+        if new_handle not in walker._managed_handles:
+            walker._managed_handles.append(new_handle)
+
+        new_client = walker.client_cls(new_handle)
+        insert_at = min(old_index, len(walker.clients))
+        walker.clients.insert(insert_at, new_client)
+        if preserved_title:
+            new_client.title = preserved_title
+        else:
+            used_numbers = {
+                int(c.title[1:])
+                for c in walker.clients
+                if c is not new_client
+                and str(c.title).startswith("p")
+                and str(c.title)[1:].isdigit()
+            }
+            number = 1
+            while number in used_numbers:
+                number += 1
+            new_client.title = f"p{number}"
+
+        _hooking_in_progress.add(new_handle)
+        _send_hooked_clients_update()
+        if client_resizing and new_handle not in window_config_applied:
+            window_config_applied.add(new_handle)
+            asyncio.create_task(
+                _apply_account_window_config(new_client, new_handle, nickname)
+            )
+        try:
+            from src.ibao_runtime import prepare_restarted_client
+
+            logger.info("ibao 重启后等待角色选择界面，必要时发送 ESC")
+            await prepare_restarted_client(new_client)
+            await _init_client_attrs(new_client)
+        except wizwalker.errors.HookAlreadyActivated:
+            await _init_client_attrs(new_client)
+        except Exception:
+            if new_handle in walker._managed_handles:
+                walker._managed_handles.remove(new_handle)
+            if new_client in walker.clients:
+                walker.clients.remove(new_client)
+            raise
+        finally:
+            _hooking_in_progress.discard(new_handle)
+            _send_hooked_clients_update()
+
+        logger.info(
+            f"Relaunched, logged in, and hooked '{nickname}' as {new_client.title}."
+        )
+        return new_client
+
+    async def _recover_ibao_client(client: Client, _settings: dict) -> Client:
+        """Resolve the saved account before replacing an inactive ibao client."""
+        handle = client.window_handle
+        nickname = launched_account_map.get(handle) or getattr(
+            client, "account_nick", None
+        )
+        if not nickname:
+            player_gid = getattr(client, "player_gid", None)
+            if player_gid:
+                nickname = wizlaunch.get_nickname_by_gid(player_gid)
+        if not nickname:
+            raise RuntimeError(
+                f"{client.title} 没有关联玄枢账号库，无法自动登录；"
+                "请先从客户端管理启动该账号"
+            )
+
+        preserved_title = str(client.title)
+        logger.warning(f"ibao {preserved_title} 正在重启账号 '{nickname}' 并恢复采集。")
+        new_client = await _relaunch_managed_client(
+            handle, nickname, preserved_title=preserved_title
+        )
+        new_client.is_ibao = True
+        _restart_always_on_tasks()
+        _restart_active_toggle_tasks()
+        return new_client
+
+    ibao_groups.set_recovery_handler(_recover_ibao_client)
 
     async def handle_gui():
 
@@ -3346,6 +3673,8 @@ async def main():
                         last_known_handle_count = current_handle_count
                         _send_hooked_clients_update()
 
+            await ibao_groups.remove_missing()
+            await hotkey_groups.remove_missing()
             # Poll for new clients when in paused state (waiting for reconnection)
             if paused_task_names and len(walker.clients) < previous_client_count:
                 new_clients = walker.get_new_clients()
@@ -3443,7 +3772,56 @@ async def main():
                             if not walker.clients:
                                 os._exit(0)
                             raise xuanshu_gui.ToolClosedException
+                        case xuanshu_gui.GUICommandType.ToggleHotkeyGroup:
+                            action = com.data.get("action")
+                            legacy_task = {
+                                "toggle_speed": speed_task,
+                                "toggle_combat": combat_task,
+                                "toggle_dialogue": dialogue_task,
+                                "toggle_sigil": sigil_task,
+                                "toggle_questing": questing_task,
+                                "toggle_auto_pet": auto_pet_task,
+                            }.get(action)
+                            legacy_active = (
+                                (legacy_task is not None and not legacy_task.done())
+                                or (
+                                    action == "toggle_auto_potion"
+                                    and auto_potion_status
+                                )
+                                or (
+                                    action == "toggle_dialogue_side_quests"
+                                    and side_quest_status
+                                )
+                                or (action == "toggle_freecam" and freecam_status)
+                            )
+                            if legacy_active:
+                                logger.warning(
+                                    "该功能正在按原有目标运行，请先停止后再启用分组。"
+                                )
+                                continue
+                            try:
+                                await hotkey_groups.toggle(
+                                    action, com.data.get("clients")
+                                )
+                            except ValueError as exc:
+                                logger.warning(str(exc))
+
                         case xuanshu_gui.GUICommandType.ToggleOption:
+                            grouped_action = {
+                                GUIKeys.toggle_speedhack: "toggle_speed",
+                                GUIKeys.toggle_combat: "toggle_combat",
+                                GUIKeys.toggle_dialogue: "toggle_dialogue",
+                                GUIKeys.toggle_sigil: "toggle_sigil",
+                                GUIKeys.toggle_questing: "toggle_questing",
+                                GUIKeys.toggle_auto_pet: "toggle_auto_pet",
+                                GUIKeys.toggle_auto_potion: "toggle_auto_potion",
+                                GUIKeys.toggle_freecam: "toggle_freecam",
+                            }.get(com.data)
+                            if grouped_action and hotkey_groups.active(grouped_action):
+                                logger.warning(
+                                    "该功能有分组正在运行，请在相应分组中停止，或选择“全部客户端”停止所有组。"
+                                )
+                                continue
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
@@ -3851,6 +4229,9 @@ async def main():
                                 continue
                             await friend_teleport_sync_hotkey()
                         case xuanshu_gui.GUICommandType.ToggleDialogueSideQuests:
+                            if hotkey_groups.active("toggle_dialogue_side_quests"):
+                                logger.warning("请先停止支线任务的快捷键分组。")
+                                continue
                             if not walker.clients:
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
@@ -4285,7 +4666,86 @@ async def main():
                                 entity_stream_task.cancel()
                                 entity_stream_task = None
 
+                        case xuanshu_gui.GUICommandType.StartIbaoGroup:
+                            try:
+                                selected = resolve_bot_clients(
+                                    walker.clients, tuple(com.data.get("clients", []))
+                                )
+                                if freecam_status or any(
+                                    getattr(c, "is_fishing", False)
+                                    or getattr(c, "questing_status", False)
+                                    or any(c.title in key for key in bot_tasks)
+                                    for c in selected
+                                ):
+                                    raise ValueError(
+                                        "请先停止所选客户端的钓鱼、任务或脚本，并退出自由视角"
+                                    )
+                                ibao_groups.add(
+                                    com.data.get("clients", []),
+                                    com.data.get("settings", {}),
+                                )
+                            except (ValueError, TypeError) as exc:
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
+                                        ("IbaoError", str(exc)),
+                                    )
+                                )
+
+                        case xuanshu_gui.GUICommandType.StopIbaoGroup:
+                            await ibao_groups.stop(com.data.get("clients", []))
+
+                        case xuanshu_gui.GUICommandType.GetIbaoData:
+                            gui_send_queue.put(
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateWindow,
+                                    ("IbaoData", ibao_groups.configs),
+                                )
+                            )
+                            ibao_groups.notify()
+
+                        case xuanshu_gui.GUICommandType.SaveIbaoConfig:
+                            from src.ibao_runtime import parse_locations
+
+                            try:
+                                config = com.data["settings"]
+                                parse_locations(config["locations"])
+                                members = resolve_bot_clients(
+                                    walker.clients, tuple(com.data["clients"])
+                                )
+                                if not members or any(
+                                    not getattr(c, "account_nick", None)
+                                    for c in members
+                                ):
+                                    raise ValueError("请勾选已关联账号的客户端")
+                                for c in members:
+                                    ibao_groups.configs[c.account_nick] = dict(config)
+                                ibao_groups.persist()
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
+                                        ("IbaoData", ibao_groups.configs),
+                                    )
+                                )
+                            except (ValueError, KeyError, TypeError) as exc:
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
+                                        ("IbaoError", str(exc)),
+                                    )
+                                )
+
+                        case xuanshu_gui.GUICommandType.ClearIbaoRound:
+                            ibao_groups.clear_round()
+
                         case xuanshu_gui.GUICommandType.StartFishingGroup:
+                            if any(
+                                getattr(c, "is_ibao", False)
+                                and c.title in com.data.get("clients", [])
+                                for c in walker.clients
+                            ):
+                                logger.warning("请先停止所选客户端的 ibao 采集")
+                                continue
                             if freecam_status:
                                 logger.warning("请先退出自由视角再启动钓鱼组")
                                 fishing_groups.notify()
@@ -4318,6 +4778,11 @@ async def main():
                             selected_clients = resolve_bot_clients(
                                 walker.clients, requested_titles
                             )
+                            if any(
+                                getattr(c, "is_ibao", False) for c in selected_clients
+                            ):
+                                logger.warning("请先停止所选客户端的 ibao 采集")
+                                continue
                             if not command_data.strip():
                                 logger.warning("脚本内容为空，未启动。")
                                 continue
@@ -4411,9 +4876,26 @@ async def main():
                                         await asyncio.sleep(1)
 
                             async def guarded_bot(
-                                run=run_bot, clients=tuple(selected_clients)
+                                run=run_bot,
+                                clients=tuple(selected_clients),
+                                stop_mount=isinstance(com.data, dict)
+                                and com.data.get("stop_on_mount", False),
+                                mount_name=(
+                                    com.data.get("mount_name", "")
+                                    if isinstance(com.data, dict)
+                                    else ""
+                                ),
                             ):
-                                await run_with_script_popups(run, clients)
+                                if stop_mount:
+                                    from src.mount_stop import run_until_mount
+
+                                    await run_until_mount(
+                                        lambda: run_with_script_popups(run, clients),
+                                        clients,
+                                        mount_name,
+                                    )
+                                else:
+                                    await run_with_script_popups(run, clients)
 
                             new_task = asyncio.create_task(
                                 try_task_coro(guarded_bot, selected_clients, True)
@@ -4490,9 +4972,10 @@ async def main():
                                     continue
 
                             selected_ids = {id(client) for client in selected_clients}
+                            ordered_clients = resolve_bot_clients(walker.clients, None)
                             selected_indices = [
                                 i
-                                for i, client in enumerate(walker.clients)
+                                for i, client in enumerate(ordered_clients)
                                 if id(client) in selected_ids
                             ]
                             combat_configs = delegate_selected_combat_configs(
@@ -4501,7 +4984,7 @@ async def main():
                                 len(walker.clients),
                             )
                             applied_titles = []
-                            for i, client in enumerate(walker.clients):
+                            for i, client in enumerate(ordered_clients):
                                 if id(client) not in selected_ids:
                                     continue
                                 config = combat_configs.get(i, default_config)
@@ -4676,10 +5159,14 @@ async def main():
                                 )
                             )
                             try:
-                                results = await asyncio.to_thread(
-                                    wizlaunch.launch_instances, nicknames, game_path
-                                )
-                                for nickname, handle in results.items():
+                                # launch_instance blocks until that account has
+                                # logged in and produced its window handle. Keep
+                                # insertion order identical to the UI click order;
+                                # the auto-hook loop consumes this mapping in order.
+                                for nickname in nicknames:
+                                    handle = await asyncio.to_thread(
+                                        wizlaunch.launch_instance, nickname, game_path
+                                    )
                                     launched_account_map[handle] = nickname
                                     logger.info(f"Launched and logged in '{nickname}'.")
                             except Exception as e:
@@ -4968,7 +5455,13 @@ async def main():
                 gui_send_queue.put(
                     xuanshu_gui.GUICommand(
                         xuanshu_gui.GUICommandType.UpdateWindow,
-                        ("Auto PetStatus", bool_to_string(auto_pet_status)),
+                        (
+                            "Auto PetStatus",
+                            bool_to_string(
+                                auto_pet_status
+                                or hotkey_groups.active("toggle_auto_pet")
+                            ),
+                        ),
                     )
                 )
                 gui_send_queue.put(
@@ -5422,6 +5915,8 @@ async def main():
                 task.cancel()
         bot_tasks.clear()
 
+        await ibao_groups.stop()
+        await hotkey_groups.stop()
         await tool_finish()
         # Signal GUI thread that unhooking is done so it can exit cleanly
         try:

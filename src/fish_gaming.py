@@ -261,11 +261,17 @@ async def banish_config(fishing_manager, config=None):
             kept_fish.append(fish)
     return kept_fish
 
-async def refresh_pond(client, fishing_manager, config=None):
+async def refresh_pond(client, fishing_manager, config=None, *, check_running=None):
+    if check_running is not None:
+        await check_running()
     fish_list = await banish_config(fishing_manager, config)
     while len(fish_list) == 0:
+        if check_running is not None:
+            await check_running()
         fish_windows = await client.root_window.get_windows_with_name("FishingWindow")
         while len(fish_windows) == 0:
+            if check_running is not None:
+                await check_running()
             async with client.mouse_handler:
                 await client.mouse_handler.click_window_with_name("OpenFishingButton")
             fish_windows = await client.root_window.get_windows_with_name("FishingWindow")
@@ -274,10 +280,15 @@ async def refresh_pond(client, fishing_manager, config=None):
         fish_sub_window = await fish_window.get_child_by_name("FishingSubWindow")
         bottomframe = await fish_sub_window.get_child_by_name("BottomFrame")
         icon2 = await bottomframe.get_child_by_name("Icon2")
+        if check_running is not None:
+            await check_running()
         async with client.mouse_handler:
             await client.mouse_handler.click_window(icon2)
 
         while True:
+            await asyncio.sleep(0.1)
+            if check_running is not None:
+                await check_running()
             try:
                 if len(await fetch_fish_list(fishing_manager)) > 0:
                     break

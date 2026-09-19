@@ -211,6 +211,12 @@ class XuanShuSettings:
         del recent[max_recent:]
         self._save()
 
+    def remove_recent_import(self, category: str, filepath: str):
+        recent = self._data.get("recent_imports", {}).get(category, [])
+        if filepath in recent:
+            recent[:] = [path for path in recent if path != filepath]
+            self._save()
+
     def get_theme(self) -> dict:
         tp = _theme_path()
         theme = dict(DEFAULT_THEME)

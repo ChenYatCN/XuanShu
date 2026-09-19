@@ -5,10 +5,12 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QSizePolicy,
     QDoubleSpinBox,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -94,12 +96,17 @@ def build_fishing_tab(ctx):
     tl = ctx.tl
 
     toolbar, target_flow, all_clients, running_label = _build_client_toolbar(
-        ctx, None, None, with_status=True)
+        ctx, None, None, with_status=True, horizontal_spacing=2)
     checks = {}
     active_groups = []
     updating = [False]
     initialized_clients = [False]
     target_flow.removeWidget(running_label)
+    target_title = target_flow.takeAt(0).widget()
+    target_title.setObjectName("FishingTargetTitle")
+    target_title.setText(tl("client"))
+    target_title.setStyleSheet(
+        f"color: {_rgba(ctx.text_color, 180)}; font-weight: normal;")
     target_flow.setAlignment(Qt.AlignmentFlag.AlignLeft)
     toolbar.setObjectName("FishingClientSelector")
     running_label.setObjectName("FishingRunningGroups")
@@ -115,7 +122,8 @@ def build_fishing_tab(ctx):
     outer.addWidget(content)
     outer.addStretch()
 
-    chest_group = QGroupBox(tl("fish_chest_filter"))
+    chest_group = QWidget()
+    chest_group.setObjectName("FishingChestPanel")
     filters_row = QHBoxLayout()
     filters_row.setSpacing(8)
 
@@ -129,9 +137,33 @@ def build_fishing_tab(ctx):
     _configure_icon_toggle(ctx, chest_only, _chest_svg(ctx.stroke_color))
     chest_layout.addWidget(chest_only)
     chest_hint = QLabel(tl("fish_chest_hint"))
-    chest_hint.setWordWrap(True)
-    chest_hint.setStyleSheet(f"color: {ctx.text_color}; font-style: italic;")
+    chest_hint.setObjectName("FishingChestHint")
+    chest_hint.setWordWrap(False)
+    chest_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    hint_size = max(8.0, chest_hint.font().pointSizeF() - 2.0) + 1.0
+    chest_hint.setStyleSheet(
+        f"color: {ctx.text_color}; font-size: {hint_size}pt; font-style: normal;")
     chest_layout.addWidget(chest_hint)
+    chest_layout.addSpacing(8)
+    client_heading = QHBoxLayout()
+    client_heading.setSpacing(8)
+    client_dividers = []
+    for side in ("Left", "Right"):
+        divider = QFrame()
+        divider.setObjectName(f"FishingClientDivider{side}")
+        divider.setFixedHeight(1)
+        divider.setStyleSheet(
+            f"background-color: {_rgba(ctx.stroke_color, 60)}; border: none;")
+        client_dividers.append(divider)
+    target_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    client_heading.addWidget(client_dividers[0], 1)
+    client_heading.addWidget(target_title)
+    client_heading.addWidget(client_dividers[1], 1)
+    client_layout = QVBoxLayout()
+    client_layout.setSpacing(2)
+    client_layout.addLayout(client_heading)
+    client_layout.addWidget(toolbar)
+    chest_layout.addLayout(client_layout)
     chest_layout.addStretch()
     filters_row.addWidget(chest_group, 1)
 
@@ -234,28 +266,38 @@ def build_fishing_tab(ctx):
     form.setColumnStretch(3, 1)
 
     fish_group.setMinimumHeight(form.sizeHint().height() + 20)
-    filters_row.addWidget(fish_group, 2)
+    fish_column = QVBoxLayout()
+    fish_column.setSpacing(4)
+    fish_column.addWidget(fish_group)
+    filters_row.addLayout(fish_column, 2)
     content_layout.addLayout(filters_row)
 
     hint = QLabel(tl("fish_start_hint"))
     hint.setWordWrap(True)
     hint.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
-    hint.setStyleSheet(f"color: {ctx.text_color}; font-style: italic;")
-    content_layout.addWidget(hint)
+    hint.setStyleSheet(f"color: {ctx.text_color}; font-style: normal;")
+    fish_column.addWidget(hint)
 
     toggle_row = QHBoxLayout()
     toggle_row.setContentsMargins(0, 2, 0, 0)
     toggle_row.setSpacing(8)
-    toggle_row.addWidget(toolbar, 1, Qt.AlignmentFlag.AlignVCenter)
+    toggle_row.addStretch(1)
     toggle = QPushButton()
     toggle.setObjectName("ToggleFishingGroup")
     toggle.setCursor(Qt.CursorShape.PointingHandCursor)
-    toggle.setFixedSize(40, 40)
-    toggle.setIconSize(QSize(32, 32))
+    toggle.setFixedSize(44, 44)
+    toggle.setIconSize(QSize(24, 24))
     toggle.setStyleSheet(ctx.icon_btn_style)
     toggle_row.addWidget(toggle)
     toggle_row.addWidget(running_label, 1)
     outer.addLayout(toggle_row)
+    mount_row = QHBoxLayout()
+    stop_mount = ThemedCheckBox('获得坐骑后停止', ctx.stroke_color, ctx.text_color, ctx.alt_bg)
+    mount_name = QLineEdit()
+    mount_name.setPlaceholderText('目标坐骑完整名称（留空：任意坐骑）')
+    mount_row.addWidget(stop_mount)
+    mount_row.addWidget(mount_name)
+    outer.insertLayout(outer.count() - 1, mount_row)
 
     ctx.widget_tags["Auto FishStatus"] = toggle
 
@@ -267,6 +309,8 @@ def build_fishing_tab(ctx):
     def _values():
         return {
             "fish_chest_only": chest_only.isChecked(),
+            "fish_stop_on_mount": stop_mount.isChecked(),
+            "fish_mount_name": mount_name.text().strip(),
             "fish_school": str(school.currentData()),
             "fish_rank": rank.value(), "fish_id": fish_id.value(),
             "fish_size_min": size_min.value(),
@@ -384,6 +428,11 @@ def build_fishing_tab(ctx):
         _sync_filter_state()
 
     def retheme():
+        for divider in client_dividers:
+            divider.setStyleSheet(
+                f"background-color: {_rgba(ctx.stroke_color, 60)}; border: none;")
+        target_title.setStyleSheet(
+            f"color: {_rgba(ctx.text_color, 180)}; font-weight: normal;")
         for check in (all_clients, *checks.values()):
             check.set_theme_colors(ctx.stroke_color, ctx.text_color, ctx.alt_bg)
         running_label.setStyleSheet(f"color: {ctx.stroke_color};")

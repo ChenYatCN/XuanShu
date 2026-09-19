@@ -949,6 +949,11 @@ class Parser:
                 result.kind = CommandKind.kill
                 self.i += 1
                 self.end_line()
+            case TokenKind.command_stop_if_mount:
+                result.kind = CommandKind.stop_if_mount
+                self.i += 1
+                result.data = [self.expect_consume(TokenKind.string).value]
+                self.end_line()
             case TokenKind.command_log:
                 self.i += 1
                 kind = self.tokens[self.i].kind

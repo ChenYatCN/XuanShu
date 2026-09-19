@@ -92,8 +92,7 @@ def compute_styles(theme: dict, font: str = None, font_size: int = None) -> dict
         f"}}"
         f"QTabBar::tab:selected {{"
         f"  background-color: {tc_rgba_40};"
-        f"  color: {tc};"
-        f"  border-bottom: 2px solid {tc};"
+        f"  color: {sc};"
         f"  font-weight: bold;"
         f"}}"
         f"QTabBar::tab:!selected {{"
@@ -287,7 +286,7 @@ def apply_theme(ctx, theme: dict):
             pass
 
     # Re-theme tab exports
-    for export_key in ("dev_utils", "hotkeys", "launcher", "bot", "combat", "fishing"):
+    for export_key in ("dev_utils", "hotkeys", "launcher", "bot", "combat", "fishing", "ibao"):
         retheme = ctx.exports.get(export_key, {}).get("retheme")
 
         if retheme:
