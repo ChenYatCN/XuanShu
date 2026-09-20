@@ -15,20 +15,11 @@ class LowFishingEnergy(Exception):
     """Stop fishing before another spell can consume the remaining energy."""
 
 
-class FishingMountObtained(Exception):
-    """Normal completion, distinct from a fishing failure."""
-
-
 async def check_fishing_energy(client):
     # Memory reads may complete synchronously; explicitly allow cancellation.
     await asyncio.sleep(0)
     if not client.is_fishing:
         raise asyncio.CancelledError
-    monitor = getattr(client, 'fishing_mount_monitor', None)
-    if monitor is not None:
-        name = await monitor.check(client)
-        if name:
-            raise FishingMountObtained(f'{client.title} 获得坐骑 {name}，正常停止自动钓鱼')
     energy = await client.current_energy()
     if energy is None:
         raise RuntimeError("无法读取当前能量，已停止自动钓鱼")
@@ -166,7 +157,7 @@ async def fish_bot(
                 total_time,
                 round((total_time / fish_caught) * 60, 2),
             )
-    except (LowFishingEnergy, FishingMountObtained) as exc:
+    except LowFishingEnergy as exc:
         logger.info(str(exc))
     finally:
         if address_bytes:

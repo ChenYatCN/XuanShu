@@ -519,13 +519,19 @@ async def navmap_teleport(
     mass_teleport: bool = False,
     debug: bool = False,
     xyz: XYZ = None,
+    isolate_errors: bool = False,
 ):
     # teleports foreground client or all clients using the navmap.
     # nested function that allows for the gathering of the teleports for each client
     async def client_navmap_teleport(client: Client, xyz: XYZ = None):
-        if not xyz:
-            xyz = await client.quest_position.position()
-        await navmap_tp(client, xyz)
+        try:
+            if not xyz:
+                xyz = await client.quest_position.position()
+            await navmap_tp(client, xyz)
+        except Exception as exc:
+            if not isolate_errors:
+                raise
+            logger.warning("客户端 {} 任务传送失败：{}", client.title, exc)
         # except:
         # 	# skips teleport if there's no navmap, this should just switch to auto adjusting teleport
         # 	logger.error(f'{client.title} encountered an error during navmap tp, most likely the navmap for the zone did not exist. Skipping teleport.')
@@ -544,16 +550,33 @@ async def navmap_teleport(
         for b in background_clients:
             clients_to_port.append(b)
         # decide which client's quest XYZ to obey. Chooses the most common Quest XYZ across all clients, if there is none and all clients are in the same zone then it obeys the foreground client. If the zone differs, each client obeys their own quest XYZ.
-        list_modes = statistics.multimode(
-            [await c.quest_position.position() for c in clients_to_port]
-        )
-        zone_names = [await p.zone_name() for p in clients_to_port]
+        if isolate_errors:
+            available, positions, zone_names = [], [], []
+            for client in clients_to_port:
+                try:
+                    position = await client.quest_position.position()
+                    zone = await client.zone_name()
+                except Exception as exc:
+                    logger.warning("客户端 {} 任务传送读取失败：{}", client.title, exc)
+                    continue
+                available.append(client)
+                positions.append(position)
+                zone_names.append(zone)
+            clients_to_port = available
+            if not clients_to_port:
+                return
+            if foreground_client not in clients_to_port:
+                foreground_client = None
+        else:
+            positions = [await c.quest_position.position() for c in clients_to_port]
+            zone_names = [await p.zone_name() for p in clients_to_port]
+        list_modes = statistics.multimode(positions)
         if len(list_modes) == 1:
             xyz = list_modes[0]
         else:
             if zone_names.count(zone_names[0]) == len(zone_names):
                 if foreground_client:
-                    xyz = await foreground_client.quest_position.position()
+                    xyz = positions[clients_to_port.index(foreground_client)]
 
     # if mass teleport is off and no client is selected, this will default to p1
     if len(clients_to_port) == 0:
@@ -1150,7 +1173,7 @@ async def main():
                 )
             )
 
-    from src.hotkey_groups import HotkeyGroups
+    from src.hotkey_groups import HotkeyGroups, run_client_worker
 
     async def run_hotkey_group(action, members):
         status_tags = {
@@ -1164,29 +1187,6 @@ async def main():
             "toggle_auto_potion": "Auto Potion",
             "toggle_freecam": "Freecam",
         }
-        exclusive = {
-            "toggle_questing",
-            "toggle_sigil",
-            "toggle_auto_pet",
-            "toggle_freecam",
-        }
-        if any(
-            getattr(c, "is_ibao", False)
-            or getattr(c, "is_fishing", False)
-            or any(c.title in key for key in bot_tasks)
-            for c in members
-        ):
-            raise ValueError("请先停止所选客户端的生产线、钓鱼或脚本。")
-        if action in exclusive and any(
-            getattr(c, "questing_status", False)
-            or getattr(c, "sigil_status", False)
-            or getattr(c, "auto_pet_status", False)
-            or getattr(c, "hotkey_freecam", False)
-            for c in members
-        ):
-            raise ValueError(
-                "所选客户端已有自动任务、传送阵、宠物或自由视角，请先停止冲突功能。"
-            )
         flags = {
             "toggle_combat": "combat_status",
             "toggle_sigil": "sigil_status",
@@ -1211,19 +1211,34 @@ async def main():
         try:
             match action:
                 case "toggle_speed":
-                    await speed_switching(members)
+                    await gather_owned(*[
+                        run_client_worker(c, lambda: walker.clients, lambda c=c: speed_switching((c,)))
+                        for c in members
+                    ])
                 case "toggle_combat":
-                    await combat_loop(members)
+                    await gather_owned(*[
+                        run_client_worker(c, lambda: walker.clients, lambda c=c: combat_loop((c,)))
+                        for c in members
+                    ])
                 case "toggle_dialogue":
-                    await dialogue_loop(members)
+                    await gather_owned(*[
+                        run_client_worker(c, lambda: walker.clients, lambda c=c: dialogue_loop((c,)))
+                        for c in members
+                    ])
                 case "toggle_dialogue_side_quests":
-                    await asyncio.Event().wait()
+                    await gather_owned(*[
+                        run_client_worker(c, lambda: walker.clients, lambda: asyncio.Event().wait())
+                        for c in members
+                    ])
                 case "toggle_sigil":
                     await sigil_loop(members)
                 case "toggle_questing":
                     await questing_loop(members)
                 case "toggle_auto_pet":
-                    await auto_pet_loop(members)
+                    await gather_owned(*[
+                        run_client_worker(c, lambda: walker.clients, lambda c=c: auto_pet_loop((c,)))
+                        for c in members
+                    ])
                 case "toggle_auto_potion":
 
                     async def scoped_potions(client):
@@ -1237,7 +1252,10 @@ async def main():
                             ):
                                 await auto_potions(client, buy=False)
 
-                    await gather_owned(*[scoped_potions(c) for c in members])
+                    await gather_owned(*[
+                        run_client_worker(c, lambda: walker.clients, lambda c=c: scoped_potions(c))
+                        for c in members
+                    ])
                 case "toggle_freecam":
 
                     async def scoped_camera(client):
@@ -1257,7 +1275,38 @@ async def main():
                                 except Exception as exc:
                                     logger.debug("自由视角清理：{}", exc)
 
-                    await gather_owned(*[scoped_camera(c) for c in members])
+                    await gather_owned(*[
+                        run_client_worker(c, lambda: walker.clients, lambda c=c: scoped_camera(c))
+                        for c in members
+                    ])
+                case "mass_tp":
+                    source = foreground_client if foreground_client in members else None
+                    await navmap_teleport(source, [c for c in members if c is not source],
+                                         mass_teleport=True, debug=True, isolate_errors=True)
+                case "quest_tp" | "friend_tp" | "x_press" | "xyz_sync" | "freecam_tp":
+                    # The chosen source must also belong to the selected set.
+                    source = foreground_client if foreground_client in members else members[0]
+                    async def scoped_once(client):
+                        if action == "quest_tp":
+                            await navmap_teleport(client, [], debug=True)
+                        elif action == "friend_tp":
+                            await friend_teleport_sync([client], debug=True)
+                        elif action == "x_press":
+                            await client.send_key(key=Keycode.X, seconds=0.1)
+                        elif action == "xyz_sync":
+                            if client is not source:
+                                await xyz_sync(source, [client], turn_after=True, debug=True)
+                        elif await client.game_client.is_freecam():
+                            camera = await client.game_client.free_camera_controller()
+                            position = await camera.position()
+                            # Stop only this client's scoped camera controller.
+                            await hotkey_groups.stop_client("toggle_freecam", client)
+                            await client.camera_elastic()
+                            await client.teleport(position, wait_on_inuse=True, purge_on_after_unuser_fixer=True)
+                    await gather_owned(*[
+                        run_client_worker(c, lambda: walker.clients, lambda c=c: scoped_once(c))
+                        for c in members
+                    ])
                 case _:
                     raise ValueError("不支持的分组快捷键")
         finally:
@@ -1284,7 +1333,7 @@ async def main():
             )
             if action in status_tags:
                 remaining = any(
-                    key[0] == action and task is not asyncio.current_task()
+                    key[0] == action and task is not asyncio.current_task() and not task.done()
                     for key, (_, task) in hotkey_groups.groups.items()
                 )
                 gui_send_queue.put(
@@ -1555,7 +1604,7 @@ async def main():
         global questing_status
         if members is None and not questing_status:
             return
-        roster = walker.clients if members is None else list(members)
+        roster = walker.clients if members is None else members
         party = apply_questing_roles(True, members)
         if not party.questers:
             if members is not None:
@@ -2199,20 +2248,20 @@ async def main():
                     if getattr(client, "quest_party_quest_worker_task", None) is worker:
                         client.quest_party_quest_worker_task = None
 
+        def quest_worker(client, run):
+            return (run_client_worker(client, lambda: walker.clients, run)
+                    if members is not None else run())
+
         if quest_party_enabled:
             await gather_owned(
-                *[async_questing(client) for client in party.questers],
-                *[
-                    follow_quester(
-                        hitter,
-                        quester,
-                        primary_probe_hitters.get(id(quester)) is hitter,
-                    )
-                    for hitter, quester in party.hitter_assignments
-                ],
+                *[quest_worker(client, lambda client=client: async_questing(client))
+                  for client in party.questers],
+                *[quest_worker(hitter, lambda hitter=hitter, quester=quester: follow_quester(
+                    hitter, quester, primary_probe_hitters.get(id(quester)) is hitter))
+                  for hitter, quester in party.hitter_assignments],
             )
         else:
-            await gather_owned(*[async_questing(p) for p in roster])
+            await gather_owned(*[quest_worker(p, lambda p=p: async_questing(p)) for p in roster])
 
     async def anti_afk_questing_loop():
         restart_lock = asyncio.Lock()
@@ -2795,9 +2844,11 @@ async def main():
                     sigil = Sigil(client, roster, leader)
                     await sigil.wait_for_sigil()
 
-        await gather_owned(
-            *[async_sigil(p) for p in (walker.clients if members is None else members)]
-        )
+        await gather_owned(*[
+            (run_client_worker(p, lambda: walker.clients, lambda p=p: async_sigil(p))
+             if members is not None else async_sigil(p))
+            for p in (walker.clients if members is None else members)
+        ])
 
     async def anti_afk_loop():
         # anti AFK implementation on a per client basis.
@@ -4917,27 +4968,8 @@ async def main():
                                             )
                                         await asyncio.sleep(1)
 
-                            async def guarded_bot(
-                                run=run_bot,
-                                clients=tuple(selected_clients),
-                                stop_mount=isinstance(com.data, dict)
-                                and com.data.get("stop_on_mount", False),
-                                mount_name=(
-                                    com.data.get("mount_name", "")
-                                    if isinstance(com.data, dict)
-                                    else ""
-                                ),
-                            ):
-                                if stop_mount:
-                                    from src.mount_stop import run_until_mount
-
-                                    await run_until_mount(
-                                        lambda: run_with_script_popups(run, clients),
-                                        clients,
-                                        mount_name,
-                                    )
-                                else:
-                                    await run_with_script_popups(run, clients)
+                            async def guarded_bot(run=run_bot, clients=tuple(selected_clients)):
+                                await run_with_script_popups(run, clients)
 
                             new_task = asyncio.create_task(
                                 try_task_coro(guarded_bot, selected_clients, True)

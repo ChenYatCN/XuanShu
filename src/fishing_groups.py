@@ -47,8 +47,6 @@ class FishingGroups:
 
     async def _fish(self, client, config):
         client.is_fishing = True
-        from src.mount_stop import MountMonitor
-        client.fishing_mount_monitor = MountMonitor(config.get('fish_mount_name', '')) if config.get('fish_stop_on_mount', False) else None
         try:
             await self.fish(client, bool(config.get('fish_chest_only', False)),
                             school=config.get('fish_school', 'Any'),
@@ -58,7 +56,6 @@ class FishingGroups:
                             size_max=float(config.get('fish_size_max', 999)))
         finally:
             client.is_fishing = False
-            client.fishing_mount_monitor = None
 
     async def run(self):
         # Serialize restart cleanup so old memory patches cannot race new workers.

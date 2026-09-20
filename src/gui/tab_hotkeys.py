@@ -5,7 +5,6 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QPixmap
 from PyQt6.QtWidgets import (
     QFrame,
-    QComboBox, QInputDialog, QMessageBox,
     QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
@@ -26,7 +25,8 @@ from src.gui.helpers import (
     toggle_callback,
 )
 from src.gui.icon_manager import set_label_icon
-from src.gui.widgets import HotkeyCapture, ToggleNameLabel
+from src.gui.widgets import HotkeyCapture, ToggleNameLabel, ThemedCheckBox
+from src.gui.tab_actions import _build_client_toolbar
 
 
 def build_hotkeys_tab(ctx):
@@ -39,49 +39,20 @@ def build_hotkeys_tab(ctx):
     tl = ctx.tl
     send_queue = ctx.send_queue
     settings = ctx.settings
-    from src.hotkey_groups import parse_groups
-    client_groups = (settings.get_setting('hotkey_client_groups') or {}) if settings else {}
-    group_targets = (settings.get_setting('hotkey_group_targets') or {}) if settings else {}
-    group_choices = {}
     scoped_actions = {'toggle_speed', 'toggle_combat', 'toggle_dialogue',
                       'toggle_dialogue_side_quests', 'toggle_sigil', 'toggle_questing',
-                      'toggle_auto_pet', 'toggle_auto_potion', 'toggle_freecam'}
+                      'toggle_auto_pet', 'toggle_auto_potion', 'toggle_freecam',
+                      'quest_tp', 'freecam_tp', 'friend_tp', 'mass_tp', 'xyz_sync', 'x_press'}
+    client_checks = {}
+    updating_checks = [False]
 
-    def refresh_group_choices():
-        for aid, combo in group_choices.items():
-            combo.blockSignals(True)
-            combo.clear()
-            combo.addItem('原有目标', '__legacy__')
-            combo.addItem('全部客户端', '__all__')
-            for name in client_groups:
-                combo.addItem(name, name)
-            index = combo.findData(group_targets.get(aid, '__legacy__'))
-            combo.setCurrentIndex(max(0, index))
-            combo.blockSignals(False)
+    def selected_clients():
+        return [name for name, check in client_checks.items() if check.isChecked()]
 
-    def edit_groups():
-        nonlocal client_groups
-        text, ok = QInputDialog.getMultiLineText(tab, '客户端分组',
-            '每行一个组，例如：组1=p1,p2（修改不改变正在运行的任务）',
-            '\n'.join(f'{name}={",".join(titles)}' for name, titles in client_groups.items()))
-        if ok:
-            try:
-                client_groups = parse_groups(text)
-            except ValueError as exc:
-                QMessageBox.warning(tab, '分组格式错误', str(exc))
-                return
-            if settings:
-                settings.set_setting('hotkey_client_groups', client_groups)
-            refresh_group_choices()
-
-    def scoped_callback(aid, original):
+    def scoped_callback(aid):
         def invoke():
-            target = group_choices[aid].currentData()
-            if target == '__legacy__':
-                original()
-            else:
-                send_queue.put(GUICommand(GUICommandType.ToggleHotkeyGroup,
-                    {'action': aid, 'clients': None if target == '__all__' else client_groups.get(target, [])}))
+            send_queue.put(GUICommand(GUICommandType.ToggleHotkeyGroup,
+                {'action': aid, 'clients': selected_clients()}))
         return invoke
 
     # Callbacks used by bindable actions
@@ -99,14 +70,57 @@ def build_hotkeys_tab(ctx):
 
     # --- Left panel: Hotkey Manager ---
     hk_manager = QWidget()
-    hk_manager.setFixedWidth(420)
+    hk_manager.setFixedWidth(320)
     hk_manager_layout = QVBoxLayout(hk_manager)
     hk_manager_layout.setContentsMargins(0, 0, 0, 0)
     hk_manager_layout.setSpacing(4)
-    group_editor = QPushButton('客户端分组')
-    group_editor.setStyleSheet(ctx.icon_btn_style)
-    group_editor.clicked.connect(edit_groups)
-    hk_manager_layout.addWidget(group_editor)
+    target_toolbar, target_flow, all_clients, _ = _build_client_toolbar(ctx, None, None)
+    target_toolbar.setObjectName('HotkeyClientTargets')
+    target_flow.itemAt(0).widget().setText('客户端')
+    target_toolbar.setToolTip('快捷键只作用于勾选的客户端；新注入客户端默认选中。')
+    all_clients.setEnabled(False)
+    target_flow.max_clients_per_row = 5
+    hk_manager_layout.addWidget(target_toolbar)
+
+    def sync_all_check():
+        if updating_checks[0]:
+            return
+        all_clients.blockSignals(True)
+        all_clients.setChecked(bool(client_checks) and all(c.isChecked() for c in client_checks.values()))
+        all_clients.blockSignals(False)
+
+    def toggle_all(checked):
+        updating_checks[0] = True
+        for check in client_checks.values():
+            check.setChecked(checked)
+        updating_checks[0] = False
+
+    all_clients.toggled.connect(toggle_all)
+
+    def set_available_clients(titles):
+        names = sorted(set(str(t).strip() for t in titles if str(t).strip()),
+                       key=lambda t: (0, int(t[1:])) if t.startswith('p') and t[1:].isdigit() else (1, t))
+        if names == list(client_checks):
+            return
+        previous = {name: check.isChecked() for name, check in client_checks.items()}
+        updating_checks[0] = True
+        for check in client_checks.values():
+            target_flow.removeWidget(check)
+            check.setParent(None)
+            check.deleteLater()
+        client_checks.clear()
+        for name in names:
+            check = ThemedCheckBox(name, ctx.stroke_color, ctx.text_color, ctx.alt_bg)
+            check.setProperty('clientOption', True)
+            check.setChecked(previous.get(name, True))
+            check.toggled.connect(sync_all_check)
+            client_checks[name] = check
+            target_flow.addWidget(check)
+        all_clients.setEnabled(bool(names))
+        all_clients.blockSignals(True)
+        all_clients.setChecked(bool(names) and all(c.isChecked() for c in client_checks.values()))
+        all_clients.blockSignals(False)
+        updating_checks[0] = False
 
     sc = ctx.stroke_color
     _toggle_icons = {
@@ -501,16 +515,7 @@ def build_hotkeys_tab(ctx):
 
         for action_id, display_name, callback, is_toggle, tag_name, icon_svg in actions:
             if action_id in scoped_actions:
-                choice = QComboBox()
-                choice.setFixedWidth(100)
-                choice.setToolTip('快捷键作用范围；原有目标保留已有单客户端行为')
-                group_choices[action_id] = choice
-                def changed(_index, aid=action_id, combo=choice):
-                    group_targets[aid] = combo.currentData()
-                    if settings:
-                        settings.set_setting('hotkey_group_targets', group_targets)
-                choice.currentIndexChanged.connect(changed)
-                callback = scoped_callback(action_id, callback)
+                callback = scoped_callback(action_id)
             registry.register(action_id, display_name, cat_name, callback)
             row = _build_hk_row(
                 action_id, display_name, callback, is_toggle, tag_name, icon_svg
@@ -518,8 +523,6 @@ def build_hotkeys_tab(ctx):
             row_widget = QWidget()
             row_widget.setContentsMargins(0, 0, 0, 0)
             row_widget.setLayout(row)
-            if action_id in group_choices:
-                row.addWidget(group_choices[action_id])
             registry.row_widgets[action_id] = row_widget
             hk_scroll_layout.addWidget(row_widget)
             if cat_name == _multi_client_cat_name:
@@ -675,10 +678,12 @@ def build_hotkeys_tab(ctx):
     # Store static IDs and the dynamic row adder for main.py to use
     static_ids = {aid for _, actions in _hk_categories for aid, *_ in actions}
 
-    refresh_group_choices()
+    set_available_clients([])
     _update_multi_client_state(0)
 
     def _retheme():
+        for check in (all_clients, *client_checks.values()):
+            check.set_theme_colors(ctx.stroke_color, ctx.text_color, ctx.alt_bg)
         # Update key binding label colors
         for lbl in registry.key_labels.values():
             lbl.setStyleSheet(f"color: {ctx.text_color}; font-style: italic;")
@@ -700,6 +705,8 @@ def build_hotkeys_tab(ctx):
     ctx.exports["hotkeys"] = {
         "add_dynamic_hk_row": _add_dynamic_hk_row,
         "static_ids": static_ids,
+        "set_available_clients": set_available_clients,
+        "selected_clients": selected_clients,
         "update_multi_client_state": _update_multi_client_state,
         "retheme": _retheme,
     }

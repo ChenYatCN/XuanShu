@@ -64,7 +64,7 @@ class FishingGroupUITests(unittest.TestCase):
         self.checks['p1'].setChecked(True)
         self.api['set_available_clients'](['p1','p3'])
         checks = {c.text(): c for c in self.tab.findChildren(QCheckBox)}
-        self.assertEqual(set(checks), {'bot_target_all', 'p1','p3', '获得坐骑后停止'})
+        self.assertEqual(set(checks), {'bot_target_all', 'p1','p3'})
         self.assertTrue(checks['p1'].isChecked())
         self.assertFalse(checks['p3'].isChecked())
 

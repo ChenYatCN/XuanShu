@@ -11,7 +11,6 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -56,7 +55,7 @@ def _chest_svg(stroke):
 
 def _fish_svg(stroke):
     return f'''<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"
-        viewBox="0 0 24 24" fill="none" stroke="{stroke}" stroke-width="1.8"
+        viewBox="0 0 24 24" fill="none" stroke="{stroke}" stroke-width="2"
         stroke-linecap="round" stroke-linejoin="round">
         <path d="M6.5 12c1.1-2.7 3.7-4.5 6.7-4.5 3.2 0 6 1.8 7.3 4.5-1.3 2.7-4.1 4.5-7.3 4.5-3 0-5.6-1.8-6.7-4.5Z"/>
         <path d="m6.5 12-3.5-4v8l3.5-4ZM10.5 8.1 9 5.5M10.5 15.9 9 18.5"/>
@@ -292,13 +291,6 @@ def build_fishing_tab(ctx):
     toggle_row.addWidget(toggle)
     toggle_row.addWidget(running_label, 1)
     outer.addLayout(toggle_row)
-    mount_row = QHBoxLayout()
-    stop_mount = ThemedCheckBox('获得坐骑后停止', ctx.stroke_color, ctx.text_color, ctx.alt_bg)
-    mount_name = QLineEdit()
-    mount_name.setPlaceholderText('目标坐骑完整名称（留空：任意坐骑）')
-    mount_row.addWidget(stop_mount)
-    mount_row.addWidget(mount_name)
-    outer.insertLayout(outer.count() - 1, mount_row)
 
     ctx.widget_tags["Auto FishStatus"] = toggle
 
@@ -310,8 +302,6 @@ def build_fishing_tab(ctx):
     def _values():
         return {
             "fish_chest_only": chest_only.isChecked(),
-            "fish_stop_on_mount": stop_mount.isChecked(),
-            "fish_mount_name": mount_name.text().strip(),
             "fish_school": str(school.currentData()),
             "fish_rank": rank.value(), "fish_id": fish_id.value(),
             "fish_size_min": size_min.value(),

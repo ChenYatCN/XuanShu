@@ -1,0 +1,6060 @@
+# Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
+# pyright: reportMissingImports=false
+import asyncio
+import ctypes
+import datetime
+import os
+import queue
+import re
+import statistics
+import subprocess
+import sys
+import threading
+import time
+import traceback
+import winreg
+from typing import List
+
+import pyperclip
+import requests
+import wizlaunch
+from loguru import logger
+
+# import pypresence
+from pypresence import AioPresence
+
+import wizwalker
+from src import discsdk
+from src import gui as xuanshu_gui
+from src import wizpatch_runner
+from src.auto_fish_original_adapter import fish_bot
+from src.auto_pet import nomnom
+from src.bot_targeting import (
+    bot_group_key,
+    normalize_client_titles,
+    overlapping_bot_groups,
+    resolve_bot_clients,
+    unpack_bot_command,
+)
+from src.client_resizing import ClientResizingManager
+from src.combat_targeting import TargetingSprintyCombat
+from src.command_parser import execute_flythrough, parse_command
+from src.config_combat import (
+    StrCombatConfigProvider,
+    default_config,
+    delegate_combat_configs,
+    delegate_selected_combat_configs,
+)
+from src.deimoslang import vm
+from src.drop_logger import logging_loop
+from src.fishing_groups import FishingGroups
+from src.gui import GUIKeys
+from src.gui_inputs import param_input, trunc
+from src.ibao_runtime import IbaoGroups
+from src.paths import (
+    advance_dialog_path,
+    decline_quest_path,
+    friend_is_busy_and_dungeon_reset_path,
+    play_button_path,
+    spiral_door_teleport_path,
+)
+from src.quest_party import (
+    friend_follow_retry_delay,
+    resolve_quest_party,
+    resolve_quester_friend_icon,
+    stable_client_identity,
+)
+from src.questing import Quester
+from src.script_popups import close_automation_popup, run_with_script_popups
+from src.settings_manager import XuanShuSettings
+from src.sigil import Sigil
+from src.sprinty_client import SprintyClient
+
+# from src.combat_new import Fighter
+from src.stat_viewer import total_stats
+from src.task_lifecycle import gather_owned
+from src.teleport_math import calc_Distance, navmap_tp
+from src.tokenizer import tokenize
+from src.utils import auto_potions  # , assign_pet_level
+from src.utils import (
+    FriendBusyOrInstanceClosed,
+    auto_potions_force_buy,
+    change_equipment_set,
+    click_window_by_path,
+    close_endorsement_window,
+    close_npc_quest_menu,
+    collect_wisps_with_limit,
+    get_window_from_path,
+    index_with_str,
+    is_free,
+    is_friend_teleport_error,
+    is_visible_by_path,
+    override_wiz_install_using_handle,
+    read_webpage,
+    refill_potions,
+    set_wizard_name_from_character_screen,
+    teleport_to_friend_from_list,
+    to_world,
+    try_task_coro,
+)
+from src.world_to_screen import get_camera_state, project_point, world_to_screen
+from wizwalker import XYZ, HotkeyListener, Keycode, ModifierKeys, Orient, utils
+from wizwalker.client_handler import Client, ClientHandler
+from wizwalker.extensions.wizsprinter.wiz_navigator import toZone, toZoneDisplayName
+from wizwalker.memory.memory_objects.camera_controller import (
+    DynamicCameraController,
+    ElasticCameraController,
+)
+from wizwalker.memory.memory_objects.window import Window
+from wizwalker.utils import get_all_wizard_handles, get_foreground_window
+
+cMessageBox = ctypes.windll.user32.MessageBoxW
+
+tool_version: str = "4.1.5"
+tool_name: str = "XuanShu"
+tool_author: str = "ChenYatCN"
+repo_name: str = "XuanShu"
+repo_owner: str = "ChenYatCN"
+branch: str = "main"
+repo_path_raw: str = (
+    f"https://raw.githubusercontent.com/{repo_owner}/{repo_name}/refs/heads/{branch}"
+)
+
+type_format_dict = {
+    "char": "<c",
+    "signed char": "<b",
+    "unsigned char": "<B",
+    "bool": "?",
+    "short": "<h",
+    "unsigned short": "<H",
+    "int": "<i",
+    "unsigned int": "<I",
+    "long": "<l",
+    "unsigned long": "<L",
+    "long long": "<q",
+    "unsigned long long": "<Q",
+    "float": "<f",
+    "double": "<d",
+}
+
+
+def remove_if_exists(file_name: str, sleep_after: float = 0.1):
+    if os.path.exists(file_name):
+        os.remove(file_name)
+        time.sleep(sleep_after)
+
+
+def download_file(
+    url: str, file_name: str, delete_previous: bool = False, debug: str = True
+):
+    if delete_previous:
+        remove_if_exists(file_name)
+    if debug:
+        print(f"Downloading {file_name}...")
+    with requests.get(url, stream=True) as r:
+        with open(file_name, "wb") as f:
+            for chunk in r.iter_content(chunk_size=128000):
+                f.write(chunk)
+
+
+# Default settings — JSON in AppData is authoritative
+speed_multiplier = 5.0
+use_potions = True
+rpc_status = True
+drop_status = True
+anti_afk_status = True
+gui_on_top = True
+gui_langcode = "en"
+gui_font = "Segoe UI"
+gui_font_size = 9
+use_team_up = False
+buy_potions = True
+client_resizing = True
+client_to_follow = None
+client_to_boost = None
+questing_friend_tp = False
+gear_switching_in_solo_zones = False
+hitter_client = None
+quest_party_enabled = False
+questing_client_titles: list[str] = []
+questing_hitter_client_titles: list[str] = []
+quest_hitter_assignment_mode = "auto"
+quest_hitter_assignments: dict[str, str] = {}
+quest_friend_icons: dict[str, dict[str, int]] = {}
+kill_minions_first = False
+automatic_team_based_combat = False
+discard_duplicate_cards = True
+ignore_pet_level_up = False
+only_play_dance_game = False
+fish_chest_only = False
+fish_school = "Any"
+fish_rank = 0
+fish_id = 0
+fish_size_min = 0.0
+fish_size_max = 999.0
+
+settings = XuanShuSettings()
+settings.migrate_theme_from_settings()
+
+# Load theme from dedicated theme file
+theme_dict = settings.get_theme()
+
+# Override globals from settings.json (authoritative after migration)
+_json_settings = settings.get_settings()
+speed_multiplier = _json_settings.get("speed_multiplier", speed_multiplier)
+use_potions = _json_settings.get("use_potions", use_potions)
+rpc_status = _json_settings.get("rich_presence", rpc_status)
+drop_status = _json_settings.get("drop_logging", drop_status)
+anti_afk_status = _json_settings.get("use_anti_afk", anti_afk_status)
+buy_potions = _json_settings.get("buy_potions", buy_potions)
+client_resizing = _json_settings.get("client_resizing", client_resizing)
+client_resizing_manager = ClientResizingManager()
+gui_on_top = _json_settings.get("on_top", gui_on_top)
+gui_langcode = _json_settings.get("locale", gui_langcode)
+gui_font = _json_settings.get("font", gui_font)
+gui_font_size = _json_settings.get("font_size", gui_font_size)
+use_team_up = _json_settings.get("use_team_up", use_team_up)
+client_to_follow = _json_settings.get("client_to_follow", client_to_follow)
+client_to_boost = _json_settings.get("client_to_boost", client_to_boost)
+questing_friend_tp = _json_settings.get("friend_teleport", questing_friend_tp)
+gear_switching_in_solo_zones = _json_settings.get(
+    "gear_switching_in_solo_zones", gear_switching_in_solo_zones
+)
+hitter_client = _json_settings.get("hitter_client", hitter_client)
+quest_party_enabled = bool(
+    _json_settings.get("quest_party_enabled", quest_party_enabled)
+)
+questing_client_titles = list(
+    _json_settings.get("questing_clients", questing_client_titles) or []
+)
+questing_hitter_client_titles = list(
+    _json_settings.get("questing_hitter_clients", questing_hitter_client_titles) or []
+)
+quest_hitter_assignment_mode = str(
+    _json_settings.get("quest_hitter_assignment_mode", "auto")
+)
+quest_hitter_assignments = dict(
+    _json_settings.get("quest_hitter_assignments", {}) or {}
+)
+quest_friend_icons = dict(_json_settings.get("quest_friend_icons", {}) or {})
+ignore_pet_level_up = _json_settings.get("ignore_pet_level_up", ignore_pet_level_up)
+only_play_dance_game = _json_settings.get("only_play_dance_game", only_play_dance_game)
+fish_chest_only = _json_settings.get("fish_chest_only", fish_chest_only)
+fish_school = _json_settings.get("fish_school", fish_school)
+fish_rank = int(_json_settings.get("fish_rank", fish_rank))
+fish_id = int(_json_settings.get("fish_id", fish_id))
+fish_size_min = float(_json_settings.get("fish_size_min", fish_size_min))
+fish_size_max = float(_json_settings.get("fish_size_max", fish_size_max))
+kill_minions_first = _json_settings.get("kill_minions_first", kill_minions_first)
+automatic_team_based_combat = _json_settings.get(
+    "automatic_team_based_combat", automatic_team_based_combat
+)
+discard_duplicate_cards = _json_settings.get(
+    "discard_duplicate_cards", discard_duplicate_cards
+)
+
+
+async def _apply_account_window_config(client, handle, nickname):
+    """Apply a saved account's window/resolution settings before hooking."""
+    try:
+        config = wizlaunch.get_window_config(nickname)
+    except Exception:
+        config = None
+    if not config:
+        return
+
+    try:
+        x, y, width, height, res_width, res_height, locked, borderless = config
+        await client_resizing_manager.apply_account_window(
+            client,
+            handle,
+            x,
+            y,
+            width,
+            height,
+            res_width,
+            res_height,
+            locked,
+            borderless,
+        )
+        logger.info(
+            f"Applied window config to '{nickname}': "
+            f"window {width}x{height}, resolution {res_width}x{res_height}."
+        )
+    except Exception as exc:
+        logger.opt(exception=exc).warning(
+            f"Window config apply failed for '{nickname}'"
+        )
+
+
+if hasattr(sys, "_MEIPASS"):
+    folder_path = os.path.join(
+        sys._MEIPASS,
+        "wizwalker",
+        "extensions",
+        "wizsprinter",
+        "traversalData",
+    )
+
+    required_files = [
+        "displayZones.txt",
+        "gates_list.txt",
+        "interactiveTeleporters.txt",
+        "objectLocations.txt",
+        "uniqueObjectLocations.txt",
+        "zoneMap.txt",
+    ]
+
+    missing_files = [
+        file_name
+        for file_name in required_files
+        if not os.path.exists(os.path.join(folder_path, file_name))
+    ]
+
+    if missing_files:
+        logger.warning(
+            f"Missing wizsprinter traversalData files in packaged exe: {missing_files}"
+        )
+
+speed_status = False
+combat_status = False
+dialogue_status = False
+sigil_status = False
+freecam_status = False
+freecam_player_lock_task: asyncio.Task = None
+hotkey_status = False
+questing_status = False
+auto_pet_status = False
+auto_potion_status = False
+auto_fish_status = False
+side_quest_status = False
+tool_status = True
+original_client_locations = dict()
+
+hotkeys_blocked = False
+
+sigil_leader_pid: int = None
+questing_leader_pid: int = None
+
+questing_task: asyncio.Task = None
+auto_pet_task: asyncio.Task = None
+auto_fish_task: asyncio.Task = None
+sigil_task: asyncio.Task = None
+dialogue_task: asyncio.Task = None
+combat_task: asyncio.Task = None
+active_combat_playstyle: str | None = None
+combat_playstyle_overrides: dict[str, str] = {}
+tp_task: asyncio.Task = None
+speed_task: asyncio.Task = None
+pet_task: asyncio.Task = None
+
+bot_tasks: dict[tuple[str, ...], asyncio.Task] = {}
+flythrough_task: asyncio.Task = None
+highlight_task: asyncio.Task = None
+entity_stream_task: asyncio.Task = None
+
+
+def file_len(filepath) -> List[str]:
+    # return the number of lines in a file
+    f = open(filepath, "r")
+    return len(f.readlines())
+
+
+def generate_timestamp() -> str:
+    # generates a timestamp and makes the symbols filename-friendly
+    time = str(datetime.datetime.now())
+    time_list = time.split(".")
+    time_stamp = str(time_list[0])
+    time_stamp = time_stamp.replace("/", "-").replace(":", "-")
+    return time_stamp
+
+
+def build_account_list_payload() -> list[dict]:
+    """Return account rows with validation and Steam-mode metadata."""
+    payload = []
+    for nickname in wizlaunch.list_accounts():
+        payload.append(
+            {
+                "nick": nickname,
+                "error": wizlaunch.validate_account(nickname),
+                "steam": wizlaunch.get_account_steam(nickname),
+            }
+        )
+    return payload
+
+
+def _compact_coordinate(value) -> str:
+    """Keep corrupt/transient memory values from stretching the status bar."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return "?"
+
+    if not -1_000_000 <= number <= 1_000_000:
+        return "?"
+
+    return f"{number:.3f}".rstrip("0").rstrip(".")
+
+
+def run_updater():
+    download_file(
+        url=f"{repo_path_raw}/{tool_name}Updater.exe",
+        file_name=f"{tool_name}Updater.exe",
+        delete_previous=True,
+    )
+    time.sleep(0.1)
+    subprocess.Popen(f"{tool_name}Updater.exe")
+    sys.exit()
+
+
+def get_latest_version() -> str:
+    update_server = None
+
+    try:
+        update_server = read_webpage(f"{repo_path_raw}/LatestVersion.txt")
+    except:
+        time.sleep(0.1)
+
+    if len(update_server) >= 1:
+        return update_server[0]
+    else:
+        return None
+
+
+def is_version_greater(version: str, comparison_version: str) -> bool:
+    # Compares the semantic version of two inputted versions and returns True if the first is greater
+    version_list = version.split(".")
+    comparison_version_list = comparison_version.split(".")
+
+    for i, v in enumerate(version_list):
+        current_v = int(v)
+        current_comparison_v = int(comparison_version_list[i])
+        if current_v > current_comparison_v:
+            return True
+        elif current_v < current_comparison_v:
+            return False
+
+    return False
+
+
+# def auto_update(latest_version: str = get_latest_version()):
+# 	remove_if_exists(f'{tool_name}-copy.exe')
+# 	remove_if_exists(f'{tool_name}Updater.exe')
+# 	time.sleep(0.1)
+# 	if auto_updating:
+# 		if is_version_greater(latest_version, tool_version):
+# 			run_updater()
+
+
+async def mass_key_press(
+    foreground_client: Client,
+    background_clients: list[Client],
+    pressed_key_name: str,
+    key,
+    duration: float = 0.1,
+    debug: bool = False,
+):
+    # sends a given keystroke to all clients, handles foreground client seperately
+    if debug and foreground_client:
+        key_name = str(key)
+        key_name = key_name.replace("Keycode.", "")
+        logger.debug(
+            f"{pressed_key_name} key pressed, sending {key_name} key press to all clients."
+        )
+    await asyncio.gather(
+        *[p.send_key(key=key, seconds=duration) for p in background_clients]
+    )
+    # only send foreground key press if there is a client in foreground
+    if foreground_client:
+        await foreground_client.send_key(key=key, seconds=duration)
+
+
+async def sync_camera(client: Client, xyz: XYZ = None, yaw: float = None):
+    # Teleports the freecam to a specified position, yaw, etc.
+    if not xyz:
+        xyz = await client.body.position()
+
+    if not yaw:
+        yaw = await client.body.yaw()
+
+    xyz.z += 200
+
+    camera = await client.game_client.free_camera_controller()
+    await camera.write_position(xyz)
+    await camera.write_yaw(yaw)
+
+
+async def xyz_sync(
+    foreground_client: Client,
+    background_clients: list[Client],
+    turn_after: bool = True,
+    debug: bool = False,
+):
+    # syncs client XYZ up with the one in foreground, doesn't work across zones or realms
+    if background_clients:
+        if debug:
+            logger.debug("XYZ Sync hotkey pressed, syncing client locations.")
+        if foreground_client:
+            xyz = await foreground_client.body.position()
+            yaw = await foreground_client.body.yaw()
+        else:
+            first_background_client = background_clients[0]
+            xyz = await first_background_client.body.position()
+            yaw = await first_background_client.body.yaw()
+
+        await asyncio.gather(*[p.teleport(xyz, yaw=yaw) for p in background_clients])
+        if turn_after:
+            await asyncio.gather(
+                *[p.send_key(key=Keycode.A, seconds=0.1) for p in background_clients]
+            )
+            await asyncio.gather(
+                *[p.send_key(key=Keycode.D, seconds=0.1) for p in background_clients]
+            )
+        await asyncio.sleep(0.3)
+
+
+async def navmap_teleport(
+    foreground_client: wizwalker.Client,
+    background_clients: list[Client],
+    mass_teleport: bool = False,
+    debug: bool = False,
+    xyz: XYZ = None,
+):
+    # teleports foreground client or all clients using the navmap.
+    # nested function that allows for the gathering of the teleports for each client
+    async def client_navmap_teleport(client: Client, xyz: XYZ = None):
+        if not xyz:
+            xyz = await client.quest_position.position()
+        await navmap_tp(client, xyz)
+        # except:
+        # 	# skips teleport if there's no navmap, this should just switch to auto adjusting teleport
+        # 	logger.error(f'{client.title} encountered an error during navmap tp, most likely the navmap for the zone did not exist. Skipping teleport.')
+
+    if debug:
+        if mass_teleport:
+            logger.debug("Mass TP hotkey pressed, teleporting all clients to quests.")
+        else:
+            logger.debug(
+                f"Quest TP hotkey pressed, teleporting client {foreground_client.title} to quest."
+            )
+    clients_to_port = []
+    if foreground_client:
+        clients_to_port.append(foreground_client)
+    if mass_teleport:
+        for b in background_clients:
+            clients_to_port.append(b)
+        # decide which client's quest XYZ to obey. Chooses the most common Quest XYZ across all clients, if there is none and all clients are in the same zone then it obeys the foreground client. If the zone differs, each client obeys their own quest XYZ.
+        list_modes = statistics.multimode(
+            [await c.quest_position.position() for c in clients_to_port]
+        )
+        zone_names = [await p.zone_name() for p in clients_to_port]
+        if len(list_modes) == 1:
+            xyz = list_modes[0]
+        else:
+            if zone_names.count(zone_names[0]) == len(zone_names):
+                if foreground_client:
+                    xyz = await foreground_client.quest_position.position()
+
+    # if mass teleport is off and no client is selected, this will default to p1
+    if len(clients_to_port) == 0:
+        if background_clients:
+            clients_to_port.append(background_clients[0])
+
+    # all clients teleport at the same time
+    await asyncio.gather(*[client_navmap_teleport(p, xyz) for p in clients_to_port])
+
+
+async def friend_teleport_sync(clients: list[wizwalker.Client], debug: bool):
+    # uses the util for porting to friend via the friends list. Sends every client to p1. I really don't like this function, or this code, but it works and people want it so I have to have it in here sadly. Might rewrite it someday.
+    if debug:
+        logger.debug("Friend TP hotkey pressed, friend teleporting all clients to p1.")
+    child_clients = clients[1:]
+    for p in child_clients:
+        async with p.mouse_handler:
+            try:
+                await teleport_to_friend_from_list(client=p, icon_list=1, icon_index=50)
+            except Exception as e:
+                logger.error(e)
+                await asyncio.sleep(0)
+
+
+async def kill_tool(debug: bool):
+    # raises KeyboardInterrupt, forcing the tool to exit.
+    if debug:
+        logger.debug(f"Kill tool hotkey pressed, killing {tool_name}.")
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    raise xuanshu_gui.ToolClosedException
+
+
+async def tool_finish():
+    # Remove resolution/resize hooks while game processes are still alive.
+    try:
+        await client_resizing_manager.shutdown()
+    except Exception as exc:
+        logger.opt(exception=exc).debug("client resizing shutdown error")
+
+    if not walker or len(walker.clients) == 0:
+        return
+
+    alive_clients = [p for p in walker.clients if p.is_running()]
+    for p in alive_clients:
+        try:
+            original_speed = client_speeds.get(p.process_id)
+            if original_speed is not None:
+                await p.client_object.write_speed_multiplier(original_speed)
+            p.title = "Wizard101"
+            # Uncomment when freecam is fixed
+            if await p.game_client.is_freecam():
+                await p.camera_elastic()
+            else:
+                camera: ElasticCameraController = (
+                    await p.game_client.elastic_camera_controller()
+                )
+                client_object = await p.body.parent_client_object()
+                await camera.write_attached_client_object(client_object)
+                await camera.write_check_collisions(True)
+                await camera.write_distance_target(300.0)
+                await camera.write_distance(300.0)
+                await camera.write_min_distance(150.0)
+                await camera.write_max_distance(450.0)
+                await camera.write_zoom_resolution(150.0)
+            await p.body.write_scale(1.0)
+        except Exception:
+            pass
+    await listener.clear()
+    for p in walker.clients:
+        try:
+            await asyncio.wait_for(p.close(), timeout=10.0)
+        except asyncio.TimeoutError:
+            logger.warning(f"Timed out closing client '{p.title}', skipping.")
+        except:
+            pass
+    # await walker.close()
+    await asyncio.sleep(0)
+    global tool_status
+    tool_status = False
+
+
+@logger.catch()
+async def main():
+    global tool_status
+    global original_client_locations
+    global listener
+    listener = HotkeyListener()
+    foreground_client: Client = None
+    background_clients = []
+    await asyncio.sleep(0)
+    listener.start()
+
+    async def x_press_hotkey():
+        await mass_key_press(
+            foreground_client,
+            background_clients,
+            "X Press",
+            Keycode.X,
+            duration=0.1,
+            debug=True,
+        )
+
+    async def xyz_sync_hotkey():
+        await xyz_sync(
+            foreground_client, background_clients, turn_after=True, debug=True
+        )
+
+    async def navmap_teleport_hotkey():
+        if not freecam_status:
+            await navmap_teleport(
+                foreground_client, background_clients, mass_teleport=False, debug=True
+            )
+
+    async def mass_navmap_teleport_hotkey():
+        if not freecam_status:
+            await navmap_teleport(
+                foreground_client, background_clients, mass_teleport=True, debug=True
+            )
+
+    async def toggle_speed_hotkey():
+        global speed_task
+        global gui_send_queue
+
+        if not freecam_status:
+            if speed_task is not None and not speed_task.cancelled():
+                speed_task.cancel()
+                speed_task = None
+                logger.debug("Speed hotkey pressed, disabling speed multiplier.")
+                gui_send_queue.put(
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
+                        ("SpeedhackStatus", "Disabled"),
+                    )
+                )
+                for client in walker.clients:
+                    await client.client_object.write_speed_multiplier(
+                        client_speeds[client.process_id]
+                    )
+
+            else:
+                logger.debug("Speed hotkey pressed, enabling speed multiplier.")
+                gui_send_queue.put(
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
+                        ("SpeedhackStatus", "Enabled"),
+                    )
+                )
+                speed_task = asyncio.create_task(
+                    try_task_coro(speed_switching, walker.clients)
+                )
+
+    async def friend_teleport_sync_hotkey():
+        if not freecam_status:
+            await friend_teleport_sync(walker.clients, debug=True)
+
+    async def kill_tool_hotkey():
+        # await tool_finish()
+        # try:
+        # 	await kill_tool(debug=True)
+        # except xuanshu_gui.ToolClosedException:
+        # 	pass
+        # finally:
+        # 	gui_send_queue.put(xuanshu_gui.GUICommand(xuanshu_gui.GUICommandType.Close))
+        # global tool_status
+        # tool_status = False;
+        logger.debug(f"Kill tool hotkey pressed, closing {tool_name}.")
+        if walker.clients != 0:
+            gui_send_queue.put(
+                xuanshu_gui.GUICommand(xuanshu_gui.GUICommandType.CloseFromBackend)
+            )
+        # raise xuanshu_gui.ToolClosedException
+
+    async def toggle_combat_hotkey(debug: bool = True):
+        global combat_task
+        global gui_send_queue
+
+        for client in walker.clients:
+            client.combat_status ^= True
+
+        if not freecam_status:
+            if combat_task is not None and not combat_task.cancelled():
+                combat_task.cancel()
+                combat_task = None
+                if debug:
+                    logger.debug("Combat hotkey pressed, disabling auto combat.")
+                gui_send_queue.put(
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
+                        ("CombatStatus", "Disabled"),
+                    )
+                )
+
+            else:
+                if debug:
+                    logger.debug("Combat hotkey pressed, enabling auto combat.")
+                gui_send_queue.put(
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
+                        ("CombatStatus", "Enabled"),
+                    )
+                )
+                combat_task = asyncio.create_task(
+                    try_task_coro(combat_loop, walker.clients, True)
+                )
+
+    async def toggle_dialogue_hotkey():
+        global dialogue_task
+        global gui_send_queue
+        global side_quest_status
+
+        if not freecam_status:
+            if dialogue_task is not None and not dialogue_task.cancelled():
+                side_quest_status = False
+                dialogue_task.cancel()
+                dialogue_task = None
+                logger.debug("Dialogue hotkey pressed, disabling auto dialogue.")
+                gui_send_queue.put(
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
+                        ("DialogueStatus", "Disabled"),
+                    )
+                )
+
+            else:
+                # side_quest_log_str = ""
+                # side_quest_status = side_quests
+                # if side_quest_status:
+                # 	side_quest_log_str += " and auto side quests functionality"
+                logger.debug("Dialogue hotkey pressed, enabling auto dialogue.")
+                gui_send_queue.put(
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
+                        ("DialogueStatus", "Enabled"),
+                    )
+                )
+                dialogue_task = asyncio.create_task(
+                    try_task_coro(dialogue_loop, walker.clients, True)
+                )
+
+    async def toggle_dialogue_side_quests_hotkey():
+        global side_quest_status
+        side_quest_status ^= True
+        status_str = "Enabled" if side_quest_status else "Disabled"
+        logger.debug(f"Side quests hotkey pressed, side quest acceptance {status_str}.")
+        gui_send_queue.put(
+            xuanshu_gui.GUICommand(
+                xuanshu_gui.GUICommandType.UpdateWindow,
+                ("SideQuestAcceptStatus", status_str),
+            )
+        )
+
+    async def toggle_sigil_hotkey():
+        global sigil_task
+        global questing_status
+        global questing_task
+        global gui_send_queue
+
+        if not freecam_status:
+            for p in walker.clients:
+                p.sigil_status ^= True
+                if p.sigil_status:
+                    p.questing_status = False
+                    p.auto_pet_status = False
+
+            if sigil_task is not None and not sigil_task.cancelled():
+                sigil_task.cancel()
+                sigil_task = None
+                logger.debug("Sigil hotkey pressed, disabling auto sigil.")
+                gui_send_queue.put(
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
+                        ("SigilStatus", "Disabled"),
+                    )
+                )
+
+            else:
+                logger.debug("Sigil hotkey pressed, enabling auto sigil.")
+                if questing_task is not None and not questing_task.cancelled():
+                    logger.debug("Questing hotkey pressed, disabling auto questing.")
+                    gui_send_queue.put(
+                        xuanshu_gui.GUICommand(
+                            xuanshu_gui.GUICommandType.UpdateWindow,
+                            ("QuestingStatus", "Disabled"),
+                        )
+                    )
+                    questing_task.cancel()
+                    for p in walker.clients:
+                        p.questing_status = False
+                    questing_status = False
+                    questing_task = None
+
+                gui_send_queue.put(
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
+                        ("SigilStatus", "Enabled"),
+                    )
+                )
+                sigil_task = asyncio.create_task(
+                    try_task_coro(sigil_loop, walker.clients, True)
+                )
+
+    async def lock_freecam_player(client: Client, position: XYZ, orientation: Orient):
+        """Keep only the local wizard still while freecam/world updates continue."""
+        try:
+            while await client.game_client.is_freecam():
+                await client.body.write_position(position)
+                await client.body.write_orientation(orientation)
+                await client.body.write_model_update_scheduled(True)
+                await asyncio.sleep(0.01)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Freecam player lock stopped unexpectedly.")
+
+    async def stop_freecam_player_lock():
+        global freecam_player_lock_task
+        if freecam_player_lock_task is not None:
+            if not freecam_player_lock_task.done():
+                freecam_player_lock_task.cancel()
+                try:
+                    await freecam_player_lock_task
+                except asyncio.CancelledError:
+                    pass
+            freecam_player_lock_task = None
+
+    async def toggle_freecam_hotkey(debug: bool = True):
+        global freecam_status
+        global freecam_player_lock_task
+        if foreground_client:
+            if await is_free(foreground_client):
+                try:
+                    if await foreground_client.game_client.is_freecam():
+                        if debug:
+                            logger.debug("Freecam hotkey pressed, disabling freecam.")
+                        await stop_freecam_player_lock()
+                        await foreground_client.camera_elastic()
+                        freecam_status = False
+                        gui_send_queue.put(
+                            xuanshu_gui.GUICommand(
+                                xuanshu_gui.GUICommandType.UpdateWindow,
+                                ("FreecamStatus", "Disabled"),
+                            )
+                        )
+                    else:
+                        if debug:
+                            logger.debug("Freecam hotkey pressed, enabling freecam.")
+
+                        locked_position = await foreground_client.body.position()
+                        locked_orientation = await foreground_client.body.orientation()
+                        await sync_camera(foreground_client)
+                        await foreground_client.camera_freecam()
+                        # wizwalker freezes the shared movement update while
+                        # freecam is active. Restore it so pets, NPCs and other
+                        # world movement continue instead of appearing paused.
+                        await foreground_client._unpatch_movement_update()
+                        await stop_freecam_player_lock()
+                        freecam_player_lock_task = asyncio.create_task(
+                            lock_freecam_player(
+                                foreground_client,
+                                locked_position,
+                                locked_orientation,
+                            )
+                        )
+                        freecam_status = True
+                        gui_send_queue.put(
+                            xuanshu_gui.GUICommand(
+                                xuanshu_gui.GUICommandType.UpdateWindow,
+                                ("FreecamStatus", "Enabled"),
+                            )
+                        )
+                except Exception:
+                    logger.exception(
+                        "Freecam toggle failed; keeping the GUI task alive."
+                    )
+                    gui_send_queue.put(
+                        xuanshu_gui.GUICommand(
+                            xuanshu_gui.GUICommandType.UpdateWindow,
+                            (
+                                "FreecamStatus",
+                                "Enabled" if freecam_status else "Disabled",
+                            ),
+                        )
+                    )
+
+    async def tp_to_freecam_hotkey():
+        if foreground_client:
+            logger.debug(
+                "Freecam TP hotkey pressed, teleporting foreground client to freecam position."
+            )
+            if await foreground_client.game_client.is_freecam():
+                camera = await foreground_client.game_client.free_camera_controller()
+                camera_pos = await camera.position()
+                await toggle_freecam_hotkey(False)
+                await foreground_client.teleport(
+                    camera_pos, wait_on_inuse=True, purge_on_after_unuser_fixer=True
+                )
+
+    def current_quest_party(members=None):
+        return resolve_quest_party(
+            walker.clients if members is None else members,
+            enabled=quest_party_enabled,
+            quester_titles=questing_client_titles,
+            hitter_titles=questing_hitter_client_titles,
+            assignment_mode=quest_hitter_assignment_mode,
+            manual_assignments=quest_hitter_assignments,
+        )
+
+    def apply_questing_roles(active: bool, members=None):
+        party = current_quest_party(members)
+        participants = party.questers + party.hitters if party.questers else []
+        participant_ids = {id(client) for client in participants}
+        for client in (walker.clients if members is None else members):
+            client.questing_status = active and id(client) in participant_ids
+            client.quest_party_hitters = []
+            client.quest_party_quest_worker_zone = None
+            # Recompute this state every time roles are applied.  In particular,
+            # a newly started party must block the quest worker before its first
+            # movement, not only after the quester has changed zones once.
+            client.quest_party_probe_pending = False
+        if active:
+            for hitter, quester in party.hitter_assignments:
+                quester.quest_party_hitters.append(hitter)
+                quester.quest_party_probe_pending = True
+        return party
+
+    async def toggle_questing_hotkey():
+        global sigil_task
+        global questing_task
+        global questing_status
+        global sigil_status
+        global gui_send_queue
+
+        if not freecam_status:
+            if questing_status or (
+                questing_task is not None and not questing_task.done()
+            ):
+                questing_status = False
+                apply_questing_roles(False)
+                logger.debug("Questing hotkey pressed, disabling auto questing.")
+                gui_send_queue.put(
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
+                        ("QuestingStatus", "Disabled"),
+                    )
+                )
+                task_to_stop = questing_task
+                if task_to_stop is not None:
+                    task_to_stop.cancel()
+                    await asyncio.gather(task_to_stop, return_exceptions=True)
+                if questing_task is task_to_stop:
+                    questing_task = None
+
+            else:
+                party = apply_questing_roles(True)
+                if not party.questers:
+                    questing_status = False
+                    apply_questing_roles(False)
+                    logger.error(
+                        "任务编队未找到任何已注入的做任务客户端；自动任务未启动。"
+                    )
+                    gui_send_queue.put(
+                        xuanshu_gui.GUICommand(
+                            xuanshu_gui.GUICommandType.UpdateWindow,
+                            ("QuestingStatus", "Disabled"),
+                        )
+                    )
+                    return
+
+                questing_status = True
+                for p in walker.clients:
+                    p.sigil_status = False
+
+                if sigil_task is not None and not sigil_task.cancelled():
+                    logger.debug("Sigil hotkey pressed, disabling auto sigil.")
+                    gui_send_queue.put(
+                        xuanshu_gui.GUICommand(
+                            xuanshu_gui.GUICommandType.UpdateWindow,
+                            ("SigilStatus", "Disabled"),
+                        )
+                    )
+                    sigil_task.cancel()
+                    sigil_task = None
+                    for p in walker.clients:
+                        p.sigil_status = False
+                    sigil_status = False
+
+                logger.debug("Questing hotkey pressed, enabling auto questing.")
+                if quest_party_enabled:
+                    assignments = (
+                        ", ".join(
+                            f"{hitter.title}->{quester.title}"
+                            for hitter, quester in party.hitter_assignments
+                        )
+                        or "无打手"
+                    )
+                    logger.info(
+                        "已加载任务编队：做任务="
+                        + ", ".join(client.title for client in party.questers)
+                        + f"；打手跟随={assignments}"
+                    )
+                gui_send_queue.put(
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
+                        ("QuestingStatus", "Enabled"),
+                    )
+                )
+                questing_task = asyncio.create_task(
+                    try_task_coro(questing_loop, walker.clients, True)
+                )
+
+    async def toggle_auto_pet_hotkey():
+        global auto_pet_task
+        global auto_pet_status
+
+        if not freecam_status:
+            auto_pet_status ^= True
+            for p in walker.clients:
+                p.auto_pet_status ^= True
+
+            if auto_pet_task is not None and not auto_pet_task.cancelled():
+                logger.debug(f"Disabling auto pet.")
+                gui_send_queue.put(
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
+                        ("Auto PetStatus", "Disabled"),
+                    )
+                )
+                auto_pet_task.cancel()
+                auto_pet_task = None
+
+            else:
+                logger.debug(f"Enabling auto pet.")
+                gui_send_queue.put(
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
+                        ("Auto PetStatus", "Enabled"),
+                    )
+                )
+                auto_pet_task = asyncio.create_task(
+                    try_task_coro(auto_pet_loop, walker.clients, True)
+                )
+
+    async def toggle_auto_potion_hotkey():
+        global auto_potion_status
+
+        if not freecam_status:
+            auto_potion_status ^= True
+
+            if auto_potion_status:
+                logger.debug(f"Enabling auto potion.")
+                gui_send_queue.put(
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
+                        ("Auto PotionStatus", "Enabled"),
+                    )
+                )
+            else:
+                logger.debug(f"Disabling auto potion.")
+                gui_send_queue.put(
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
+                        ("Auto PotionStatus", "Disabled"),
+                    )
+                )
+
+    def publish_fishing_groups(groups):
+        global auto_fish_status
+        auto_fish_status = bool(groups)
+        gui_send_queue.put(
+            xuanshu_gui.GUICommand(
+                xuanshu_gui.GUICommandType.UpdateWindow, ("FishingGroups", groups)
+            )
+        )
+
+    fishing_groups = FishingGroups(
+        fish_bot, lambda: walker.clients, publish_fishing_groups
+    )
+    ibao_groups = IbaoGroups(
+        lambda: walker.clients,
+        lambda groups: gui_send_queue.put(
+            xuanshu_gui.GUICommand(
+                xuanshu_gui.GUICommandType.UpdateWindow, ("IbaoGroups", groups)
+            )
+        ),
+        store=settings,
+    )
+
+    async def toggle_auto_fish_hotkey():
+        if not freecam_status:
+            gui_send_queue.put(
+                xuanshu_gui.GUICommand(
+                    xuanshu_gui.GUICommandType.UpdateWindow, ("FishingToggle", None)
+                )
+            )
+
+    from src.hotkey_groups import HotkeyGroups
+
+    async def run_hotkey_group(action, members):
+        status_tags = {
+            "toggle_speed": "Speedhack",
+            "toggle_combat": "Combat",
+            "toggle_dialogue": "Dialogue",
+            "toggle_dialogue_side_quests": "SideQuestAccept",
+            "toggle_sigil": "Sigil",
+            "toggle_questing": "Questing",
+            "toggle_auto_pet": "Auto Pet",
+            "toggle_auto_potion": "Auto Potion",
+            "toggle_freecam": "Freecam",
+        }
+        exclusive = {
+            "toggle_questing",
+            "toggle_sigil",
+            "toggle_auto_pet",
+            "toggle_freecam",
+        }
+        if any(
+            getattr(c, "is_ibao", False)
+            or getattr(c, "is_fishing", False)
+            or any(c.title in key for key in bot_tasks)
+            for c in members
+        ):
+            raise ValueError("请先停止所选客户端的生产线、钓鱼或脚本。")
+        if action in exclusive and any(
+            getattr(c, "questing_status", False)
+            or getattr(c, "sigil_status", False)
+            or getattr(c, "auto_pet_status", False)
+            or getattr(c, "hotkey_freecam", False)
+            for c in members
+        ):
+            raise ValueError(
+                "所选客户端已有自动任务、传送阵、宠物或自由视角，请先停止冲突功能。"
+            )
+        flags = {
+            "toggle_combat": "combat_status",
+            "toggle_sigil": "sigil_status",
+            "toggle_auto_pet": "auto_pet_status",
+            "toggle_dialogue_side_quests": "hotkey_accept_sidequests",
+            "toggle_freecam": "hotkey_freecam",
+        }
+        flag = flags.get(action)
+        old_flags = [(c, getattr(c, flag, None)) for c in members] if flag else []
+        for c, _ in old_flags:
+            setattr(c, flag, True)
+        if action == "toggle_questing":
+            for c in members:
+                c.hotkey_quest_clients = members
+        if action in status_tags:
+            gui_send_queue.put(
+                xuanshu_gui.GUICommand(
+                    xuanshu_gui.GUICommandType.UpdateWindow,
+                    (status_tags[action] + "Status", "Enabled"),
+                )
+            )
+        try:
+            match action:
+                case "toggle_speed":
+                    await speed_switching(members)
+                case "toggle_combat":
+                    await combat_loop(members)
+                case "toggle_dialogue":
+                    await dialogue_loop(members)
+                case "toggle_dialogue_side_quests":
+                    await asyncio.Event().wait()
+                case "toggle_sigil":
+                    await sigil_loop(members)
+                case "toggle_questing":
+                    await questing_loop(members)
+                case "toggle_auto_pet":
+                    await auto_pet_loop(members)
+                case "toggle_auto_potion":
+
+                    async def scoped_potions(client):
+                        while True:
+                            await asyncio.sleep(1)
+                            if (
+                                await is_free(client)
+                                and not client.questing_status
+                                and not client.sigil_status
+                                and not getattr(client, "hotkey_freecam", False)
+                            ):
+                                await auto_potions(client, buy=False)
+
+                    await gather_owned(*[scoped_potions(c) for c in members])
+                case "toggle_freecam":
+
+                    async def scoped_camera(client):
+                        if not await is_free(client):
+                            raise ValueError(f"{client.title} 当前不能启用自由视角")
+                        position = await client.body.position()
+                        orientation = await client.body.orientation()
+                        try:
+                            await sync_camera(client)
+                            await client.camera_freecam()
+                            await client._unpatch_movement_update()
+                            await lock_freecam_player(client, position, orientation)
+                        finally:
+                            if client in walker.clients:
+                                try:
+                                    await client.camera_elastic()
+                                except Exception as exc:
+                                    logger.debug("自由视角清理：{}", exc)
+
+                    await gather_owned(*[scoped_camera(c) for c in members])
+                case _:
+                    raise ValueError("不支持的分组快捷键")
+        finally:
+            for c, value in old_flags:
+                if value is None:
+                    delattr(c, flag)
+                else:
+                    setattr(c, flag, value)
+            if action == "toggle_questing":
+                apply_questing_roles(False, members)
+                for c in members:
+                    c.hotkey_quest_clients = None
+            if action == "toggle_speed":
+                for c in members:
+                    if c in walker.clients:
+                        try:
+                            await c.client_object.write_speed_multiplier(
+                                client_speeds[c.process_id]
+                            )
+                        except Exception as exc:
+                            logger.debug("分组加速清理：{}", exc)
+            logger.info(
+                "快捷键 {} 已停止：{}", action, ", ".join(c.title for c in members)
+            )
+            if action in status_tags:
+                remaining = any(
+                    key[0] == action and task is not asyncio.current_task()
+                    for key, (_, task) in hotkey_groups.groups.items()
+                )
+                gui_send_queue.put(
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
+                        (status_tags[action] + "Status", bool_to_string(remaining)),
+                    )
+                )
+
+    hotkey_groups = HotkeyGroups(lambda: walker.clients, run_hotkey_group)
+
+    # Generic hotkey callback factory — sends InvokeAction to GUI thread,
+    # which calls the button's click handler. Works for ANY registered action.
+    def _make_hotkey_callback(action_id):
+        async def _callback():
+            gui_send_queue.put(
+                xuanshu_gui.GUICommand(
+                    xuanshu_gui.GUICommandType.InvokeAction, action_id
+                )
+            )
+
+        return _callback
+
+    # Kill tool needs a direct async callback since it must work even with no GUI
+    _kill_tool_callback = kill_tool_hotkey
+
+    _active_bindings = {}  # action_id -> {"key": str, "modifiers": [str]}
+
+    _FREECAM_ACTIONS = {"toggle_freecam", "freecam_tp"}
+
+    async def enable_hotkeys(exclude_freecam: bool = False, debug: bool = False):
+        global hotkey_status
+        if not hotkey_status:
+            if debug:
+                logger.debug("Client selected, starting hotkey listener.")
+            hotkeys = settings.get_hotkeys()
+            for action_id, binding in hotkeys.items():
+                if binding is None:
+                    continue
+                if action_id == "kill_tool":
+                    continue  # kill_tool registered separately, always bound
+                if exclude_freecam and action_id in _FREECAM_ACTIONS:
+                    continue
+                mods = ModifierKeys.NOREPEAT
+                for m in binding.get("modifiers", []):
+                    mods |= ModifierKeys[m]
+                try:
+                    await listener.add_hotkey(
+                        Keycode[binding["key"]],
+                        _make_hotkey_callback(action_id),
+                        modifiers=mods,
+                    )
+                    _active_bindings[action_id] = binding
+                except Exception as e:
+                    logger.debug(f"Failed to register hotkey for {action_id}: {e}")
+            hotkey_status = True
+
+    async def disable_hotkeys(
+        exclude_freecam: bool = False, debug: bool = False, exclude_kill: bool = True
+    ):
+        global hotkey_status
+        if hotkey_status:
+            if debug:
+                logger.debug("Client not selected, stopping hotkey listener.")
+            for action_id, binding in list(_active_bindings.items()):
+                if exclude_kill and action_id == "kill_tool":
+                    continue
+                if exclude_freecam and action_id in _FREECAM_ACTIONS:
+                    continue
+                mods = ModifierKeys.NOREPEAT
+                for m in binding.get("modifiers", []):
+                    mods |= ModifierKeys[m]
+                try:
+                    await listener.remove_hotkey(
+                        Keycode[binding["key"]], modifiers=mods
+                    )
+                    del _active_bindings[action_id]
+                except Exception as e:
+                    logger.debug(f"Failed to remove hotkey for {action_id}: {e}")
+            hotkey_status = False
+
+    def get_foreground_client():
+        if not walker.clients:
+            return None
+        foreground = [c for c in walker.clients if c.is_foreground]
+        if len(foreground) > 0:
+            return foreground[0]
+        if not foreground_client:
+            return walker.clients[0]
+        return foreground_client
+
+    def get_background_clients():
+        return [c for c in walker.clients if not c.is_foreground]
+
+    async def foreground_client_switching():
+        await asyncio.sleep(2)
+        # enable hotkeys if a client is selected, disable if none are
+        while True:
+            await asyncio.sleep(0.1)
+            foreground_client_list = [c for c in walker.clients if c.is_foreground]
+            if foreground_client_list:
+                await enable_hotkeys(debug=True)
+            else:
+                await disable_hotkeys(debug=True)
+
+    async def assign_foreground_clients():
+        # assigns the foreground client and a list of background clients
+        nonlocal foreground_client
+        nonlocal background_clients
+        while True:
+            foreground_client = get_foreground_client()
+            background_clients = get_background_clients()
+            await asyncio.sleep(0.1)
+
+    async def speed_switching(members=None):
+        # handles updating the speed multiplier if a zone or realm change happens
+        modified_speed = (int(speed_multiplier) - 1) * 100
+        while True:
+            await asyncio.sleep(0.1)
+            # if speed multiplier is enabled, rewrite the multiplier value if the speed changes. If speed mult is disabled, rewrite the original untouched speed multiplier only if it equals the multiplier speed
+            if not freecam_status:
+                await asyncio.sleep(0.2)
+                for c in (walker.clients if members is None else members):
+                    if await c.client_object.speed_multiplier() != modified_speed:
+                        await c.client_object.write_speed_multiplier(modified_speed)
+
+    async def is_client_in_combat_loop():
+        async def async_in_combat(client: Client):
+            # battle = Fighter(client)
+            # while True:
+            # 	if await battle.is_fighting():
+            # 		client.in_combat = True
+            # 	else:
+            # 		client.in_combat = False
+            # 	await asyncio.sleep(0.1)
+            while True:
+                # print(await client.game_client.is_freecam())
+                if not freecam_status:
+                    client.in_combat = await client.in_battle()
+                await asyncio.sleep(0.1)
+
+        await asyncio.gather(*[async_in_combat(p) for p in walker.clients])
+
+    async def clear_post_combat_phase(client: Client):
+        """Nudge a client after combat so the game clears its phased state."""
+        if getattr(client, "post_combat_movement_active", False):
+            return
+
+        now = asyncio.get_running_loop().time()
+        if now - getattr(client, "post_combat_movement_at", 0.0) < 3.0:
+            return
+
+        client.post_combat_movement_active = True
+        try:
+            # A combat can finish just as a loading screen starts.  Wait briefly
+            # rather than sending movement into a screen that cannot receive it.
+            loading_deadline = now + 10.0
+            while await client.is_loading():
+                if asyncio.get_running_loop().time() >= loading_deadline:
+                    return
+                await asyncio.sleep(0.25)
+
+            if await client.in_battle():
+                return
+
+            if getattr(client, "questing_status", False):
+                # Auto-quest only: back away from the encounter before healing.
+                await client.send_key(key=Keycode.S, seconds=0.3)
+            else:
+                await client.send_key(key=Keycode.A, seconds=0.3)
+                if not await client.in_battle():
+                    await client.send_key(key=Keycode.D, seconds=0.3)
+            client.post_combat_movement_at = asyncio.get_running_loop().time()
+            logger.debug(f"Client {client.title} - post-combat movement completed.")
+        finally:
+            client.post_combat_movement_active = False
+
+    async def combat_loop(members=None):
+        logger.catch()
+
+        # waits for combat for every client and handles them seperately.
+        async def async_combat(client: Client):
+            while True:
+                try:
+                    await asyncio.sleep(1)
+                    if not freecam_status:
+                        while not await client.in_battle():
+                            await asyncio.sleep(1)
+
+                        if await client.in_battle():
+                            logger.debug(
+                                f"Client {client.title} in combat, handling combat."
+                            )
+
+                            battle = TargetingSprintyCombat(
+                                client,
+                                StrCombatConfigProvider(client.combat_config),
+                                True,
+                            )
+                            await battle.wait_for_combat()
+                            await clear_post_combat_phase(client)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    # One hitter failing to read a combat round must not cancel
+                    # the combat workers for every other task-party client.
+                    logger.opt(exception=exc).error(
+                        f"Client {client.title} auto combat failed; retrying for the next round."
+                    )
+                    await asyncio.sleep(1.0)
+
+        await gather_owned(
+            *[async_combat(p) for p in (walker.clients if members is None else members)]
+        )
+
+    async def restart_combat_task_if_running() -> bool:
+        """Reload combat configuration without changing the enabled state."""
+        global combat_task
+
+        if combat_task is None or combat_task.done():
+            return False
+
+        combat_task.cancel()
+        try:
+            await combat_task
+        except asyncio.CancelledError:
+            pass
+
+        combat_task = asyncio.create_task(
+            try_task_coro(combat_loop, walker.clients, True)
+        )
+        return True
+
+    async def dialogue_loop(members=None):
+        # auto advances dialogue for every client, individually and concurrently
+        async def async_dialogue(client: Client):
+            while True:
+                if not freecam_status:
+                    if await close_npc_quest_menu(client):
+                        continue
+                    if await is_visible_by_path(client, advance_dialog_path):
+                        has_decline_button = await is_visible_by_path(
+                            client, decline_quest_path
+                        )
+                        if has_decline_button and not getattr(
+                            client, "hotkey_accept_sidequests", side_quest_status
+                        ):
+                            await client.send_key(key=Keycode.ESC)
+                            await asyncio.sleep(0.5)
+                            if await is_visible_by_path(client, advance_dialog_path):
+                                await client.send_key(key=Keycode.ESC)
+                            await asyncio.sleep(0.5)
+                        else:
+                            await client.send_key(key=Keycode.SPACEBAR)
+                            await asyncio.sleep(0.5)
+                        continue
+                await asyncio.sleep(0.05)
+
+        await gather_owned(
+            *[
+                async_dialogue(p)
+                for p in (walker.clients if members is None else members)
+            ]
+        )
+
+    # logger.catch()
+    async def questing_loop(members=None):
+        global questing_status
+        if members is None and not questing_status:
+            return
+        roster = walker.clients if members is None else list(members)
+        party = apply_questing_roles(True, members)
+        if not party.questers:
+            if members is not None:
+                logger.warning("快捷键分组内没有符合当前任务编队设置的做任务客户端。")
+                return
+            questing_status = False
+            apply_questing_roles(False)
+            logger.error("任务编队中没有可用的做任务客户端，自动任务已停止。")
+            gui_send_queue.put(
+                xuanshu_gui.GUICommand(
+                    xuanshu_gui.GUICommandType.UpdateWindow,
+                    ("QuestingStatus", "Disabled"),
+                )
+            )
+            return
+
+        runtime_status: dict[str, str] = {}
+        status_session = object()
+        for hitter, _ in party.hitter_assignments:
+            hitter.quest_party_status_session = status_session
+
+        def update_party_status(hitter: Client, quester: Client, state: str):
+            # A previous questing loop can take a moment to finish after a
+            # restart.  Do not let its late status overwrite the active loop.
+            if (
+                getattr(hitter, "quest_party_status_session", None)
+                is not status_session
+            ):
+                return
+            value = f"{hitter.title} → {quester.title}｜{state}"
+            if runtime_status.get(hitter.title) == value:
+                return
+            runtime_status[hitter.title] = value
+            gui_send_queue.put(
+                xuanshu_gui.GUICommand(
+                    xuanshu_gui.GUICommandType.UpdateWindow,
+                    ("QuestPartyRuntimeStatus", "\n".join(runtime_status.values())),
+                )
+            )
+
+        def remove_party_status(hitter: Client):
+            if (
+                getattr(hitter, "quest_party_status_session", None)
+                is not status_session
+            ):
+                return
+            runtime_status.pop(hitter.title, None)
+            hitter.quest_party_status_session = None
+            gui_send_queue.put(
+                xuanshu_gui.GUICommand(
+                    xuanshu_gui.GUICommandType.UpdateWindow,
+                    ("QuestPartyRuntimeStatus", "\n".join(runtime_status.values())),
+                )
+            )
+
+        def restart_quest_worker_after_probe(client: Client):
+            """Restart only this quester's worker after a solo-zone probe."""
+            worker = getattr(client, "quest_party_quest_worker_task", None)
+            if worker is not None and not worker.done():
+                client.quest_party_quest_worker_restart_requested = True
+                worker.cancel()
+
+        async def change_party_equipment(client: Client, set_number: int):
+            """Keep a stalled equipment window from blocking the party probe."""
+            try:
+                await asyncio.wait_for(
+                    change_equipment_set(client, set_number), timeout=15.0
+                )
+                return True
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"{client.title} 换装界面 15 秒内未完成；" "将关闭界面并继续任务。"
+                )
+                try:
+                    await client.send_key(Keycode.B, 0.1)
+                except Exception:
+                    pass
+                return False
+
+        async def prepare_quester_name(client: Client):
+            if client.wizard_name:
+                return
+            quester = Quester(client, [client], None)
+            try:
+                await quester.open_character_screen(client)
+                await set_wizard_name_from_character_screen(client)
+            except Exception as exc:
+                logger.warning(
+                    f"暂时无法读取 {client.title} 的角色名，跨区域打手跟随会自动重试：{exc}"
+                )
+            finally:
+                try:
+                    await quester.close_character_screen(client)
+                except Exception:
+                    pass
+
+        async def _follow_quester_session(
+            hitter: Client, quester: Client, is_probe_hitter: bool
+        ):
+            """Follow the quester without ever reading the hitter's quest target."""
+            logger.info(f"打手 {hitter.title} 开始跟随做任务客户端 {quester.title}。")
+            loop = asyncio.get_running_loop()
+            last_quester_zone = getattr(quester, "quest_party_observed_zone", None)
+            quester_zone_stable_since = None
+            last_objective = None
+            objective_stable_since = None
+            blocked_instance_zone = None
+            blocked_instance_retry_at = 0.0
+            failure_count = 0
+            next_retry_at = 0.0
+            quest_reader = Quester(quester, [quester], None)
+
+            async def complete_zone_probe(solo_zone: bool):
+                if not is_probe_hitter:
+                    return
+                try:
+                    if solo_zone:
+                        quester.in_solo_zone = True
+                        if gear_switching_in_solo_zones and not getattr(
+                            quester, "quest_party_solo_gear_active", False
+                        ):
+                            update_party_status(hitter, quester, "单人区域，正在换装")
+                            logger.info(
+                                f"已确认 {quester.title} 进入单人区域，切换到第二套装备。"
+                            )
+                            if await change_party_equipment(quester, 1):
+                                quester.quest_party_solo_gear_active = True
+                    else:
+                        quester.in_solo_zone = False
+                        if getattr(quester, "quest_party_solo_gear_active", False):
+                            update_party_status(
+                                hitter, quester, "已离开单人区域，恢复装备"
+                            )
+                            logger.info(
+                                f"已确认 {quester.title} 离开单人区域，恢复第一套装备。"
+                            )
+                            if await change_party_equipment(quester, 0):
+                                quester.quest_party_solo_gear_active = False
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        f"{quester.title} 处理区域换装失败，将继续任务：{exc}"
+                    )
+                finally:
+                    # Probe completion must always release the movement gate,
+                    # even if the equipment UI times out or raises an error.
+                    quester.quest_party_quest_worker_zone = last_quester_zone
+                    quester.quest_party_probe_pending = False
+
+                if solo_zone:
+                    # The worker may still be awaiting an operation that began
+                    # before the zone transition.  Restart only that quester;
+                    # the hitter follower and the rest of the party stay alive.
+                    restart_quest_worker_after_probe(quester)
+
+            async def hitter_is_in_quester_area() -> bool:
+                """Confirm both clients are in the same live area/instance."""
+                try:
+                    quester_gid = await quester.client_object.global_id_full()
+                    entities = await SprintyClient(hitter).get_base_entity_list()
+                    for entity in entities:
+                        if await entity.global_id_full() == quester_gid:
+                            return True
+                except Exception as exc:
+                    logger.debug(
+                        f"暂时无法确认 {hitter.title} 与 {quester.title} "
+                        f"是否在同一区域，将保留好友传送检测：{exc}"
+                    )
+                return False
+
+            async def friend_ui_is_open(client: Client) -> bool:
+                try:
+                    for name in ("NewFriendsListWindow", "wndCharacter"):
+                        windows = await client.root_window.get_windows_with_name(name)
+                        for window in windows:
+                            if await window.is_visible():
+                                return True
+                except Exception:
+                    return False
+                return False
+
+            async def close_stale_friend_ui(client: Client):
+                """Close friend-list remnants without opening a closed list."""
+                for _ in range(3):
+                    if not await friend_ui_is_open(client):
+                        return
+                    await client.send_key(Keycode.ESC, 0.1)
+                    await asyncio.sleep(0.2)
+
+            async def teleport_to_quester_from_friend_list(
+                client: Client, wizard_name, friend_icon
+            ):
+                # Some versions expose only the first name in friend-list
+                # markup, while the character screen exposes the full name.
+                aliases = []
+                if wizard_name:
+                    aliases.append(wizard_name)
+                    first_name = wizard_name.split(maxsplit=1)[0]
+                    if first_name and first_name != wizard_name:
+                        aliases.append(first_name)
+
+                last_error = None
+                for alias in aliases:
+                    try:
+                        await teleport_to_friend_from_list(client, name=alias)
+                        if alias != wizard_name:
+                            logger.debug(
+                                f"打手 {client.title} 使用好友列表首名 {alias} "
+                                f"匹配任务客户端 {wizard_name}。"
+                            )
+                        return
+                    except ValueError as exc:
+                        last_error = exc
+
+                if friend_icon is not None:
+                    icon_list, icon_index = friend_icon
+                    try:
+                        await teleport_to_friend_from_list(
+                            client,
+                            icon_list=icon_list,
+                            icon_index=icon_index,
+                        )
+                        logger.debug(
+                            f"打手 {client.title} 名称匹配失败，已使用任务端好友图标 "
+                            f"{icon_list}:{icon_index} 作为保底。"
+                        )
+                        return
+                    except ValueError as exc:
+                        last_error = exc
+
+                if last_error is not None:
+                    raise last_error
+                raise ValueError("任务端没有可用的好友名称或好友图标")
+
+            update_party_status(hitter, quester, "准备跟随")
+            try:
+                while (
+                    members is not None or questing_status
+                ) and hitter.questing_status:
+                    await asyncio.sleep(0.5)
+                    if hitter not in walker.clients or quester not in walker.clients:
+                        return
+                    if not await hitter.is_loading() and await close_automation_popup(
+                        hitter
+                    ):
+                        update_party_status(hitter, quester, "正在关闭评价窗口")
+                        continue
+                    if (
+                        not await hitter.is_loading()
+                        and await Quester(
+                            hitter, [hitter], None
+                        ).handle_pending_dungeon_confirmation()
+                    ):
+                        update_party_status(hitter, quester, "正在确认地牢切换")
+                        failure_count = 0
+                        next_retry_at = 0.0
+                        continue
+                    if await quester.is_loading():
+                        quester_zone_stable_since = None
+                        objective_stable_since = None
+                        update_party_status(hitter, quester, "等待切换世界")
+                        continue
+
+                    quester_zone = await quester.zone_name()
+                    now = loop.time()
+                    if quester_zone != last_quester_zone:
+                        if last_quester_zone is not None:
+                            if is_probe_hitter:
+                                quester.quest_party_probe_pending = True
+                            logger.debug(
+                                f"做任务客户端 {quester.title} 已切换区域："
+                                f"{last_quester_zone} -> {quester_zone}；"
+                                "暂停下一次任务传送并等待打手探测。"
+                            )
+                        last_quester_zone = quester_zone
+                        quester.quest_party_observed_zone = quester_zone
+                        quester_zone_stable_since = now
+                        last_objective = None
+                        objective_stable_since = None
+                        blocked_instance_zone = None
+                        blocked_instance_retry_at = 0.0
+                        failure_count = 0
+                        next_retry_at = 0.0
+                    elif quester_zone_stable_since is None:
+                        quester_zone_stable_since = now
+
+                    if (
+                        await hitter.is_loading()
+                        or await hitter.in_battle()
+                        or hitter.entity_detect_combat_status
+                        or getattr(hitter, "quest_party_battle_rescue_active", False)
+                    ):
+                        update_party_status(hitter, quester, "等待战斗或加载")
+                        continue
+
+                    if use_potions and await is_free(hitter):
+                        await auto_potions(hitter, buy=False)
+                        if (
+                            buy_potions
+                            and await hitter.stats.potion_charge() < 1.0
+                            and await hitter.stats.reference_level() >= 6
+                        ):
+                            update_party_status(hitter, quester, "正在补充药水")
+                            logger.info(
+                                f"打手 {hitter.title} 药水不足，补充后将自动重新跟随 {quester.title}。"
+                            )
+                            await refill_potions(
+                                hitter,
+                                mark=False,
+                                recall=False,
+                                original_zone=await hitter.zone_name(),
+                            )
+                            failure_count = 0
+                            next_retry_at = 0.0
+                            continue
+
+                    hitter_zone = await hitter.zone_name()
+                    probe_pending = bool(
+                        is_probe_hitter
+                        and getattr(quester, "quest_party_probe_pending", False)
+                    )
+                    if not is_probe_hitter and getattr(
+                        quester, "quest_party_probe_pending", False
+                    ):
+                        update_party_status(hitter, quester, "等待单人区域探测")
+                        continue
+
+                    same_live_area = False
+                    if hitter_zone == quester_zone:
+                        # The normal path already treats an identical zone as
+                        # local.  During a solo-zone probe, additionally verify
+                        # that the quester is present in the hitter's entity
+                        # list so equal zone paths from separate instances are
+                        # not mistaken for the same area.
+                        same_live_area = (
+                            not probe_pending or await hitter_is_in_quester_area()
+                        )
+
+                    if same_live_area:
+                        if probe_pending:
+                            await complete_zone_probe(False)
+                        blocked_instance_zone = None
+                        blocked_instance_retry_at = 0.0
+                        failure_count = 0
+                        next_retry_at = 0.0
+                        if not await is_free(hitter):
+                            update_party_status(hitter, quester, "等待战斗")
+                            continue
+                        hitter_pos = await hitter.body.position()
+                        quester_pos = await quester.body.position()
+                        if calc_Distance(hitter_pos, quester_pos) > 900:
+                            update_party_status(hitter, quester, "正在跟随")
+                            try:
+                                await hitter.teleport(quester_pos)
+                            except ValueError:
+                                await asyncio.sleep(0.5)
+                        else:
+                            update_party_status(hitter, quester, "已归队")
+                        continue
+
+                    if blocked_instance_zone == quester_zone:
+                        if now < blocked_instance_retry_at:
+                            update_party_status(
+                                hitter, quester, "单人区域，任务端独立执行"
+                            )
+                            continue
+                        # Re-probe infrequently so a temporary busy/teleport-off
+                        # response cannot strand the hitter forever.
+                        blocked_instance_zone = None
+
+                    if await is_visible_by_path(quester, spiral_door_teleport_path):
+                        update_party_status(hitter, quester, "等待世界选择完成")
+                        continue
+
+                    try:
+                        objective = await quest_reader.get_truncated_quest_objectives(
+                            quester
+                        )
+                    except Exception:
+                        objective = ""
+                    if objective != last_objective:
+                        last_objective = objective
+                        objective_stable_since = now
+                    elif objective_stable_since is None:
+                        objective_stable_since = now
+
+                    objective_ready = bool(objective) and (
+                        objective_stable_since is not None
+                        and now - objective_stable_since >= 0.75
+                    )
+                    fallback_ready = (
+                        quester_zone_stable_since is not None
+                        and now - quester_zone_stable_since >= 5.0
+                    )
+                    if (
+                        quester_zone_stable_since is None
+                        or now - quester_zone_stable_since < 1.5
+                        or not (objective_ready or fallback_ready)
+                        or not await is_free(quester)
+                    ):
+                        update_party_status(
+                            hitter,
+                            quester,
+                            (
+                                "等待打手传送检测"
+                                if probe_pending
+                                else "等待区域和任务就绪"
+                            ),
+                        )
+                        continue
+
+                    friend_icon = resolve_quester_friend_icon(
+                        quester, quest_friend_icons
+                    )
+                    if (
+                        not quester.wizard_name
+                        and friend_icon is None
+                        and await is_free(quester)
+                    ):
+                        await prepare_quester_name(quester)
+                    if (
+                        not quester.wizard_name and friend_icon is None
+                    ) or not await is_free(hitter):
+                        update_party_status(hitter, quester, "等待好友传送可用")
+                        continue
+
+                    if now < next_retry_at:
+                        wait_seconds = max(1, int(next_retry_at - now + 0.99))
+                        update_party_status(
+                            hitter, quester, f"好友传送重试等待 {wait_seconds}s"
+                        )
+                        continue
+
+                    logger.debug(
+                        f"打手 {hitter.title} 尝试好友传送跟随/探测 {quester.title}。"
+                    )
+                    update_party_status(hitter, quester, "正在好友传送")
+                    try:
+                        hitter_zone_before_probe = hitter_zone
+                        await close_stale_friend_ui(hitter)
+                        async with hitter.mouse_handler:
+                            await asyncio.wait_for(
+                                teleport_to_quester_from_friend_list(
+                                    hitter, quester.wizard_name, friend_icon
+                                ),
+                                timeout=15.0,
+                            )
+                        same_zone_probe = bool(
+                            probe_pending and hitter_zone_before_probe == quester_zone
+                        )
+                        # Original leader mode waited long enough for the game's
+                        # "friend busy / closed instance" response to appear even
+                        # when both clients report the same zone path.
+                        await asyncio.sleep(6.0 if same_zone_probe else 1.0)
+                        if await is_friend_teleport_error(hitter):
+                            async with hitter.mouse_handler:
+                                await click_window_by_path(
+                                    hitter, friend_is_busy_and_dungeon_reset_path
+                                )
+                            raise FriendBusyOrInstanceClosed()
+
+                        if hitter_zone_before_probe != quester_zone:
+                            arrival_deadline = loop.time() + 15.0
+                            while loop.time() < arrival_deadline:
+                                if await is_friend_teleport_error(hitter):
+                                    async with hitter.mouse_handler:
+                                        await click_window_by_path(
+                                            hitter,
+                                            friend_is_busy_and_dungeon_reset_path,
+                                        )
+                                    raise FriendBusyOrInstanceClosed()
+                                if not await hitter.is_loading() and (
+                                    await hitter.zone_name() == quester_zone
+                                ):
+                                    break
+                                await asyncio.sleep(0.25)
+                            else:
+                                raise RuntimeError("好友传送未到达任务客户端所在区域")
+
+                        if probe_pending:
+                            await complete_zone_probe(False)
+                        failure_count = 0
+                        next_retry_at = 0.0
+                    except asyncio.CancelledError:
+                        raise
+                    except FriendBusyOrInstanceClosed as exc:
+                        await close_stale_friend_ui(hitter)
+                        blocked_instance_zone = quester_zone
+                        blocked_instance_retry_at = loop.time() + 60.0
+                        await complete_zone_probe(True)
+                        update_party_status(hitter, quester, "单人区域，任务端独立执行")
+                        logger.debug(
+                            f"打手 {hitter.title} 无法进入 {quester.title} 当前区域，"
+                            f"将在任务客户端离开该区域后重试：{exc}"
+                        )
+                    except Exception as exc:
+                        if await is_friend_teleport_error(hitter):
+                            async with hitter.mouse_handler:
+                                await click_window_by_path(
+                                    hitter, friend_is_busy_and_dungeon_reset_path
+                                )
+                            blocked_instance_zone = quester_zone
+                            blocked_instance_retry_at = loop.time() + 60.0
+                            await complete_zone_probe(True)
+                            update_party_status(
+                                hitter, quester, "单人区域，任务端独立执行"
+                            )
+                            logger.debug(
+                                f"打手 {hitter.title} 检测到无法进入的实例，"
+                                f"等待 {quester.title} 离开当前区域。"
+                            )
+                            continue
+                        await close_stale_friend_ui(hitter)
+                        failure_count += 1
+                        delay = friend_follow_retry_delay(failure_count)
+                        next_retry_at = loop.time() + delay
+                        update_party_status(
+                            hitter, quester, f"好友传送重试等待 {int(delay)}s"
+                        )
+                        logger.debug(
+                            f"打手 {hitter.title} 跟随 {quester.title} 暂未成功，"
+                            f"{delay:.0f} 秒后重试：{exc}"
+                        )
+            finally:
+                remove_party_status(hitter)
+
+        async def follow_quester(
+            hitter: Client, quester: Client, is_probe_hitter: bool
+        ):
+            """Keep the follower alive across transient memory/UI read failures."""
+            while (members is not None or questing_status) and hitter.questing_status:
+                try:
+                    await _follow_quester_session(hitter, quester, is_probe_hitter)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        f"打手 {hitter.title} 跟随状态读取失败，2 秒后恢复：{exc}"
+                    )
+                    update_party_status(hitter, quester, "状态读取失败，准备恢复")
+                    await asyncio.sleep(2.0)
+
+        primary_probe_hitters: dict[int, Client] = {}
+        for assigned_hitter, assigned_quester in party.hitter_assignments:
+            primary_probe_hitters.setdefault(id(assigned_quester), assigned_hitter)
+
+        if quest_party_enabled and party.hitters:
+            await asyncio.gather(
+                *[prepare_quester_name(client) for client in party.questers]
+            )
+        elif quest_party_enabled:
+            gui_send_queue.put(
+                xuanshu_gui.GUICommand(
+                    xuanshu_gui.GUICommandType.UpdateWindow,
+                    ("QuestPartyRuntimeStatus", ""),
+                )
+            )
+
+        async def run_questing_worker(client: Client):
+            if quest_party_enabled:
+                logger.debug(
+                    f"Client {client.title} - Handling assigned questing role."
+                )
+                questing = Quester(client, [client], None)
+                await questing.auto_quest(ignore_pet_level_up, only_play_dance_game)
+            elif (
+                questing_leader_pid is not None
+                and len(roster) > 1
+                and any(c.process_id == questing_leader_pid for c in roster)
+            ):
+                if client.process_id == questing_leader_pid:
+                    logger.debug(
+                        f"Client {client.title} - Handling questing for all clients."
+                    )
+                    questing = Quester(client, roster, questing_leader_pid)
+                    await questing.auto_quest_leader(
+                        questing_friend_tp,
+                        gear_switching_in_solo_zones,
+                        hitter_client,
+                        ignore_pet_level_up,
+                        only_play_dance_game,
+                    )
+            else:
+                logger.debug(f"Client {client.title} - Handling questing.")
+                questing = Quester(client, roster, None)
+                await questing.auto_quest(ignore_pet_level_up, only_play_dance_game)
+
+        # Supervise each quest client separately.  A solo-zone probe can cancel
+        # and recreate only the affected worker without stopping hitter follow.
+        async def async_questing(client: Client):
+            client.character_level = await client.stats.reference_level()
+            next_start_delay = 3.0
+
+            while True:
+                await asyncio.sleep(next_start_delay)
+                next_start_delay = 3.0
+                if client not in walker.clients or (
+                    members is None and not questing_status
+                ):
+                    continue
+
+                client.quest_party_quest_worker_restart_requested = False
+                worker = asyncio.create_task(run_questing_worker(client))
+                client.quest_party_quest_worker_task = worker
+                try:
+                    await worker
+                except asyncio.CancelledError:
+                    restart_requested = bool(
+                        getattr(
+                            client,
+                            "quest_party_quest_worker_restart_requested",
+                            False,
+                        )
+                    )
+                    parent_is_cancelling = bool(asyncio.current_task().cancelling())
+                    if (
+                        restart_requested
+                        and not parent_is_cancelling
+                        and (members is not None or questing_status)
+                        and client.questing_status
+                    ):
+                        client.quest_party_quest_worker_restart_requested = False
+                        next_start_delay = 0.25
+                        logger.debug(
+                            f"Client {client.title} - solo-zone probe complete; restarting quest worker."
+                        )
+                        continue
+                    raise
+                except (
+                    wizwalker.errors.MemoryInvalidated,
+                    wizwalker.errors.ExceptionalTimeout,
+                ):
+                    raise
+                except Exception as exc:
+                    logger.opt(exception=exc).error(
+                        f"Client {client.title} quest worker stopped unexpectedly; retrying."
+                    )
+                    next_start_delay = 2.0
+                finally:
+                    if getattr(client, "quest_party_quest_worker_task", None) is worker:
+                        client.quest_party_quest_worker_task = None
+
+        if quest_party_enabled:
+            await gather_owned(
+                *[async_questing(client) for client in party.questers],
+                *[
+                    follow_quester(
+                        hitter,
+                        quester,
+                        primary_probe_hitters.get(id(quester)) is hitter,
+                    )
+                    for hitter, quester in party.hitter_assignments
+                ],
+            )
+        else:
+            await gather_owned(*[async_questing(p) for p in roster])
+
+    async def anti_afk_questing_loop():
+        restart_lock = asyncio.Lock()
+        last_restart_at = 0.0
+
+        async def async_afk_questing(client: Client):
+            nonlocal last_restart_at
+            while True:
+                global questing_task
+
+                await asyncio.sleep(0.1)
+                if not freecam_status:
+                    client_xyz = await client.body.position()
+                    await asyncio.sleep(120)
+                    client_xyz_2 = await client.body.position()
+                    distance_moved = calc_Distance(client_xyz, client_xyz_2)
+                    if (
+                        distance_moved < 5.0
+                        and questing_status
+                        and client.questing_status
+                        and not await client.in_battle()
+                        and not client.feeding_pet_status
+                        and not client.entity_detect_combat_status
+                    ):
+
+                        if quest_party_enabled:
+                            # Hitters are expected to stand still while waiting
+                            # outside a solo area.  Only an assigned quest client
+                            # may request recovery in party mode.
+                            recovery_candidate = (
+                                client in current_quest_party().questers
+                            )
+                            recovery_candidate = recovery_candidate and not getattr(
+                                client, "quest_party_probe_pending", False
+                            )
+                        else:
+                            # Preserve the legacy solo-area behaviour when the
+                            # configurable quest party is not enabled.
+                            recovery_candidate = not any(
+                                p.in_solo_zone for p in walker.clients
+                            )
+
+                        if recovery_candidate and not await is_free(client):
+                            recovery_candidate = False
+
+                        # restart questing
+                        if (
+                            recovery_candidate
+                            and questing_task is not None
+                            and not questing_task.done()
+                        ):
+                            async with restart_lock:
+                                now = asyncio.get_running_loop().time()
+                                if now - last_restart_at < 15.0:
+                                    continue
+                                if questing_task is None or questing_task.done():
+                                    continue
+                                logger.debug(
+                                    f"Client {client.title} questing appears to have halted - restarting."
+                                )
+                                task_to_cancel = questing_task
+                                task_to_cancel.cancel()
+                                try:
+                                    await task_to_cancel
+                                except asyncio.CancelledError:
+                                    pass
+                                if questing_task is task_to_cancel:
+                                    questing_task = None
+                                await asyncio.sleep(1.0)
+
+                                if (
+                                    questing_status
+                                    and client.questing_status
+                                    and questing_task is None
+                                ):
+                                    questing_task = asyncio.create_task(
+                                        try_task_coro(
+                                            questing_loop, walker.clients, True
+                                        )
+                                    )
+                                    last_restart_at = now
+
+        await asyncio.gather(*[async_afk_questing(p) for p in walker.clients])
+
+    # logger.catch()
+    async def auto_pet_loop(members=None):
+        # Auto questing on a per client basis.
+        async def async_auto_pet(client: Client):
+            while True:
+                await asyncio.sleep(1)
+
+                if client in walker.clients and (
+                    members is not None or auto_pet_status
+                ):
+                    try:
+                        await nomnom(
+                            client,
+                            ignore_pet_level_up=ignore_pet_level_up,
+                            only_play_dance_game=only_play_dance_game,
+                        )
+                    except Exception as exc:
+                        logger.opt(exception=exc).error(
+                            f"Client {client.title}: 自动宠物已停止，请检查日志；"
+                            "排除故障后关闭再开启自动宠物重试。"
+                        )
+                        return
+
+        await gather_owned(
+            *[
+                async_auto_pet(p)
+                for p in (walker.clients if members is None else members)
+            ]
+        )
+
+    async def auto_fish_loop():
+        await fishing_groups.run()
+
+    async def nearest_duel_circle_distance_and_xyz(sprinter: SprintyClient):
+        min_distance = None
+        circle_xyz = None
+
+        try:
+            entities = await sprinter.get_base_entity_list()
+        except ValueError:
+            return None, None
+
+        for entity in entities:
+            try:
+                entity_name = await entity.object_name()
+            except wizwalker.MemoryReadError:
+                entity_name = ""
+
+            if entity_name == "Duel Circle":
+                entity_pos = await entity.location()
+                distance = calc_Distance(
+                    entity_pos, await sprinter.client.body.position()
+                )
+
+                if min_distance is None:
+                    min_distance = distance
+                    circle_xyz = entity_pos
+                elif distance < min_distance:
+                    min_distance = distance
+                    circle_xyz = entity_pos
+                # print('distance to duel circle: ', distance)
+
+        return min_distance, circle_xyz
+
+    async def is_duel_circle_joinable(p: Client):
+        sprinter = SprintyClient(p)
+        await asyncio.sleep(7)
+
+        distance, duel_circle_xyz = await nearest_duel_circle_distance_and_xyz(sprinter)
+        # if after 7 seconds we are not in a battle position, we either teleported while invincible or teleported to a non-joinable fight
+        if distance is not None:
+            if not (590 < distance < 610):
+                logger.debug(
+                    "Bad teleport.  Returning " + p.title + " to safe location."
+                )
+                if p.original_location_before_combat is not None:
+                    await p.teleport(p.original_location_before_combat)
+                    p.original_location_before_combat = None
+                else:
+                    position = await p.body.position()
+                    await p.teleport(XYZ(position.x, position.y, position.z - 350))
+
+                p.entity_detect_combat_status = False
+
+                return False
+
+            return True
+        else:
+            return False
+
+    async def entity_detect_combat_loop():
+        def combat_group_for(client: Client):
+            scoped = getattr(client, "hotkey_quest_clients", None)
+            if scoped is not None:
+                return [c for c in scoped if c in walker.clients and c.questing_status]
+            if not quest_party_enabled:
+                return list(walker.clients)
+            party = current_quest_party()
+            for quester in party.questers:
+                group = [quester] + [
+                    hitter
+                    for hitter, assigned_quester in party.hitter_assignments
+                    if assigned_quester is quester
+                ]
+                if client in group:
+                    return group
+            return [client]
+
+        async def rescue_missing_party_hitters(quester: Client):
+            """Retry battle entry for assigned hitters that missed the circle."""
+            if (
+                not quest_party_enabled
+                or quester.in_solo_zone
+                or getattr(quester, "quest_party_probe_pending", False)
+            ):
+                quester.quest_party_battle_started_at = None
+                return
+
+            if not await quester.in_battle():
+                quester.quest_party_battle_started_at = None
+                return
+
+            loop = asyncio.get_running_loop()
+            if quester.quest_party_battle_started_at is None:
+                quester.quest_party_battle_started_at = loop.time()
+                return
+
+            # Give the normal duel-circle join path a short chance first.
+            if loop.time() - quester.quest_party_battle_started_at < 3.0:
+                return
+
+            party = current_quest_party(getattr(quester, "hotkey_quest_clients", None))
+            assigned_hitters = [
+                hitter
+                for hitter, assigned_quester in party.hitter_assignments
+                if assigned_quester is quester
+            ]
+            quester_zone = await quester.zone_name()
+            for hitter in assigned_hitters:
+                if (
+                    hitter not in walker.clients
+                    or await hitter.in_battle()
+                    or await hitter.is_loading()
+                    or getattr(hitter, "quest_party_battle_rescue_active", False)
+                    or loop.time()
+                    - getattr(hitter, "quest_party_battle_rescue_at", 0.0)
+                    < 7.0
+                    or await hitter.zone_name() != quester_zone
+                ):
+                    continue
+
+                hitter.quest_party_battle_rescue_active = True
+                hitter.quest_party_battle_rescue_at = loop.time()
+                saved_original_position = False
+                recovery_join_started = False
+                try:
+                    logger.info(
+                        f"打手 {hitter.title} 未进入 {quester.title} 的战斗，"
+                        "正在执行入战恢复。"
+                    )
+                    original_position = await hitter.body.position()
+                    if hitter.process_id not in original_client_locations:
+                        original_client_locations[hitter.process_id] = original_position
+                        saved_original_position = True
+                    await hitter.teleport(XYZ(0.0, 0.0, -3000.0))
+                    await hitter.send_key(key=Keycode.A, seconds=0.25)
+                    await hitter.send_key(key=Keycode.D, seconds=0.25)
+
+                    if await quester.in_battle() and not await hitter.in_battle():
+                        hitter.entity_detect_combat_status = True
+                        hitter.just_entered_combat = time.time()
+                        hitter.client_being_helped = quester
+                        recovery_join_started = True
+                        if hitter not in quester.helper_clients:
+                            quester.helper_clients.append(hitter)
+
+                    # Always leave the recovery coordinate again, even if the
+                    # battle happened to end during the A/D movement.
+                    if not await hitter.in_battle():
+                        await hitter.teleport(await quester.body.position())
+
+                    if recovery_join_started:
+                        entry_deadline = loop.time() + 3.0
+                        while (
+                            loop.time() < entry_deadline
+                            and await quester.in_battle()
+                            and not await hitter.in_battle()
+                        ):
+                            await asyncio.sleep(0.25)
+
+                        if not await hitter.in_battle():
+                            hitter.just_entered_combat = None
+                            hitter.entity_detect_combat_status = False
+                            hitter.client_being_helped = None
+                            if hitter in quester.helper_clients:
+                                quester.helper_clients.remove(hitter)
+                            if saved_original_position:
+                                original_client_locations.pop(hitter.process_id, None)
+                            logger.warning(
+                                f"打手 {hitter.title} 本次入战恢复未进入战斗，"
+                                "稍后将再次尝试。"
+                            )
+                    elif saved_original_position:
+                        original_client_locations.pop(hitter.process_id, None)
+                except asyncio.CancelledError:
+                    hitter.just_entered_combat = None
+                    hitter.entity_detect_combat_status = False
+                    hitter.client_being_helped = None
+                    if hitter in quester.helper_clients:
+                        quester.helper_clients.remove(hitter)
+                    try:
+                        if not await hitter.in_battle():
+                            await asyncio.shield(
+                                hitter.teleport(await quester.body.position())
+                            )
+                    except Exception:
+                        pass
+                    finally:
+                        if saved_original_position:
+                            original_client_locations.pop(hitter.process_id, None)
+                    raise
+                except Exception as exc:
+                    hitter.just_entered_combat = None
+                    hitter.entity_detect_combat_status = False
+                    hitter.client_being_helped = None
+                    if hitter in quester.helper_clients:
+                        quester.helper_clients.remove(hitter)
+                    try:
+                        if not await hitter.in_battle():
+                            await hitter.teleport(await quester.body.position())
+                    except Exception:
+                        logger.debug(f"打手 {hitter.title} 暂时无法离开入战恢复坐标。")
+                    if saved_original_position:
+                        original_client_locations.pop(hitter.process_id, None)
+                    logger.warning(
+                        f"打手 {hitter.title} 入战恢复暂未成功，将稍后重试：{exc}"
+                    )
+                finally:
+                    hitter.quest_party_battle_rescue_active = False
+
+        async def detect_combat(p: Client):
+            global original_client_locations
+            sprinter = SprintyClient(p)
+
+            safe_distance = 620
+            while True:
+                await asyncio.sleep(0.5)
+
+                if p.questing_status:
+                    if getattr(p, "quest_party_battle_rescue_active", False):
+                        continue
+
+                    combat_group = combat_group_for(p)
+                    other_clients = [c for c in combat_group if c != p]
+                    if quest_party_enabled and p in current_quest_party().questers:
+                        await rescue_missing_party_hitters(p)
+                    if p.just_entered_combat is not None:
+                        # 5 seconds have passed since the client entered combat
+                        if time.time() >= (p.just_entered_combat + 7):
+                            # we are actually in combat
+                            if await p.in_battle():
+                                p.just_entered_combat = None
+                            # if we aren't in combat after 7 seconds, something went wrong - duel circle is likely not joinable
+                            else:
+                                # client_being_helped is None when you are the client that is being helped
+                                if p.client_being_helped is not None:
+                                    is_circle_joinable = await is_duel_circle_joinable(
+                                        p
+                                    )
+                                    # check_duel_circle_joinable = [asyncio.create_task(is_duel_circle_joinable(helper)) for helper in p.helper_clients]
+                                    # done, pending = await asyncio.wait(check_duel_circle_joinable)
+                                    #
+                                    # is_circle_joinable = True
+                                    # for d in done:
+                                    # 	is_circle_joinable = d.result()
+
+                                    if not is_circle_joinable:
+                                        p.client_being_helped.duel_circle_joinable = (
+                                            False
+                                        )
+                                        logger.debug(
+                                            "Client "
+                                            + p.client_being_helped.title
+                                            + " - "
+                                            + "Duel circle not joinable - teleports halted."
+                                        )
+                                        p.client_being_helped = None
+
+                    if p.just_entered_combat is None:
+                        if True:
+                            distance, duel_circle_xyz = (
+                                await nearest_duel_circle_distance_and_xyz(sprinter)
+                            )
+
+                            if distance is None:
+                                if p.entity_detect_combat_status:
+                                    p.just_left_combat = True
+                                else:
+                                    p.entity_detect_combat_status = False
+
+                            # When fully in combat (once running animation occurs and selection phase begins) clients in any battle order are ~600 away from the center of the duel circle
+                            # extra leeway on this allows clients to teleport more quickly to ensure that they arrive before the selection phase even starts
+                            elif distance < safe_distance:
+                                p.entity_detect_combat_status = True
+
+                                # original_client_locations = dict()
+                                all_fighting_clients = [p]
+
+                                # don't teleport clients to duel circles that are closed off, and don't teleport clients if they are in separate instances
+                                if p.duel_circle_joinable and not p.in_solo_zone:
+                                    p.helper_clients = []
+                                    none_in_solo_zone = True
+                                    all_already_in_battle = False
+                                    for c in other_clients:
+                                        client_is_hitter_client = False
+                                        if quest_party_enabled:
+                                            party = current_quest_party()
+                                            client_is_hitter_client = c in party.hitters
+                                            if client_is_hitter_client:
+                                                non_hitters = [
+                                                    member
+                                                    for member in combat_group
+                                                    if member not in party.hitters
+                                                ]
+                                                all_already_in_battle = all(
+                                                    member.entity_detect_combat_status
+                                                    for member in non_hitters
+                                                )
+                                                none_in_solo_zone = not any(
+                                                    member.in_solo_zone
+                                                    for member in combat_group
+                                                )
+                                        elif hitter_client is not None:
+                                            if hitter_client in c.title:
+                                                client_is_hitter_client = True
+                                                all_already_in_battle = True
+                                                for cl in walker.clients:
+                                                    if hitter_client not in cl.title:
+                                                        if (
+                                                            not cl.entity_detect_combat_status
+                                                        ):
+                                                            all_already_in_battle = (
+                                                                False
+                                                            )
+
+                                                        if cl.in_solo_zone:
+                                                            none_in_solo_zone = False
+
+                                        # if we are the hitter client, we've confirmed that we are the last to teleport, and no one is in a solo zone, or we are not the hitter client, then we can teleport
+                                        if (
+                                            client_is_hitter_client
+                                            and all_already_in_battle
+                                            and none_in_solo_zone
+                                        ) or not client_is_hitter_client:
+                                            if (
+                                                await is_free(c)
+                                                and not c.entity_detect_combat_status
+                                                and not c.invincible_combat_timer
+                                                and c.just_entered_combat is None
+                                            ):
+                                                # player_distance = calc_Distance(await c.body.position(), await p.body.position())
+                                                # print('player distance between [', c.title, '] and [', p.title, '] is: ', player_distance)
+
+                                                if quest_party_enabled:
+                                                    if (
+                                                        all_already_in_battle
+                                                        and client_is_hitter_client
+                                                    ):
+                                                        await asyncio.sleep(1.0)
+                                                elif hitter_client is not None:
+                                                    if (
+                                                        all_already_in_battle
+                                                        and hitter_client in c.title
+                                                    ):
+                                                        # slight delay to ensure hitter makes it to the circle last
+                                                        await asyncio.sleep(1.0)
+
+                                                if (
+                                                    await c.zone_name()
+                                                    == await p.zone_name()
+                                                ):
+                                                    if (
+                                                        not c.entity_detect_combat_status
+                                                    ):
+                                                        c.entity_detect_combat_status = (
+                                                            True
+                                                        )
+                                                        c.just_entered_combat = (
+                                                            time.time()
+                                                        )
+                                                        c.original_location_before_combat = (
+                                                            await c.body.position()
+                                                        )
+                                                        original_client_locations.update(
+                                                            {
+                                                                c.process_id: await c.body.position()
+                                                            }
+                                                        )
+                                                        c.client_being_helped = p
+                                                        if c not in p.helper_clients:
+                                                            p.helper_clients.append(c)
+                                                            all_fighting_clients.append(
+                                                                c
+                                                            )
+
+                                                        logger.debug(
+                                                            "Combat detected from client "
+                                                            + p.title
+                                                            + " - teleporting client "
+                                                            + c.title
+                                                        )
+                                                        try:
+                                                            await c.teleport(
+                                                                duel_circle_xyz
+                                                            )
+                                                            # just_entered_combat = True
+                                                        except ValueError:
+                                                            c.just_entered_combat = None
+                                                            pass
+                                helper_clients = []
+
+                            else:
+                                if p.entity_detect_combat_status:
+                                    p.just_left_combat = True
+                                else:
+                                    p.entity_detect_combat_status = False
+
+                            if p.just_left_combat and await is_free(p):
+                                p.just_left_combat = False
+                                await clear_post_combat_phase(p)
+                                # collect wisps, up to a certain number
+                                await collect_wisps_with_limit(p, limit=2)
+                                await asyncio.sleep(0.3)
+
+                                # return helper clients to their previous safe location
+                                if p.process_id in original_client_locations:
+                                    logger.debug(
+                                        "Client "
+                                        + p.title
+                                        + " - "
+                                        + "Returning to safe location. "
+                                    )
+
+                                    try:
+                                        await p.teleport(
+                                            original_client_locations.get(p.process_id)
+                                        )
+                                        original_client_locations.pop(p.process_id)
+                                    except ValueError:
+                                        print(traceback.print_exc())
+                                        p.original_location_before_combat = None
+
+                                # just_left_combat = False
+
+                                # Mark wizard as invincible, as clients can get stuck standing in the middle of another client's battle circle due to teleporting while invincibile
+                                logger.debug(
+                                    "Client "
+                                    + p.title
+                                    + " - "
+                                    + "Battle teleports off while invulnerable"
+                                )
+                                p.invincible_combat_timer = True
+                                p.entity_detect_combat_status = False
+                                p.duel_circle_joinable = True
+                                p.client_being_helped = None
+                                # p.just_entered_combat = None
+
+                                # Timer seems to be about 6.5 seconds to become draggable again
+                                await asyncio.sleep(6.5)
+                                logger.debug(
+                                    "Client "
+                                    + p.title
+                                    + " - "
+                                    + "Battle teleports re-enabled"
+                                )
+                                p.invincible_combat_timer = False
+
+        await asyncio.gather(*[detect_combat(p) for p in walker.clients])
+
+    async def sigil_loop(members=None):
+        # Auto sigil on a per client basis.
+        async def async_sigil(client: Client):
+            while True:
+                await asyncio.sleep(1)
+                if (
+                    client in walker.clients
+                    and client.sigil_status
+                    and not freecam_status
+                ):
+                    roster = walker.clients if members is None else members
+                    leader = (
+                        sigil_leader_pid
+                        if any(c.process_id == sigil_leader_pid for c in roster)
+                        else None
+                    )
+                    sigil = Sigil(client, roster, leader)
+                    await sigil.wait_for_sigil()
+
+        await gather_owned(
+            *[async_sigil(p) for p in (walker.clients if members is None else members)]
+        )
+
+    async def anti_afk_loop():
+        # anti AFK implementation on a per client basis.
+        if not anti_afk_status:
+            return
+
+        async def async_anti_afk(client: Client):
+            # await client.root_window.debug_print_ui_tree()
+            # print(await client.body.position())
+            while True:
+                global questing_task
+
+                await asyncio.sleep(0.1)
+                if not freecam_status:
+                    client_xyz = await client.body.position()
+                    await asyncio.sleep(350)
+                    client_xyz_2 = await client.body.position()
+                    distance_moved = calc_Distance(client_xyz, client_xyz_2)
+                    if (
+                        distance_moved < 5.0
+                        and not await client.in_battle()
+                        and not client.feeding_pet_status
+                        and not client.entity_detect_combat_status
+                        and not sigil_status
+                    ):
+                        logger.debug(
+                            f"Client {client.title} - AFK client detected, moving slightly."
+                        )
+                        await client.send_key(key=Keycode.A)
+                        await asyncio.sleep(0.1)
+                        await client.send_key(key=Keycode.D)
+
+        await asyncio.gather(*[async_anti_afk(p) for p in walker.clients])
+
+    # Track which window handles were launched by us, mapped to account nickname
+    launched_account_map: dict[int, str] = {}
+    # Apply each account's saved window configuration once per launched window.
+    window_config_applied: set[int] = set()
+    initial_setup_complete = False
+    # Handles explicitly released via UnhookClient — skip in continuous detection
+    released_handles: set[int] = set()
+    # Handles currently mid-hook (activate_hooks in progress)
+    _hooking_in_progress: set[int] = set()
+
+    def _mask_uid(uid) -> str:
+        s = str(uid)
+        return "****" if len(s) <= 4 else "*" * (len(s) - 4) + s[-4:]
+
+    def _kill_process_by_handle(handle):
+        """Terminate the OS process behind a window handle."""
+        try:
+            pid = utils.get_pid_from_handle(handle)
+            if pid:
+                PROCESS_TERMINATE = 0x0001
+                h_proc = ctypes.windll.kernel32.OpenProcess(
+                    PROCESS_TERMINATE, False, pid
+                )
+                if h_proc:
+                    ctypes.windll.kernel32.TerminateProcess(h_proc, 1)
+                    ctypes.windll.kernel32.CloseHandle(h_proc)
+        except Exception as e:
+            logger.error(f"Failed to kill process for handle {handle}: {e}")
+
+    def _build_hooked_clients_info():
+        # Prune stale entries for handles whose windows no longer exist
+        all_handles = set(get_all_wizard_handles())
+        stale = [h for h in launched_account_map if h not in all_handles]
+        for h in stale:
+            launched_account_map.pop(h)
+            _hooking_in_progress.discard(h)
+            window_config_applied.discard(h)
+            client_resizing_manager.drop_keep_alive(h)
+
+        hooked = []
+        managed_accounts = set(launched_account_map.values())
+        for c in walker.clients:
+            nick = launched_account_map.get(c.window_handle)
+            if not nick:
+                gid = getattr(c, "player_gid", None)
+                if gid:
+                    nick = wizlaunch.get_nickname_by_gid(gid)
+            c.account_nick = nick
+            hooked.append(
+                {
+                    "title": c.title,
+                    "handle": c.window_handle,
+                    "account_nick": nick,
+                    "stable_id": stable_client_identity(c),
+                }
+            )
+            # Also detect accounts via player_gid for manually-hooked clients
+            if not nick:
+                gid = getattr(c, "player_gid", None)
+                if gid:
+                    vault_nick = wizlaunch.get_nickname_by_gid(gid)
+                    if vault_nick:
+                        managed_accounts.add(vault_nick)
+        # Unmanaged = running wizard handles not currently managed
+        managed = set(walker._managed_handles)
+        unmanaged = sorted(all_handles - managed)
+        return {
+            "hooked": hooked,
+            "unmanaged": unmanaged,
+            "managed_accounts": sorted(managed_accounts),
+            "hooking": sorted(_hooking_in_progress),
+        }
+
+    def _send_hooked_clients_update():
+        gui_send_queue.put(
+            xuanshu_gui.GUICommand(
+                xuanshu_gui.GUICommandType.UpdateHookedClients,
+                _build_hooked_clients_info(),
+            )
+        )
+
+    async def _init_client_attrs(client):
+        """Initialize all per-client attributes. Called once per client after hooking."""
+        client_speeds[client.process_id] = await client.client_object.speed_multiplier()
+        client.combat_status = False
+        client.questing_status = False
+        client.sigil_status = False
+        client.auto_pet_status = False
+        client.feeding_pet_status = False
+        client.use_team_up = use_team_up
+        client.dance_hook_status = False
+        client.entity_detect_combat_status = False
+        client.invincible_combat_timer = False
+        client.just_entered_combat = None
+        client.just_left_combat = False
+        client.helper_clients = []
+        client.client_being_helped = None
+        client.original_location_before_combat = None
+        client.duel_circle_joinable = True
+        client.in_solo_zone = False
+        client.quest_party_probe_pending = False
+        client.quest_party_solo_gear_active = False
+        client.quest_party_observed_zone = None
+        client.quest_party_quest_worker_zone = None
+        client.quest_party_hitters = []
+        client.quest_party_status_session = None
+        client.quest_party_quest_worker_task = None
+        client.quest_party_quest_worker_restart_requested = False
+        client.quest_party_battle_started_at = None
+        client.quest_party_battle_rescue_active = False
+        client.quest_party_battle_rescue_at = 0.0
+        client.post_combat_movement_active = False
+        client.post_combat_movement_at = 0.0
+        client.wizard_name = None
+        client.character_level = await client.stats.reference_level()
+        client.discard_duplicate_cards = discard_duplicate_cards
+        client.kill_minions_first = kill_minions_first
+        client.automatic_team_based_combat = automatic_team_based_combat
+        client.latest_drops = ""
+        client_title_key = str(client.title).casefold()
+        if client_title_key in combat_playstyle_overrides:
+            client.combat_config = combat_playstyle_overrides[client_title_key]
+        elif active_combat_playstyle is None:
+            client.combat_config = default_config
+        else:
+            current_clients = resolve_bot_clients(walker.clients, None)
+            combat_configs = delegate_combat_configs(
+                active_combat_playstyle, max(len(current_clients), 1)
+            )
+            try:
+                client_index = current_clients.index(client)
+            except ValueError:
+                client_index = 0
+            client.combat_config = combat_configs.get(client_index, default_config)
+        client.use_potions = use_potions
+        client.buy_potions = buy_potions
+        client.client_to_follow = client_to_follow
+        client.account_nick = launched_account_map.get(client.window_handle)
+
+        # Resolve vault nickname via account-level user_id
+        try:
+            uid = await client.game_client.user_id()
+            logger.debug(
+                f"[GID] _init_client_attrs '{client.title}': user_id={_mask_uid(uid)}"
+            )
+            if uid and uid != 0:
+                client.player_gid = uid
+                vault_nick = wizlaunch.get_nickname_by_gid(uid)
+                if vault_nick and client.window_handle not in launched_account_map:
+                    launched_account_map[client.window_handle] = vault_nick
+                nick = launched_account_map.get(client.window_handle)
+                if nick:
+                    client.account_nick = nick
+                    wizlaunch.update_player_gid(nick, uid)
+                    logger.debug(
+                        f"[GID] Saved user_id {_mask_uid(uid)} for vault account '{nick}'"
+                    )
+            else:
+                client.player_gid = None
+                logger.debug(
+                    f"[GID] _init_client_attrs '{client.title}': user_id is 0, deferring"
+                )
+        except Exception as e:
+            client.player_gid = None
+            logger.debug(f"[GID] _init_client_attrs '{client.title}': exception {e}")
+
+        # Set follower/leader statuses for auto questing/sigil
+        if client_to_follow and client_to_follow in client.title:
+            global sigil_leader_pid
+            sigil_leader_pid = client.process_id
+        if client_to_boost and client_to_boost in client.title:
+            global questing_leader_pid
+            questing_leader_pid = client.process_id
+
+    async def _relaunch_managed_client(
+        handle: int, nickname: str, preserved_title: str | None = None
+    ) -> Client:
+        """Relaunch one vault account, hook it, and preserve its client slot."""
+        from src.ibao_runtime import launch_for_recovery, complete_before_cancel
+        old_client = next(
+            (c for c in walker.clients if c.window_handle == handle), None
+        )
+        old_index = (
+            walker.clients.index(old_client)
+            if old_client in walker.clients
+            else len(walker.clients)
+        )
+        if preserved_title is None and old_client is not None:
+            preserved_title = str(old_client.title)
+
+        await client_resizing_manager.teardown_client(handle)
+        window_config_applied.discard(handle)
+        if old_client is not None:
+            try:
+                async with asyncio.timeout(10):
+                    await complete_before_cancel(asyncio.create_task(old_client.close()))
+            except Exception:
+                pass
+            finally:
+                if handle in walker._managed_handles:
+                    walker._managed_handles.remove(handle)
+                if old_client in walker.clients:
+                    walker.clients.remove(old_client)
+                released_handles.add(handle)
+                _send_hooked_clients_update()
+        launched_account_map.pop(handle, None)
+        _hooking_in_progress.discard(handle)
+        _kill_process_by_handle(handle)
+        for _ in range(50):
+            if handle not in get_all_wizard_handles():
+                break
+            await asyncio.sleep(0.1)
+        else:
+            raise RuntimeError("原客户端未能关闭，已取消自动登录以避免重复启动")
+        released_handles.discard(handle)
+        logger.info(
+            f"Killed client for relaunch (handle {handle}, account '{nickname}')."
+        )
+        _send_hooked_clients_update()
+
+        game_path = str(utils.get_wiz_install())
+        await asyncio.sleep(1)
+        def release_cancelled_launch(new_handle):
+            # The native call has finished. Do not hook or click Play after a
+            # stop; keep this exact newly launched window available to the user.
+            launched_account_map[new_handle] = nickname
+            released_handles.add(new_handle)
+            _send_hooked_clients_update()
+
+        new_handle = await launch_for_recovery(
+            wizlaunch.launch_instance, nickname, game_path, release_cancelled_launch
+        )
+        launched_account_map[new_handle] = nickname
+        released_handles.discard(new_handle)
+        if new_handle not in walker._managed_handles:
+            walker._managed_handles.append(new_handle)
+
+        new_client = walker.client_cls(new_handle)
+        insert_at = min(old_index, len(walker.clients))
+        walker.clients.insert(insert_at, new_client)
+        if preserved_title:
+            new_client.title = preserved_title
+        else:
+            used_numbers = {
+                int(c.title[1:])
+                for c in walker.clients
+                if c is not new_client
+                and str(c.title).startswith("p")
+                and str(c.title)[1:].isdigit()
+            }
+            number = 1
+            while number in used_numbers:
+                number += 1
+            new_client.title = f"p{number}"
+
+        _hooking_in_progress.add(new_handle)
+        _send_hooked_clients_update()
+        config_task = None
+        if client_resizing and new_handle not in window_config_applied:
+            window_config_applied.add(new_handle)
+            config_task = asyncio.create_task(
+                _apply_account_window_config(new_client, new_handle, nickname)
+            )
+        initialized = False
+        replacement_released = False
+        async def release_replacement():
+            nonlocal replacement_released
+            if replacement_released:
+                return
+            replacement_released = True
+            try:
+                await new_client.close()
+            except Exception as exc:
+                logger.warning('ibao 停止时释放新客户端 Hook 失败：{}', exc)
+            finally:
+                if new_handle in walker._managed_handles:
+                    walker._managed_handles.remove(new_handle)
+                if new_client in walker.clients:
+                    walker.clients.remove(new_client)
+                released_handles.add(new_handle)
+        try:
+            from src.ibao_runtime import prepare_restarted_client
+
+            logger.info("ibao 重启后等待角色选择界面，必要时发送 ESC")
+            try:
+                await prepare_restarted_client(new_client)
+            except wizwalker.errors.HookAlreadyActivated:
+                pass
+            await _init_client_attrs(new_client)
+            initialized = True
+        finally:
+            async def finish_replacement():
+                if config_task is not None:
+                    if not config_task.done():
+                        config_task.cancel()
+                    await asyncio.gather(config_task, return_exceptions=True)
+                if not initialized:
+                    # Also runs for cancellation inside character preparation
+                    # or attribute setup. No UI may report stopped beforehand.
+                    await release_replacement()
+                _hooking_in_progress.discard(new_handle)
+                _send_hooked_clients_update()
+            try:
+                await complete_before_cancel(asyncio.create_task(finish_replacement()))
+            except asyncio.CancelledError:
+                # Stop can arrive after initialization but before ownership is
+                # returned to the supervisor. That replacement is ours too.
+                await complete_before_cancel(asyncio.create_task(release_replacement()))
+                _send_hooked_clients_update()
+                raise
+
+        logger.info(
+            f"Relaunched, logged in, and hooked '{nickname}' as {new_client.title}."
+        )
+        return new_client
+
+    async def _recover_ibao_client(client: Client, _settings: dict) -> Client:
+        """Resolve the saved account before replacing an inactive ibao client."""
+        handle = client.window_handle
+        nickname = launched_account_map.get(handle) or getattr(
+            client, "account_nick", None
+        )
+        if not nickname:
+            player_gid = getattr(client, "player_gid", None)
+            if player_gid:
+                nickname = wizlaunch.get_nickname_by_gid(player_gid)
+        if not nickname:
+            raise RuntimeError(
+                f"{client.title} 没有关联玄枢账号库，无法自动登录；"
+                "请先从客户端管理启动该账号"
+            )
+
+        preserved_title = str(client.title)
+        logger.warning(f"ibao {preserved_title} 正在重启账号 '{nickname}' 并恢复采集。")
+        new_client = await _relaunch_managed_client(
+            handle, nickname, preserved_title=preserved_title
+        )
+        new_client.is_ibao = True
+        _restart_always_on_tasks()
+        _restart_active_toggle_tasks()
+        return new_client
+
+    ibao_groups.set_recovery_handler(_recover_ibao_client)
+
+    async def handle_gui():
+
+        async def handle_coord_error(error: wizwalker.errors.MemoryReadError):
+            if await is_visible_by_path(foreground_client, play_button_path):
+                return
+            if await foreground_client.is_loading():
+                return
+            if await foreground_client.zone_name() is None:
+                return
+            raise wizwalker.errors.MemoryReadError(
+                f"{error} (Occurred in zone: {current_zone})"
+            ) from error
+
+        async def _highlight_entity_loop(client, entity_info):
+            """Continuously update the highlight overlay at an entity's projected screen position."""
+            ex, ey, ez, entity_height = entity_info
+            half_w = entity_height * 0.3  # approximate half-width in world units
+            try:
+                while True:
+                    try:
+                        cam = await get_camera_state(client)
+                        if cam is not None:
+                            # Project feet and head to get screen-space bounding rect
+                            feet = project_point(cam, ex, ey, ez)
+                            head = project_point(cam, ex, ey, ez + entity_height)
+                            if feet is not None and head is not None:
+                                # Project a point offset to the right in world space for width
+                                rx = cam["right_x"]
+                                ry = cam["right_y"]
+                                center_mid = project_point(
+                                    cam, ex, ey, ez + entity_height * 0.5
+                                )
+                                side = project_point(
+                                    cam,
+                                    ex + rx * half_w,
+                                    ey + ry * half_w,
+                                    ez + entity_height * 0.5,
+                                )
+                                if center_mid is not None and side is not None:
+                                    screen_hw = abs(side[0] - center_mid[0])
+                                else:
+                                    # Fallback: width proportional to height
+                                    screen_hw = abs(head[1] - feet[1]) * 0.3
+                                screen_hw = max(screen_hw, 10)  # minimum width
+                                x1 = (
+                                    int(center_mid[0] - screen_hw)
+                                    if center_mid
+                                    else int(feet[0] - screen_hw)
+                                )
+                                x2 = (
+                                    int(center_mid[0] + screen_hw)
+                                    if center_mid
+                                    else int(feet[0] + screen_hw)
+                                )
+                                y1 = min(head[1], feet[1])
+                                y2 = max(head[1], feet[1])
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateHighlightBox,
+                                        (client.window_handle, x1, y1, x2, y2),
+                                    )
+                                )
+                            elif feet is not None:
+                                # Head behind camera - just show small box at feet
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateHighlightBox,
+                                        (
+                                            client.window_handle,
+                                            feet[0] - 30,
+                                            feet[1] - 60,
+                                            feet[0] + 30,
+                                            feet[1],
+                                        ),
+                                    )
+                                )
+                            else:
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateHighlightBox,
+                                        None,
+                                    )
+                                )
+                        else:
+                            gui_send_queue.put(
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateHighlightBox, None
+                                )
+                            )
+                    except wizwalker.errors.MemoryReadError:
+                        pass
+                    except Exception as e:
+                        logger.debug(f"Highlight loop error: {e}")
+                    await asyncio.sleep(0.033)
+            except asyncio.CancelledError:
+                gui_send_queue.put(
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateHighlightBox, None
+                    )
+                )
+                return
+
+        async def _highlight_ui_window_loop(client, name_path):
+            """Continuously update the highlight overlay at a UI window's screen position."""
+            try:
+                while True:
+                    try:
+                        window = await get_window_from_path(
+                            client.root_window, name_path
+                        )
+                        if window and window is not False:
+                            rect = await window.scale_to_client()
+                            gui_send_queue.put(
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateHighlightBox,
+                                    (
+                                        client.window_handle,
+                                        rect.x1,
+                                        rect.y1,
+                                        rect.x2,
+                                        rect.y2,
+                                    ),
+                                )
+                            )
+                        else:
+                            gui_send_queue.put(
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateHighlightBox, None
+                                )
+                            )
+                    except wizwalker.errors.MemoryReadError:
+                        pass
+                    except Exception as e:
+                        logger.debug(f"UI highlight loop error: {e}")
+                    await asyncio.sleep(0.033)
+            except asyncio.CancelledError:
+                gui_send_queue.put(
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateHighlightBox, None
+                    )
+                )
+                return
+
+        async def _entity_stream_loop(client):
+            """Continuously fetch entity list and send to GUI, sorted by distance."""
+            try:
+                while True:
+                    try:
+                        sprinter = SprintyClient(client)
+                        entities = await sprinter.get_base_entity_list()
+                        player_pos = await client.body.position()
+                        entity_data = []
+                        for entity in entities:
+                            entity_pos = await entity.location()
+                            entity_name = await entity.object_name()
+                            gid = await entity.global_id_full()
+                            entity_height = 170.0
+                            try:
+                                body = await entity.actor_body()
+                                if body is not None:
+                                    h = await body.height()
+                                    s = await body.scale()
+                                    if h > 0:
+                                        entity_height = h * s
+                            except Exception:
+                                pass
+                            dx = entity_pos.x - player_pos.x
+                            dy = entity_pos.y - player_pos.y
+                            dz = entity_pos.z - player_pos.z
+                            distance = (dx * dx + dy * dy + dz * dz) ** 0.5
+                            display = f"{entity_name} (dist: {trunc(distance, 1)}) - XYZ({trunc(entity_pos.x, 3)}, {trunc(entity_pos.y, 3)}, {trunc(entity_pos.z, 3)})"
+                            entity_data.append(
+                                {
+                                    "name": entity_name,
+                                    "x": entity_pos.x,
+                                    "y": entity_pos.y,
+                                    "z": entity_pos.z,
+                                    "height": entity_height,
+                                    "gid": 0 if entity_name == "Player Object" else gid,
+                                    "distance": distance,
+                                    "display": display,
+                                }
+                            )
+                        entity_data.sort(key=lambda e: e["distance"])
+                        gui_send_queue.put(
+                            xuanshu_gui.GUICommand(
+                                xuanshu_gui.GUICommandType.UpdateEntityListData,
+                                entity_data,
+                            )
+                        )
+                    except wizwalker.errors.MemoryReadError:
+                        pass
+                    except Exception as e:
+                        logger.debug(f"Entity stream error: {e}")
+                    await asyncio.sleep(1.0)
+            except asyncio.CancelledError:
+                return
+
+        # GUI is started on the main thread; queues are set up before main() runs
+        global gui_send_queue
+        global bot_tasks
+        global flythrough_task
+        global gui_thread
+        global recv_queue
+        global combat_task
+        global dialogue_task
+        global sigil_task
+        global questing_task
+        global questing_status
+        global speed_task
+        global auto_pet_task
+        global auto_fish_task
+        global highlight_task
+        global entity_stream_task
+        global client_resizing
+        global active_combat_playstyle
+        global combat_playstyle_overrides
+        enemy_stats = []
+        current_pos = None
+        current_rotation = None
+
+        def send_bot_groups_update():
+            groups = [
+                list(key)
+                for key, task in bot_tasks.items()
+                if task is not None and not task.done()
+            ]
+            gui_send_queue.put(
+                xuanshu_gui.GUICommand(
+                    xuanshu_gui.GUICommandType.UpdateWindow,
+                    ("BotGroups", groups),
+                )
+            )
+            gui_send_queue.put(
+                xuanshu_gui.GUICommand(
+                    xuanshu_gui.GUICommandType.UpdateWindow,
+                    ("BotStatus", "Enabled" if groups else "Disabled"),
+                )
+            )
+
+        # Pause/resume state for client disconnect resilience
+        paused_task_names = None
+        previous_client_count = None
+        # Track total wizard handle count to detect when unmanaged clients appear/disappear
+        last_known_handle_count = 0
+
+        while True:
+            if walker.clients and foreground_client:
+                try:
+                    current_zone = await foreground_client.zone_name()
+                    if current_zone and not await foreground_client.is_loading():
+                        if await foreground_client.game_client.is_freecam():
+                            camera = (
+                                await foreground_client.game_client.free_camera_controller()
+                            )
+                            current_pos = await camera.position()
+                            current_rotation: Orient = await camera.orientation()
+                            current_pos.x = trunc(current_pos.x, 3)
+                            current_pos.y = trunc(current_pos.y, 3)
+                            current_pos.z = trunc(current_pos.z, 3)
+                            current_rotation.yaw = trunc(current_rotation.yaw, 3)
+                            current_rotation.pitch = trunc(current_rotation.pitch, 3)
+                            current_rotation.roll = trunc(current_rotation.roll, 3)
+                        else:
+                            if parent := await foreground_client.client_object.parent():
+                                if await parent.object_name() == "Player Object":
+                                    children = await parent.children()
+                                    for pet_object in children:
+                                        current_pos = await pet_object.location()
+                                        current_rotation = (
+                                            await pet_object.orientation()
+                                        )
+                                else:
+                                    current_pos: XYZ = (
+                                        await foreground_client.body.position()
+                                    )
+                                    current_rotation: Orient = (
+                                        await foreground_client.body.orientation()
+                                    )
+                                    current_pos.x = trunc(current_pos.x, 3)
+                                    current_pos.y = trunc(current_pos.y, 3)
+                                    current_pos.z = trunc(current_pos.z, 3)
+                                    current_rotation.yaw = trunc(
+                                        current_rotation.yaw, 3
+                                    )
+                                    current_rotation.pitch = trunc(
+                                        current_rotation.pitch, 3
+                                    )
+                                    current_rotation.roll = trunc(
+                                        current_rotation.roll, 3
+                                    )
+                    else:
+                        current_pos: XYZ = XYZ(0, 0, 0)
+                        current_rotation: Orient = Orient(0, 0, 0)
+
+                    gui_send_queue.put(
+                        xuanshu_gui.GUICommand(
+                            xuanshu_gui.GUICommandType.UpdateWindow,
+                            ("Title", f"Client: {foreground_client.title}"),
+                        )
+                    )
+                    gui_send_queue.put(
+                        xuanshu_gui.GUICommand(
+                            xuanshu_gui.GUICommandType.UpdateWindow,
+                            ("Zone", f"Zone: {current_zone}"),
+                        )
+                    )
+                    gui_send_queue.put(
+                        xuanshu_gui.GUICommand(
+                            xuanshu_gui.GUICommandType.UpdateWindow,
+                            (
+                                "xyz",
+                                "Position (XYZ): "
+                                f"{_compact_coordinate(current_pos.x)}, "
+                                f"{_compact_coordinate(current_pos.y)}, "
+                                f"{_compact_coordinate(current_pos.z)}",
+                            ),
+                        )
+                    )
+                    gui_send_queue.put(
+                        xuanshu_gui.GUICommand(
+                            xuanshu_gui.GUICommandType.UpdateWindow,
+                            (
+                                "pry",
+                                "Orientation (PRY): "
+                                f"{_compact_coordinate(current_rotation.pitch)}, "
+                                f"{_compact_coordinate(current_rotation.roll)}, "
+                                f"{_compact_coordinate(current_rotation.yaw)}",
+                            ),
+                        )
+                    )
+                except Exception:
+                    # Client process likely closed — remove dead clients, keep title gaps
+                    count_before = len(walker.clients)
+                    dead = walker.remove_dead_clients()
+                    if dead:
+                        # Clean up managed handles so get_new_clients() can detect relaunched clients
+                        for c in dead:
+                            if c.window_handle in walker._managed_handles:
+                                walker._managed_handles.remove(c.window_handle)
+                            launched_account_map.pop(c.window_handle, None)
+                            _hooking_in_progress.discard(c.window_handle)
+                            logger.info(f"Client '{c.title}' disconnected.")
+                        _send_hooked_clients_update()
+
+                        # Record which tasks were active, then cancel them all
+                        active_tasks = set()
+                        task_vars = {
+                            "combat": combat_task,
+                            "dialogue": dialogue_task,
+                            "sigil": sigil_task,
+                            "questing": questing_task,
+                            "speed": speed_task,
+                            "auto_pet": auto_pet_task,
+                            "auto_fish": auto_fish_task,
+                        }
+                        for name, task in task_vars.items():
+                            if task is not None and not task.cancelled():
+                                active_tasks.add(name)
+                                task.cancel()
+
+                        dead_titles = [str(client.title) for client in dead]
+                        interrupted_bot_groups = overlapping_bot_groups(
+                            bot_tasks.keys(), dead_titles
+                        )
+                        if interrupted_bot_groups:
+                            active_tasks.add("bot")
+                            for key in interrupted_bot_groups:
+                                task = bot_tasks.pop(key, None)
+                                if task is not None and not task.done():
+                                    task.cancel()
+                            send_bot_groups_update()
+
+                        if "combat" in active_tasks:
+                            combat_task = None
+                        if "dialogue" in active_tasks:
+                            dialogue_task = None
+                        if "sigil" in active_tasks:
+                            sigil_task = None
+                        if "questing" in active_tasks:
+                            questing_task = None
+                        if "speed" in active_tasks:
+                            speed_task = None
+                        if "auto_pet" in active_tasks:
+                            auto_pet_task = None
+                        if "auto_fish" in active_tasks:
+                            auto_fish_task = None
+
+                        # Reset per-client status flags on remaining alive clients
+                        for c in walker.clients:
+                            c.combat_status = False
+                            c.sigil_status = False
+                            c.questing_status = False
+                            c.feeding_pet_status = False
+                            c.is_fishing = False
+                            c.entity_detect_combat_status = False
+
+                        if active_tasks:
+                            previous_client_count = count_before
+                            paused_task_names = active_tasks
+                            logger.info(
+                                f"Client(s) disconnected. Bot tasks paused. Waiting for client count to be restored ({len(walker.clients)}/{previous_client_count})."
+                            )
+                            if "bot" in active_tasks:
+                                logger.warning(
+                                    "Bot script was interrupted and cannot be auto-resumed. Please restart it manually."
+                                )
+
+                        if not walker.clients:
+                            gui_send_queue.put(
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateWindow,
+                                    ("Title", f"Client: None"),
+                                )
+                            )
+                            gui_send_queue.put(
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateWindow,
+                                    ("Zone", f"Zone: "),
+                                )
+                            )
+                            gui_send_queue.put(
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateWindow,
+                                    ("xyz", f"Position (XYZ): "),
+                                )
+                            )
+                            gui_send_queue.put(
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateWindow,
+                                    ("pry", f"Orientation (PRY): "),
+                                )
+                            )
+                    await asyncio.sleep(0.5)
+            elif not walker.clients:
+                await asyncio.sleep(0.1)
+
+            # Retry user_id resolution for hooked clients that don't have one yet
+            if initial_setup_complete and walker.clients:
+                for c in walker.clients:
+                    if getattr(c, "player_gid", None) is None:
+                        try:
+                            uid = await c.game_client.user_id()
+                            if uid and uid != 0:
+                                logger.debug(
+                                    f"[GID] Retry resolved '{c.title}': user_id={_mask_uid(uid)}"
+                                )
+                                c.player_gid = uid
+                                vault_nick = wizlaunch.get_nickname_by_gid(uid)
+                                if (
+                                    vault_nick
+                                    and c.window_handle not in launched_account_map
+                                ):
+                                    launched_account_map[c.window_handle] = vault_nick
+                                    _send_hooked_clients_update()
+                                nick = launched_account_map.get(c.window_handle)
+                                if nick:
+                                    wizlaunch.update_player_gid(nick, uid)
+                                    logger.debug(
+                                        f"[GID] Retry saved user_id {_mask_uid(uid)} for '{nick}'"
+                                    )
+                                    _send_hooked_clients_update()
+                            else:
+                                logger.debug(
+                                    f"[GID] Retry '{c.title}': user_id still 0"
+                                )
+                        except Exception as e:
+                            logger.debug(f"[GID] Retry '{c.title}': exception {e}")
+
+            # Continuous detection — only auto-hook vault-launched clients
+            if initial_setup_complete and not paused_task_names:
+                all_handles = set(get_all_wizard_handles())
+                managed = set(walker._managed_handles)
+                unmanaged = all_handles - managed - released_handles
+
+                # Auto-hook any unmanaged handle that was launched via the vault (in launch order)
+                hooked_any = False
+                launch_order = [h for h in launched_account_map if h in unmanaged]
+                for handle in launch_order:
+                    walker._managed_handles.append(handle)
+                    nc = walker.client_cls(handle)
+                    walker.clients.append(nc)
+                    existing_nums = set()
+                    for c in walker.clients:
+                        if c.title.startswith("p") and c.title[1:].isdigit():
+                            existing_nums.add(int(c.title[1:]))
+                    num = 1
+                    while num in existing_nums:
+                        num += 1
+                    nc.title = f"p{num}"
+                    _hooking_in_progress.add(handle)
+                    _send_hooked_clients_update()
+                    nickname = launched_account_map.get(handle)
+                    if (
+                        client_resizing
+                        and nickname
+                        and handle not in window_config_applied
+                    ):
+                        window_config_applied.add(handle)
+                        # Window setup can spend a few seconds waiting for the
+                        # game's video manager; do not block detection of the
+                        # remaining account windows while it runs.
+                        asyncio.create_task(
+                            _apply_account_window_config(nc, handle, nickname)
+                        )
+                    try:
+                        await nc.activate_hooks()
+                        await _init_client_attrs(nc)
+                        logger.info(
+                            f"Auto-hooked vault-launched client '{nc.title}' ({launched_account_map[handle]})."
+                        )
+                        hooked_any = True
+                    except wizwalker.errors.HookAlreadyActivated:
+                        await _init_client_attrs(nc)
+                        logger.info(
+                            f"Auto-hooked vault-launched client '{nc.title}' ({launched_account_map[handle]}, already hooked)."
+                        )
+                        hooked_any = True
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to auto-hook vault-launched client (handle {handle}): {e}"
+                        )
+                        walker._managed_handles.remove(handle)
+                        walker.clients.remove(nc)
+                    finally:
+                        _hooking_in_progress.discard(handle)
+
+                if hooked_any:
+                    _send_hooked_clients_update()
+                    last_known_handle_count = len(get_all_wizard_handles())
+                    _restart_always_on_tasks()
+                    _restart_active_toggle_tasks()
+                else:
+                    # Check if handle count changed (wizard window opened/closed externally)
+                    current_handle_count = len(all_handles)
+                    if current_handle_count != last_known_handle_count:
+                        last_known_handle_count = current_handle_count
+                        _send_hooked_clients_update()
+
+            await ibao_groups.remove_missing()
+            await hotkey_groups.remove_missing()
+            # Poll for new clients when in paused state (waiting for reconnection)
+            if paused_task_names and len(walker.clients) < previous_client_count:
+                new_clients = walker.get_new_clients()
+                if new_clients:
+                    # Assign titles — fill gaps using the next available number
+                    existing_nums = set()
+                    for c in walker.clients:
+                        if c.title.startswith("p") and c.title[1:].isdigit():
+                            existing_nums.add(int(c.title[1:]))
+
+                    for nc in new_clients:
+                        num = 1
+                        while num in existing_nums:
+                            num += 1
+                        nc.title = f"p{num}"
+                        existing_nums.add(num)
+
+                    # Hook new clients individually
+                    for nc in new_clients:
+                        _hooking_in_progress.add(nc.window_handle)
+                        _send_hooked_clients_update()
+                        try:
+                            await nc.activate_hooks()
+                        except wizwalker.errors.HookAlreadyActivated:
+                            logger.debug(
+                                f"Client '{nc.title}' already hooked, skipping."
+                            )
+                        except Exception as e:
+                            logger.error(f"Failed to hook client '{nc.title}': {e}")
+                        finally:
+                            _hooking_in_progress.discard(nc.window_handle)
+                        await _init_client_attrs(nc)
+                        logger.info(f"New client '{nc.title}' hooked.")
+                    _send_hooked_clients_update()
+
+                    # Check if count restored
+                    if len(walker.clients) >= previous_client_count:
+                        # Re-enable tasks that were active before disconnect
+                        resumable = paused_task_names - {"bot"}
+                        for name in resumable:
+                            if name == "combat":
+                                for c in walker.clients:
+                                    c.combat_status = True
+                                combat_task = asyncio.create_task(
+                                    try_task_coro(combat_loop, walker.clients, True)
+                                )
+                            elif name == "dialogue":
+                                dialogue_task = asyncio.create_task(
+                                    try_task_coro(dialogue_loop, walker.clients, True)
+                                )
+                            elif name == "sigil":
+                                for c in walker.clients:
+                                    c.sigil_status = True
+                                sigil_task = asyncio.create_task(
+                                    try_task_coro(sigil_loop, walker.clients, True)
+                                )
+                            elif name == "questing":
+                                apply_questing_roles(True)
+                                questing_task = asyncio.create_task(
+                                    try_task_coro(questing_loop, walker.clients, True)
+                                )
+                            elif name == "speed":
+                                speed_task = asyncio.create_task(
+                                    try_task_coro(speed_switching, walker.clients)
+                                )
+                            elif name == "auto_pet":
+                                for c in walker.clients:
+                                    c.feeding_pet_status = True
+                                auto_pet_task = asyncio.create_task(
+                                    try_task_coro(auto_pet_loop, walker.clients, True)
+                                )
+                            elif name == "auto_fish":
+                                auto_fish_task = asyncio.create_task(
+                                    try_task_coro(auto_fish_loop, walker.clients, True)
+                                )
+
+                        previous_client_count = None
+                        paused_task_names = None
+                        _restart_always_on_tasks()
+                        logger.info("Client count restored. Resuming bot tasks.")
+
+            # Stuff sent by the window
+            try:
+                # Eat as much as the queue gives us. We will be freed by exception
+                while True:
+                    com = recv_queue.get_nowait()
+                    match com.com_type:
+                        case xuanshu_gui.GUICommandType.Close:
+                            if len(walker.clients) != 0:
+                                raise xuanshu_gui.ToolClosedException
+                            os._exit(
+                                0
+                            )  # "Fuck you, you're getting terminated homeboy" - Slack
+                        case xuanshu_gui.GUICommandType.AttemptedClose:
+                            if not walker.clients:
+                                os._exit(0)
+                            raise xuanshu_gui.ToolClosedException
+                        case xuanshu_gui.GUICommandType.ToggleHotkeyGroup:
+                            action = com.data.get("action")
+                            legacy_task = {
+                                "toggle_speed": speed_task,
+                                "toggle_combat": combat_task,
+                                "toggle_dialogue": dialogue_task,
+                                "toggle_sigil": sigil_task,
+                                "toggle_questing": questing_task,
+                                "toggle_auto_pet": auto_pet_task,
+                            }.get(action)
+                            legacy_active = (
+                                (legacy_task is not None and not legacy_task.done())
+                                or (
+                                    action == "toggle_auto_potion"
+                                    and auto_potion_status
+                                )
+                                or (
+                                    action == "toggle_dialogue_side_quests"
+                                    and side_quest_status
+                                )
+                                or (action == "toggle_freecam" and freecam_status)
+                            )
+                            if legacy_active:
+                                logger.warning(
+                                    "该功能正在按原有目标运行，请先停止后再启用分组。"
+                                )
+                                continue
+                            try:
+                                await hotkey_groups.toggle(
+                                    action, com.data.get("clients")
+                                )
+                            except ValueError as exc:
+                                logger.warning(str(exc))
+
+                        case xuanshu_gui.GUICommandType.ToggleOption:
+                            grouped_action = {
+                                GUIKeys.toggle_speedhack: "toggle_speed",
+                                GUIKeys.toggle_combat: "toggle_combat",
+                                GUIKeys.toggle_dialogue: "toggle_dialogue",
+                                GUIKeys.toggle_sigil: "toggle_sigil",
+                                GUIKeys.toggle_questing: "toggle_questing",
+                                GUIKeys.toggle_auto_pet: "toggle_auto_pet",
+                                GUIKeys.toggle_auto_potion: "toggle_auto_potion",
+                                GUIKeys.toggle_freecam: "toggle_freecam",
+                            }.get(com.data)
+                            if grouped_action and hotkey_groups.active(grouped_action):
+                                logger.warning(
+                                    "该功能有分组正在运行，请在相应分组中停止，或选择“全部客户端”停止所有组。"
+                                )
+                                continue
+                            if not walker.clients:
+                                logger.info(
+                                    "This GUI option requires hooks to be active, skipping."
+                                )
+                                continue
+                            match com.data:
+                                case GUIKeys.toggle_speedhack:
+                                    await toggle_speed_hotkey()
+                                case GUIKeys.toggle_combat:
+                                    await toggle_combat_hotkey()
+                                case GUIKeys.toggle_dialogue:
+                                    await toggle_dialogue_hotkey()
+                                case GUIKeys.toggle_sigil:
+                                    await toggle_sigil_hotkey()
+                                case GUIKeys.toggle_questing:
+                                    await toggle_questing_hotkey()
+                                case GUIKeys.toggle_auto_pet:
+                                    await toggle_auto_pet_hotkey()
+                                case GUIKeys.toggle_auto_potion:
+                                    await toggle_auto_potion_hotkey()
+                                case GUIKeys.toggle_auto_fish:
+                                    await toggle_auto_fish_hotkey()
+                                case GUIKeys.toggle_freecam:
+                                    await toggle_freecam_hotkey()
+                                # case 'Side Quests':
+                                # 	await toggle_side_quests()
+                                case GUIKeys.toggle_camera_collision:
+                                    if foreground_client:
+                                        camera: ElasticCameraController = (
+                                            await foreground_client.game_client.elastic_camera_controller()
+                                        )
+                                        collision_status = (
+                                            await camera.check_collisions()
+                                        )
+                                        collision_status ^= True
+                                        logger.debug(
+                                            f"Camera Collisions {bool_to_string(collision_status)}"
+                                        )
+                                        await camera.write_check_collisions(
+                                            collision_status
+                                        )
+                                case GUIKeys.toggle_show_expanded_logs:
+                                    gui_send_queue.put(
+                                        xuanshu_gui.GUICommand(
+                                            xuanshu_gui.GUICommandType.UpdateConsole
+                                        )
+                                    )
+                                case _:
+                                    logger.debug(f"Unknown window toggle: {com.data}")
+                        case xuanshu_gui.GUICommandType.Copy:
+                            if not walker.clients:
+                                logger.info(
+                                    "This GUI option requires hooks to be active, skipping."
+                                )
+                                continue
+                            match com.data:
+                                case GUIKeys.copy_zone:
+                                    logger.debug("Copied Zone")
+                                    pyperclip.copy(current_zone)
+                                case GUIKeys.copy_position:
+                                    logger.debug("Copied Position")
+                                    pyperclip.copy(
+                                        f"XYZ({current_pos.x}, {current_pos.y}, {current_pos.z})"
+                                    )
+                                case GUIKeys.copy_rotation:
+                                    logger.debug("Copied Rotation")
+                                    pyperclip.copy(
+                                        f"Orient({current_rotation.pitch}, {current_rotation.roll}, {current_rotation.yaw})"
+                                    )
+                                case GUIKeys.copy_entity_list:
+                                    if foreground_client:
+                                        logger.debug("Opening Entity List")
+                                        gui_send_queue.put(
+                                            xuanshu_gui.GUICommand(
+                                                xuanshu_gui.GUICommandType.ShowEntityListPopup
+                                            )
+                                        )
+                                case GUIKeys.copy_camera_position:
+                                    if foreground_client:
+                                        camera = (
+                                            await foreground_client.game_client.selected_camera_controller()
+                                        )
+                                        camera_pos = await camera.position()
+                                        logger.debug("Copied Selected Camera Position")
+                                        pyperclip.copy(
+                                            f"XYZ({camera_pos.x}, {camera_pos.y}, {camera_pos.z})"
+                                        )
+                                case GUIKeys.copy_camera_rotation:
+                                    if foreground_client:
+                                        camera = (
+                                            await foreground_client.game_client.selected_camera_controller()
+                                        )
+                                        camera_pitch, camera_roll, camera_yaw = (
+                                            await camera.orientation()
+                                        )
+                                        logger.debug("Copied Camera Rotations")
+                                        pyperclip.copy(
+                                            f"Orient({camera_pitch}, {camera_roll}, {camera_pitch})"
+                                        )
+                                case GUIKeys.copy_ui_tree:
+                                    if foreground_client:
+                                        foreground: Client = foreground_client
+                                        ui_tree = ""
+                                        ui_tree_texts = {}
+                                        ui_tree_windows = []
+
+                                        async def collect_node(
+                                            window: Window,
+                                            depth: int = 0,
+                                            depth_symbol: str = "-",
+                                        ):
+                                            name, type_name, children = (
+                                                await asyncio.gather(
+                                                    window.name(),
+                                                    window.maybe_read_type_name(),
+                                                    utils.wait_for_non_error(
+                                                        window.children
+                                                    ),
+                                                )
+                                            )
+                                            line = f"{depth_symbol * depth} [{name}] {type_name}"
+                                            child_results = await asyncio.gather(
+                                                *(
+                                                    collect_node(c, depth + 1)
+                                                    for c in children
+                                                )
+                                            )
+                                            return [(line, window)] + [
+                                                entry
+                                                for sub in child_results
+                                                for entry in sub
+                                            ]
+
+                                        ui_tree_windows = await collect_node(
+                                            foreground.root_window
+                                        )
+                                        ui_tree = (
+                                            "\n".join(
+                                                line for line, _ in ui_tree_windows
+                                            )
+                                            + "\n"
+                                        )
+
+                                        async def _safe_text(line, window):
+                                            try:
+                                                text = await window.maybe_text()
+                                                if text:
+                                                    ui_tree_texts[line] = text
+                                            except Exception:
+                                                pass
+
+                                        await asyncio.gather(
+                                            *(
+                                                _safe_text(l, w)
+                                                for l, w in ui_tree_windows
+                                            )
+                                        )
+                                        logger.debug(
+                                            f"Copied UI Tree for client {foreground.title}"
+                                        )
+                                        pyperclip.copy(ui_tree)
+                                        # with open('ui_tree.txt', 'w') as f:
+                                        # 	f.write(ui_tree)
+                                        if ui_tree:
+                                            logger.success("Available UI Paths:")
+                                            gui_send_queue.put(
+                                                xuanshu_gui.GUICommand(
+                                                    xuanshu_gui.GUICommandType.ShowUITreePopup,
+                                                    (ui_tree, ui_tree_texts),
+                                                )
+                                            )
+                                        else:
+                                            logger.error(
+                                                "Failed to load UI tree. Please try again."
+                                            )
+                                case GUIKeys.copy_stats:
+                                    if enemy_stats:
+                                        logger.debug("Copied Stats")
+                                        pyperclip.copy("\n".join(enemy_stats))
+                                    else:
+                                        logger.info(
+                                            "No stats are loaded. Select an enemy index corresponding to its position on the duel circle, then click the copy button."
+                                        )
+
+                                case GUIKeys.copy_logs:
+                                    gui_send_queue.put(
+                                        xuanshu_gui.GUICommand(
+                                            xuanshu_gui.GUICommandType.CopyConsole, None
+                                        )
+                                    )
+                                case _:
+                                    logger.debug(f"Unknown copy value: {com.data}")
+                        case xuanshu_gui.GUICommandType.Teleport:
+                            if not walker.clients:
+                                logger.info(
+                                    "This GUI option requires hooks to be active, skipping."
+                                )
+                                continue
+                            match com.data:
+                                case GUIKeys.hotkey_quest_tp:
+                                    await navmap_teleport_hotkey()
+                                case GUIKeys.mass_hotkey_mass_tp:
+                                    await mass_navmap_teleport_hotkey()
+                                case GUIKeys.hotkey_freecam_tp:
+                                    await tp_to_freecam_hotkey()
+                                case _:
+                                    logger.debug(f"Unknown teleport type: {com.data}")
+                        case xuanshu_gui.GUICommandType.CustomTeleport:
+                            if not walker.clients:
+                                logger.info(
+                                    "This GUI option requires hooks to be active, skipping."
+                                )
+                                continue
+                            if foreground_client:
+                                x_input = param_input(com.data["X"], current_pos.x)
+                                y_input = param_input(com.data["Y"], current_pos.y)
+                                z_input = param_input(com.data["Z"], current_pos.z)
+                                yaw_input = param_input(
+                                    com.data["Yaw"], current_rotation.yaw
+                                )
+                                custom_xyz = XYZ(x=x_input, y=y_input, z=z_input)
+                                logger.debug(
+                                    f"Teleporting client {foreground_client.title} to {custom_xyz}, yaw= {yaw_input}"
+                                )
+                                await foreground_client.teleport(custom_xyz)
+                                await foreground_client.body.write_yaw(yaw_input)
+                        case xuanshu_gui.GUICommandType.EntityTeleport:
+                            if not walker.clients:
+                                logger.info(
+                                    "This GUI option requires hooks to be active, skipping."
+                                )
+                                continue
+                            if foreground_client:
+                                sprinter = SprintyClient(foreground_client)
+                                gid_str = (
+                                    com.data.get("gid", "")
+                                    if isinstance(com.data, dict)
+                                    else ""
+                                )
+                                name_str = (
+                                    com.data.get("name", "")
+                                    if isinstance(com.data, dict)
+                                    else str(com.data)
+                                )
+                                target_entity = None
+                                if gid_str:
+                                    try:
+                                        target_gid = int(gid_str)
+                                        entities = await sprinter.get_base_entity_list()
+                                        for entity in entities:
+                                            if (
+                                                await entity.global_id_full()
+                                                == target_gid
+                                            ):
+                                                target_entity = entity
+                                                break
+                                    except (ValueError, TypeError):
+                                        logger.error(f"Invalid GID: {gid_str}")
+                                if target_entity is None and name_str:
+                                    entities = await sprinter.get_base_entities_with_vague_name(
+                                        name_str
+                                    )
+                                    if entities:
+                                        target_entity = (
+                                            await sprinter.find_closest_of_entities(
+                                                entities
+                                            )
+                                        )
+                                if target_entity:
+                                    entity_pos = await target_entity.location()
+                                    await foreground_client.teleport(entity_pos)
+                        case xuanshu_gui.GUICommandType.SelectEnemy:
+                            if not walker.clients:
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindowValues,
+                                        ("EnemyInput", []),
+                                    )
+                                )
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindowValues,
+                                        ("AllyInput", []),
+                                    )
+                                )
+                                continue
+                            if (
+                                foreground_client
+                                and await foreground_client.in_battle()
+                            ):
+                                (
+                                    ally_index,
+                                    enemy_index,
+                                    base_damage,
+                                    school_id,
+                                    crit_status,
+                                    force_school_status,
+                                    swapped,
+                                    view_side,
+                                ) = com.data
+                                if not base_damage:
+                                    base_damage = None
+                                else:
+                                    base_damage = int(base_damage)
+                                view_target = view_side == "enemy"
+                                result = await total_stats(
+                                    foreground_client,
+                                    ally_index,
+                                    enemy_index,
+                                    base_damage,
+                                    school_id,
+                                    crit_status,
+                                    force_school_status,
+                                    swapped=swapped,
+                                    view_target=view_target,
+                                )
+                                if result is None:
+                                    continue
+                                (
+                                    stat_lines,
+                                    ally_names,
+                                    enemy_names,
+                                    ally_i,
+                                    enemy_i,
+                                    school_name,
+                                    slot_info,
+                                ) = result
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
+                                        ("stat_viewer", stat_lines),
+                                    )
+                                )
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindowValues,
+                                        ("EnemyInput", enemy_names),
+                                    )
+                                )
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindowValues,
+                                        ("AllyInput", ally_names),
+                                    )
+                                )
+                                if enemy_i < len(enemy_names):
+                                    gui_send_queue.put(
+                                        xuanshu_gui.GUICommand(
+                                            xuanshu_gui.GUICommandType.UpdateWindow,
+                                            ("EnemyInput", enemy_names[enemy_i]),
+                                        )
+                                    )
+                                if ally_i < len(ally_names):
+                                    gui_send_queue.put(
+                                        xuanshu_gui.GUICommand(
+                                            xuanshu_gui.GUICommandType.UpdateWindow,
+                                            ("AllyInput", ally_names[ally_i]),
+                                        )
+                                    )
+                                # school_name not sent to dropdown — but sent as calc_school for readout
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
+                                        ("calc_school", school_name),
+                                    )
+                                )
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
+                                        ("slot_info", slot_info),
+                                    )
+                                )
+                            else:
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindowValues,
+                                        ("EnemyInput", []),
+                                    )
+                                )
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindowValues,
+                                        ("AllyInput", []),
+                                    )
+                                )
+                        case xuanshu_gui.GUICommandType.XYZSync:
+                            if not walker.clients:
+                                logger.info(
+                                    "This GUI option requires hooks to be active, skipping."
+                                )
+                                continue
+                            await xyz_sync_hotkey()
+                        case xuanshu_gui.GUICommandType.XPress:
+                            if not walker.clients:
+                                logger.info(
+                                    "This GUI option requires hooks to be active, skipping."
+                                )
+                                continue
+                            await x_press_hotkey()
+                        case xuanshu_gui.GUICommandType.FriendTeleport:
+                            if not walker.clients:
+                                logger.info(
+                                    "This GUI option requires hooks to be active, skipping."
+                                )
+                                continue
+                            await friend_teleport_sync_hotkey()
+                        case xuanshu_gui.GUICommandType.ToggleDialogueSideQuests:
+                            if hotkey_groups.active("toggle_dialogue_side_quests"):
+                                logger.warning("请先停止支线任务的快捷键分组。")
+                                continue
+                            if not walker.clients:
+                                logger.info(
+                                    "This GUI option requires hooks to be active, skipping."
+                                )
+                                continue
+                            await toggle_dialogue_side_quests_hotkey()
+                        case xuanshu_gui.GUICommandType.RebindHotkey:
+                            action_id, new_key, new_mods = com.data
+                            # Remove old binding from listener if active
+                            old_binding = _active_bindings.get(action_id)
+                            if old_binding:
+                                old_mods = ModifierKeys.NOREPEAT
+                                for m in old_binding.get("modifiers", []):
+                                    old_mods |= ModifierKeys[m]
+                                try:
+                                    await listener.remove_hotkey(
+                                        Keycode[old_binding["key"]], modifiers=old_mods
+                                    )
+                                except Exception:
+                                    pass
+                                del _active_bindings[action_id]
+                            # Register new binding
+                            if new_key:
+                                callback = (
+                                    _kill_tool_callback
+                                    if action_id == "kill_tool"
+                                    else _make_hotkey_callback(action_id)
+                                )
+                                if hotkey_status or action_id == "kill_tool":
+                                    mods = ModifierKeys.NOREPEAT
+                                    for m in new_mods:
+                                        mods |= ModifierKeys[m]
+                                    try:
+                                        await listener.add_hotkey(
+                                            Keycode[new_key], callback, modifiers=mods
+                                        )
+                                        _active_bindings[action_id] = {
+                                            "key": new_key,
+                                            "modifiers": new_mods,
+                                        }
+                                    except Exception as e:
+                                        logger.debug(
+                                            f"Failed to register rebound hotkey for {action_id}: {e}"
+                                        )
+                            else:
+                                pass  # settings already cleared by GUI side
+                            logger.debug(
+                                f"Hotkey rebound: {action_id} -> {new_key} {new_mods}"
+                            )
+                        case xuanshu_gui.GUICommandType.AnchorCam:
+                            if not walker.clients:
+                                logger.info(
+                                    "This GUI option requires hooks to be active, skipping."
+                                )
+                                continue
+                            if foreground_client:
+                                if freecam_status:
+                                    await toggle_freecam_hotkey()
+                                camera = (
+                                    await foreground_client.game_client.elastic_camera_controller()
+                                )
+                                sprinter = SprintyClient(foreground_client)
+                                gid_str = (
+                                    com.data.get("gid", "")
+                                    if isinstance(com.data, dict)
+                                    else ""
+                                )
+                                name_str = (
+                                    com.data.get("name", "")
+                                    if isinstance(com.data, dict)
+                                    else str(com.data)
+                                )
+                                target_entity = None
+                                if gid_str:
+                                    try:
+                                        target_gid = int(gid_str)
+                                        entities = await sprinter.get_base_entity_list()
+                                        for entity in entities:
+                                            if (
+                                                await entity.global_id_full()
+                                                == target_gid
+                                            ):
+                                                target_entity = entity
+                                                break
+                                    except (ValueError, TypeError):
+                                        logger.error(f"Invalid GID: {gid_str}")
+                                if target_entity is None and name_str:
+                                    entities = await sprinter.get_base_entities_with_vague_name(
+                                        name_str
+                                    )
+                                    if entities:
+                                        target_entity = (
+                                            await sprinter.find_closest_of_entities(
+                                                entities
+                                            )
+                                        )
+                                if target_entity:
+                                    entity_name = await target_entity.object_name()
+                                    logger.debug(
+                                        f"Anchoring camera to entity {entity_name}"
+                                    )
+                                    await camera.write_attached_client_object(
+                                        target_entity
+                                    )
+                        # case xuanshu_gui.GUICommandType.SetPetWorld:
+                        # 	if (com.data[1] is None):
+                        # 		logger.debug('Invalid pet world selected!')
+                        # 	else:
+                        # 		logger.debug(f'Setting Auto Pet World to {com.data[1]}')
+                        # 		assign_pet_level(com.data[1])
+                        case xuanshu_gui.GUICommandType.SetCamPosition:
+                            if not walker.clients:
+                                logger.info(
+                                    "This GUI option requires hooks to be active, skipping."
+                                )
+                                continue
+                            if foreground_client:
+                                if not freecam_status:
+                                    await toggle_freecam_hotkey()
+                                camera: DynamicCameraController = (
+                                    await foreground_client.game_client.selected_camera_controller()
+                                )
+                                camera_pos: XYZ = await camera.position()
+                                camera_pitch, camera_roll, camera_yaw = (
+                                    await camera.orientation()
+                                )
+                                x_input = param_input(com.data["X"], camera_pos.x)
+                                y_input = param_input(com.data["Y"], camera_pos.y)
+                                z_input = param_input(com.data["Z"], camera_pos.z)
+                                yaw_input = param_input(com.data["Yaw"], camera_yaw)
+                                roll_input = param_input(com.data["Roll"], camera_roll)
+                                pitch_input = param_input(
+                                    com.data["Pitch"], camera_pitch
+                                )
+                                input_pos = XYZ(x_input, y_input, z_input)
+                                logger.debug(
+                                    f"Teleporting Camera to {input_pos}, yaw={yaw_input}, roll={roll_input}, pitch={pitch_input}"
+                                )
+                                await camera.write_position(input_pos)
+                                await camera.update_orientation(
+                                    Orient(pitch_input, roll_input, yaw_input)
+                                )
+                        case xuanshu_gui.GUICommandType.SetCamDistance:
+                            if not walker.clients:
+                                logger.info(
+                                    "This GUI option requires hooks to be active, skipping."
+                                )
+                                continue
+                            if foreground_client:
+                                camera = (
+                                    await foreground_client.game_client.elastic_camera_controller()
+                                )
+                                current_zoom = await camera.distance()
+                                current_min = await camera.min_distance()
+                                current_max = await camera.max_distance()
+                                distance_input = param_input(
+                                    com.data["Distance"], current_zoom
+                                )
+                                min_input = param_input(com.data["Min"], current_min)
+                                max_input = param_input(com.data["Max"], current_max)
+                                logger.debug(
+                                    f"Setting camera distance to {distance_input}, min={min_input}, max={max_input}"
+                                )
+                                if com.data["Distance"]:
+                                    await camera.write_distance_target(distance_input)
+                                    await camera.write_distance(distance_input)
+                                if com.data["Min"]:
+                                    await camera.write_min_distance(min_input)
+                                    await camera.write_zoom_resolution(min_input)
+                                if com.data["Max"]:
+                                    await camera.write_max_distance(max_input)
+                        case xuanshu_gui.GUICommandType.PopulateCamera:
+                            if not walker.clients:
+                                logger.info(
+                                    "This GUI option requires hooks to be active, skipping."
+                                )
+                                continue
+                            if foreground_client:
+                                camera = (
+                                    await foreground_client.game_client.selected_camera_controller()
+                                )
+                                camera_pos = await camera.position()
+                                camera_pitch, camera_roll, camera_yaw = (
+                                    await camera.orientation()
+                                )
+                                elastic_camera = (
+                                    await foreground_client.game_client.elastic_camera_controller()
+                                )
+                                current_zoom = await elastic_camera.distance()
+                                current_min = await elastic_camera.min_distance()
+                                current_max = await elastic_camera.max_distance()
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
+                                        ("CamXInput", f"{camera_pos.x:.2f}"),
+                                    )
+                                )
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
+                                        ("CamYInput", f"{camera_pos.y:.2f}"),
+                                    )
+                                )
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
+                                        ("CamZInput", f"{camera_pos.z:.2f}"),
+                                    )
+                                )
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
+                                        ("CamYawInput", f"{camera_yaw:.2f}"),
+                                    )
+                                )
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
+                                        ("CamRollInput", f"{camera_roll:.2f}"),
+                                    )
+                                )
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
+                                        ("CamPitchInput", f"{camera_pitch:.2f}"),
+                                    )
+                                )
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
+                                        ("CamEntityInput", "Player Object"),
+                                    )
+                                )
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
+                                        ("CamDistanceInput", f"{current_zoom:.2f}"),
+                                    )
+                                )
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
+                                        ("CamMinInput", f"{current_min:.2f}"),
+                                    )
+                                )
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
+                                        ("CamMaxInput", f"{current_max:.2f}"),
+                                    )
+                                )
+                                logger.debug(
+                                    "Populated camera fields with current values."
+                                )
+                        case xuanshu_gui.GUICommandType.PopulatePlayerGID:
+                            if not walker.clients:
+                                logger.info(
+                                    "This GUI option requires hooks to be active, skipping."
+                                )
+                                continue
+                            if foreground_client:
+                                gid = await foreground_client.game_client.player_gid()
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
+                                        ("CamEntityGIDInput", str(gid)),
+                                    )
+                                )
+                        case xuanshu_gui.GUICommandType.GoToZone:
+                            if not walker.clients:
+                                logger.info(
+                                    "This GUI option requires hooks to be active, skipping."
+                                )
+                                continue
+                            if foreground_client:
+                                clients = [foreground_client]
+                                if com.data[0]:
+                                    for c in background_clients:
+                                        clients.append(c)
+                                zoneChanged = await toZoneDisplayName(
+                                    clients, com.data[1]
+                                )
+                                if zoneChanged == 0:
+                                    logger.debug(
+                                        "Reached destination zone: "
+                                        + await foreground_client.zone_name()
+                                    )
+                                else:
+                                    logger.error(
+                                        "Failed to go to zone.  It may be spelled incorrectly, or may not be supported."
+                                    )
+                        case xuanshu_gui.GUICommandType.GoToWorld:
+                            if not walker.clients:
+                                logger.info(
+                                    "This GUI option requires hooks to be active, skipping."
+                                )
+                                continue
+                            if foreground_client:
+                                clients = [foreground_client]
+                                if com.data[0]:
+                                    for c in background_clients:
+                                        clients.append(c)
+                                await to_world(clients, com.data[1])
+                        case xuanshu_gui.GUICommandType.GoToBazaar:
+                            if not walker.clients:
+                                logger.info(
+                                    "This GUI option requires hooks to be active, skipping."
+                                )
+                                continue
+                            if foreground_client:
+                                clients = [foreground_client]
+                                if com.data:
+                                    for c in background_clients:
+                                        clients.append(c)
+                                zoneChanged = await toZone(
+                                    clients,
+                                    "WizardCity/WC_Streets/Interiors/WC_OldeTown_AuctionHouse",
+                                )
+                                if zoneChanged == 0:
+                                    logger.debug(
+                                        "Reached destination zone: "
+                                        + await foreground_client.zone_name()
+                                    )
+                                else:
+                                    logger.error(
+                                        "Failed to go to zone.  It may be spelled incorrectly, or may not be supported."
+                                    )
+                        case xuanshu_gui.GUICommandType.RefillPotions:
+                            if not walker.clients:
+                                logger.info(
+                                    "This GUI option requires hooks to be active, skipping."
+                                )
+                                continue
+                            if foreground_client:
+                                clients = [foreground_client]
+                                if com.data:
+                                    for c in background_clients:
+                                        clients.append(c)
+                                await asyncio.gather(
+                                    *[
+                                        auto_potions_force_buy(client, True)
+                                        for client in clients
+                                    ]
+                                )
+                        case xuanshu_gui.GUICommandType.ExecuteFlythrough:
+                            if not walker.clients:
+                                logger.info(
+                                    "This GUI option requires hooks to be active, skipping."
+                                )
+                                continue
+
+                            async def _flythrough():
+                                try:
+                                    await execute_flythrough(
+                                        foreground_client, com.data
+                                    )
+                                    await foreground_client.camera_elastic()
+                                finally:
+                                    gui_send_queue.put(
+                                        xuanshu_gui.GUICommand(
+                                            xuanshu_gui.GUICommandType.UpdateWindow,
+                                            ("FlythroughStatus", "Disabled"),
+                                        )
+                                    )
+
+                            if foreground_client:
+                                flythrough_task = asyncio.create_task(_flythrough())
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
+                                        ("FlythroughStatus", "Enabled"),
+                                    )
+                                )
+                        case xuanshu_gui.GUICommandType.KillFlythrough:
+                            if not walker.clients:
+                                logger.info(
+                                    "This GUI option requires hooks to be active, skipping."
+                                )
+                                continue
+                            if (
+                                flythrough_task is not None
+                                and not flythrough_task.cancelled()
+                            ):
+                                flythrough_task.cancel()
+                                flythrough_task = None
+                                await asyncio.sleep(0)
+                                await foreground_client.camera_elastic()
+                            gui_send_queue.put(
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateWindow,
+                                    ("FlythroughStatus", "Disabled"),
+                                )
+                            )
+                        case xuanshu_gui.GUICommandType.HighlightEntity:
+                            if highlight_task and not highlight_task.done():
+                                highlight_task.cancel()
+                            if foreground_client and com.data:
+                                highlight_task = asyncio.create_task(
+                                    _highlight_entity_loop(foreground_client, com.data)
+                                )
+
+                        case xuanshu_gui.GUICommandType.HighlightUIWindow:
+                            if highlight_task and not highlight_task.done():
+                                highlight_task.cancel()
+                            if foreground_client and com.data:
+                                highlight_task = asyncio.create_task(
+                                    _highlight_ui_window_loop(
+                                        foreground_client, com.data
+                                    )
+                                )
+
+                        case xuanshu_gui.GUICommandType.ClearHighlight:
+                            if highlight_task and not highlight_task.done():
+                                highlight_task.cancel()
+                                highlight_task = None
+                            gui_send_queue.put(
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateHighlightBox, None
+                                )
+                            )
+
+                        case xuanshu_gui.GUICommandType.StartEntityStream:
+                            if entity_stream_task and not entity_stream_task.done():
+                                entity_stream_task.cancel()
+                            if foreground_client:
+                                entity_stream_task = asyncio.create_task(
+                                    _entity_stream_loop(foreground_client)
+                                )
+
+                        case xuanshu_gui.GUICommandType.StopEntityStream:
+                            if entity_stream_task and not entity_stream_task.done():
+                                entity_stream_task.cancel()
+                                entity_stream_task = None
+
+                        case xuanshu_gui.GUICommandType.StartIbaoGroup:
+                            try:
+                                selected = resolve_bot_clients(
+                                    walker.clients, tuple(com.data.get("clients", []))
+                                )
+                                if freecam_status or any(
+                                    getattr(c, "is_fishing", False)
+                                    or getattr(c, "questing_status", False)
+                                    or any(c.title in key for key in bot_tasks)
+                                    for c in selected
+                                ):
+                                    raise ValueError(
+                                        "请先停止所选客户端的钓鱼、任务或脚本，并退出自由视角"
+                                    )
+                                ibao_groups.add(
+                                    com.data.get("clients", []),
+                                    com.data.get("settings", {}),
+                                )
+                            except (ValueError, TypeError) as exc:
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
+                                        ("IbaoError", str(exc)),
+                                    )
+                                )
+
+                        case xuanshu_gui.GUICommandType.StopIbaoGroup:
+                            await ibao_groups.stop(com.data.get("clients", []))
+
+                        case xuanshu_gui.GUICommandType.GetIbaoData:
+                            gui_send_queue.put(
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateWindow,
+                                    ("IbaoData", ibao_groups.configs),
+                                )
+                            )
+                            ibao_groups.notify()
+
+                        case xuanshu_gui.GUICommandType.SaveIbaoConfig:
+                            from src.ibao_runtime import parse_locations
+
+                            try:
+                                config = com.data["settings"]
+                                parse_locations(config["locations"])
+                                members = resolve_bot_clients(
+                                    walker.clients, tuple(com.data["clients"])
+                                )
+                                if not members or any(
+                                    not getattr(c, "account_nick", None)
+                                    for c in members
+                                ):
+                                    raise ValueError("请勾选已关联账号的客户端")
+                                for c in members:
+                                    ibao_groups.configs[c.account_nick] = dict(config)
+                                ibao_groups.persist()
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
+                                        ("IbaoData", ibao_groups.configs),
+                                    )
+                                )
+                            except (ValueError, KeyError, TypeError) as exc:
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.UpdateWindow,
+                                        ("IbaoError", str(exc)),
+                                    )
+                                )
+
+                        case xuanshu_gui.GUICommandType.ClearIbaoRound:
+                            ibao_groups.clear_round()
+
+                        case xuanshu_gui.GUICommandType.StartFishingGroup:
+                            if any(
+                                getattr(c, "is_ibao", False)
+                                and c.title in com.data.get("clients", [])
+                                for c in walker.clients
+                            ):
+                                logger.warning("请先停止所选客户端的 ibao 采集")
+                                continue
+                            if freecam_status:
+                                logger.warning("请先退出自由视角再启动钓鱼组")
+                                fishing_groups.notify()
+                                continue
+                            try:
+                                fishing_groups.add(
+                                    com.data.get("clients"),
+                                    com.data.get("settings", {}),
+                                )
+                                if auto_fish_task is None or auto_fish_task.done():
+                                    auto_fish_task = asyncio.create_task(
+                                        auto_fish_loop()
+                                    )
+                            except ValueError as exc:
+                                logger.warning(str(exc))
+                                fishing_groups.notify()
+
+                        case xuanshu_gui.GUICommandType.StopFishingGroup:
+                            await fishing_groups.stop(com.data.get("clients"))
+
+                        case xuanshu_gui.GUICommandType.ExecuteBot:
+                            if not walker.clients:
+                                logger.info(
+                                    "This GUI option requires hooks to be active, skipping."
+                                )
+                                continue
+                            command_data, requested_titles = unpack_bot_command(
+                                com.data
+                            )
+                            selected_clients = resolve_bot_clients(
+                                walker.clients, requested_titles
+                            )
+                            if any(
+                                getattr(c, "is_ibao", False) for c in selected_clients
+                            ):
+                                logger.warning("请先停止所选客户端的 ibao 采集")
+                                continue
+                            if not command_data.strip():
+                                logger.warning("脚本内容为空，未启动。")
+                                continue
+                            if not selected_clients:
+                                logger.warning("没有找到所选客户端，脚本未启动。")
+                                continue
+                            if requested_titles is not None:
+                                resolved_titles = {
+                                    str(client.title).casefold()
+                                    for client in selected_clients
+                                }
+                                missing_titles = [
+                                    title
+                                    for title in requested_titles
+                                    if title.casefold() not in resolved_titles
+                                ]
+                                if missing_titles:
+                                    logger.warning(
+                                        "所选客户端当前不可用："
+                                        + ", ".join(missing_titles)
+                                        + "；脚本未启动。"
+                                    )
+                                    continue
+
+                            group_key = bot_group_key(selected_clients)
+                            overlapping = overlapping_bot_groups(
+                                bot_tasks.keys(), group_key
+                            )
+                            for old_key in overlapping:
+                                old_task = bot_tasks.pop(old_key, None)
+                                if old_task is not None and not old_task.done():
+                                    old_task.cancel()
+                                    await asyncio.gather(
+                                        old_task, return_exceptions=True
+                                    )
+                                    logger.info(
+                                        f"已停止与新任务重叠的脚本组：{'+'.join(old_key)}"
+                                    )
+
+                            async def run_bot(
+                                bot_clients=tuple(selected_clients),
+                                bot_text=command_data,
+                                group_any_as_mass=requested_titles is not None,
+                            ):
+                                # All scripts now use the expert VM.  Keep accepting
+                                # the legacy marker so existing files remain valid,
+                                # but it is no longer required to enable expert mode.
+                                expert_mode = True
+                                logger.info(
+                                    f"脚本已启动：{'+'.join(client.title for client in bot_clients)}"
+                                )
+                                if expert_mode:
+                                    while True:
+                                        v = vm.VM(
+                                            list(bot_clients),
+                                            group_any_as_mass=group_any_as_mass,
+                                        )
+                                        try:
+                                            v.load_from_text(bot_text)
+                                            v.running = True
+                                            while v.running:
+                                                await v.step()
+                                        except Exception as e:
+                                            logger.exception(e)
+                                        v.running = False
+                                        if v.killed:
+                                            break
+                                        await asyncio.sleep(1)
+                                else:
+                                    split_commands = bot_text.splitlines()
+                                    web_commands_strs = ["webpage", "pull", "embed"]
+                                    new_commands = []
+                                    for command_str in split_commands:
+                                        command_tokens = tokenize(command_str)
+                                        if (
+                                            command_tokens
+                                            and command_tokens[0].lower
+                                            in web_commands_strs
+                                        ):
+                                            web_commands = read_webpage(
+                                                command_tokens[1]
+                                            )
+                                            new_commands.extend(web_commands)
+                                        else:
+                                            new_commands.append(command_str)
+                                    while True:
+                                        for command_str in new_commands:
+                                            await parse_command(
+                                                list(bot_clients), command_str
+                                            )
+                                        await asyncio.sleep(1)
+
+                            async def guarded_bot(
+                                run=run_bot,
+                                clients=tuple(selected_clients),
+                                stop_mount=isinstance(com.data, dict)
+                                and com.data.get("stop_on_mount", False),
+                                mount_name=(
+                                    com.data.get("mount_name", "")
+                                    if isinstance(com.data, dict)
+                                    else ""
+                                ),
+                            ):
+                                if stop_mount:
+                                    from src.mount_stop import run_until_mount
+
+                                    await run_until_mount(
+                                        lambda: run_with_script_popups(run, clients),
+                                        clients,
+                                        mount_name,
+                                    )
+                                else:
+                                    await run_with_script_popups(run, clients)
+
+                            new_task = asyncio.create_task(
+                                try_task_coro(guarded_bot, selected_clients, True)
+                            )
+                            bot_tasks[group_key] = new_task
+
+                            def bot_done_callback(completed_task, key=group_key):
+                                if bot_tasks.get(key) is completed_task:
+                                    bot_tasks.pop(key, None)
+                                    logger.info(f"脚本已停止：{'+'.join(key)}")
+                                send_bot_groups_update()
+
+                            new_task.add_done_callback(bot_done_callback)
+                            send_bot_groups_update()
+                        case xuanshu_gui.GUICommandType.KillBot:
+                            if not walker.clients:
+                                logger.info(
+                                    "This GUI option requires hooks to be active, skipping."
+                                )
+                                continue
+                            requested_titles = None
+                            if isinstance(com.data, dict):
+                                requested_titles = normalize_client_titles(
+                                    com.data.get("clients")
+                                )
+                            groups_to_stop = overlapping_bot_groups(
+                                bot_tasks.keys(), requested_titles
+                            )
+                            if not groups_to_stop:
+                                logger.info("所选客户端没有运行中的脚本。")
+                                continue
+                            stopping_tasks = []
+                            for key in groups_to_stop:
+                                task = bot_tasks.pop(key, None)
+                                if task is not None and not task.done():
+                                    task.cancel()
+                                    stopping_tasks.append(task)
+                                logger.info(f"脚本已停止：{'+'.join(key)}")
+                            await asyncio.gather(
+                                *stopping_tasks, return_exceptions=True
+                            )
+                            send_bot_groups_update()
+                        case xuanshu_gui.GUICommandType.SetPlaystyles:
+                            playstyle_text, requested_titles = unpack_bot_command(
+                                com.data
+                            )
+                            if not playstyle_text.strip():
+                                logger.warning("战斗风格内容为空，未应用。")
+                                continue
+
+                            selected_clients = resolve_bot_clients(
+                                walker.clients, requested_titles
+                            )
+                            if not selected_clients:
+                                logger.warning("没有找到所选客户端，战斗风格未应用。")
+                                continue
+
+                            if requested_titles is not None:
+                                resolved_titles = {
+                                    str(client.title).casefold()
+                                    for client in selected_clients
+                                }
+                                missing_titles = [
+                                    title
+                                    for title in requested_titles
+                                    if title.casefold() not in resolved_titles
+                                ]
+                                if missing_titles:
+                                    logger.warning(
+                                        "所选客户端当前不可用："
+                                        + ", ".join(missing_titles)
+                                        + "；战斗风格未应用。"
+                                    )
+                                    continue
+
+                            selected_ids = {id(client) for client in selected_clients}
+                            ordered_clients = resolve_bot_clients(walker.clients, None)
+                            selected_indices = [
+                                i
+                                for i, client in enumerate(ordered_clients)
+                                if id(client) in selected_ids
+                            ]
+                            combat_configs = delegate_selected_combat_configs(
+                                playstyle_text,
+                                selected_indices,
+                                len(walker.clients),
+                            )
+                            applied_titles = []
+                            for i, client in enumerate(ordered_clients):
+                                if id(client) not in selected_ids:
+                                    continue
+                                config = combat_configs.get(i, default_config)
+                                client.combat_config = config
+                                combat_playstyle_overrides[
+                                    str(client.title).casefold()
+                                ] = config
+                                applied_titles.append(str(client.title))
+
+                            # Preserve the legacy plain-text command behaviour:
+                            # it remains the fallback for future clients and
+                            # clears earlier per-client overrides.
+                            if requested_titles is None:
+                                active_combat_playstyle = playstyle_text
+                                combat_playstyle_overrides.clear()
+
+                            restarted = await restart_combat_task_if_running()
+                            logger.info(
+                                f"战斗风格已应用到：{', '.join(applied_titles)}；"
+                                f"自动战斗{'已刷新' if restarted else '当前未开启'}。"
+                            )
+                        case xuanshu_gui.GUICommandType.ResetPlaystyles:
+                            requested_titles = None
+                            if isinstance(com.data, dict):
+                                requested_titles = normalize_client_titles(
+                                    com.data.get("clients")
+                                )
+                            selected_clients = resolve_bot_clients(
+                                walker.clients, requested_titles
+                            )
+                            if not selected_clients:
+                                logger.warning("没有找到所选客户端，战斗风格未重置。")
+                                continue
+
+                            reset_titles = []
+                            for client in selected_clients:
+                                client.combat_config = default_config
+                                combat_playstyle_overrides[
+                                    str(client.title).casefold()
+                                ] = default_config
+                                reset_titles.append(str(client.title))
+
+                            if requested_titles is None:
+                                active_combat_playstyle = None
+                                combat_playstyle_overrides.clear()
+                            restarted = await restart_combat_task_if_running()
+                            gui_send_queue.put(
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateWindow,
+                                    ("combat_config", default_config),
+                                )
+                            )
+                            logger.info(
+                                f"已重置为默认战斗风格；"
+                                f"已应用到：{', '.join(reset_titles)}，"
+                                f"自动战斗{'已刷新' if restarted else '当前未开启'}。"
+                            )
+                        case xuanshu_gui.GUICommandType.SetScale:
+                            if not walker.clients:
+                                logger.info(
+                                    "This GUI option requires hooks to be active, skipping."
+                                )
+                                continue
+                            desired_scale = param_input(com.data, 1.0)
+                            logger.debug(f"Set Scale to {desired_scale}")
+                            await asyncio.gather(
+                                *[
+                                    client.body.write_scale(desired_scale)
+                                    for client in walker.clients
+                                ]
+                            )
+
+                        case xuanshu_gui.GUICommandType.LoadAccounts:
+                            gui_send_queue.put(
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateAccountList,
+                                    build_account_list_payload(),
+                                )
+                            )
+
+                        case xuanshu_gui.GUICommandType.SaveAccount:
+                            if isinstance(com.data, (tuple, list)):
+                                nickname, steam_mode = com.data
+                            else:
+                                # Backward compatibility with older launcher UIs.
+                                nickname, steam_mode = com.data, False
+                            try:
+                                await asyncio.to_thread(
+                                    wizlaunch.prompt_save_account, nickname
+                                )
+                                wizlaunch.set_account_steam(nickname, bool(steam_mode))
+                                logger.info(f"Account '{nickname}' saved.")
+                            except RuntimeError as e:
+                                logger.info(f"Account save cancelled or failed: {e}")
+                            gui_send_queue.put(
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateAccountList,
+                                    build_account_list_payload(),
+                                )
+                            )
+
+                        case xuanshu_gui.GUICommandType.UpdateAccount:
+                            nickname, steam_mode = com.data
+                            try:
+                                wizlaunch.set_account_steam(nickname, bool(steam_mode))
+                                logger.info(
+                                    f"Account '{nickname}' launch mode updated."
+                                )
+                            except RuntimeError as e:
+                                logger.warning(
+                                    f"Could not update account '{nickname}': {e}"
+                                )
+                            gui_send_queue.put(
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateAccountList,
+                                    build_account_list_payload(),
+                                )
+                            )
+
+                        case xuanshu_gui.GUICommandType.DeleteAccount:
+                            wizlaunch.delete_account(com.data)
+                            logger.info(f"Account '{com.data}' removed.")
+                            gui_send_queue.put(
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateAccountList,
+                                    build_account_list_payload(),
+                                )
+                            )
+
+                        case xuanshu_gui.GUICommandType.LaunchInstance:
+                            nicknames, game_path = com.data
+                            if not game_path:
+                                game_path = str(utils.get_wiz_install())
+                            else:
+                                utils.override_wiz_install_location(game_path)
+                            # Filter out accounts already managed (hooked) by launch map or player_gid
+                            already_managed = set(launched_account_map.values())
+                            for c in walker.clients:
+                                gid = getattr(c, "player_gid", None)
+                                if gid:
+                                    vault_nick = wizlaunch.get_nickname_by_gid(gid)
+                                    if vault_nick:
+                                        already_managed.add(vault_nick)
+                            nicknames = [
+                                n for n in nicknames if n not in already_managed
+                            ]
+                            if not nicknames:
+                                logger.info(
+                                    "All selected accounts are already launched and hooked."
+                                )
+                            else:
+                                logger.info(
+                                    f"Launching {len(nicknames)} instance(s)..."
+                                )
+                                if settings.get_setting("verify_patch_files"):
+                                    logger.info(
+                                        "Verifying official game files before launch..."
+                                    )
+                                    verified = await asyncio.to_thread(
+                                        wizpatch_runner.patch_game_files, game_path
+                                    )
+                                    if not verified:
+                                        logger.warning(
+                                            "Game-file verification did not finish successfully; "
+                                            "continuing with account launch."
+                                        )
+                            # Clear any released handles so newly launched clients get auto-hooked
+                            released_handles.clear()
+                            gui_send_queue.put(
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.ClearLaunchCheckboxes
+                                )
+                            )
+                            try:
+                                # launch_instance blocks until that account has
+                                # logged in and produced its window handle. Keep
+                                # insertion order identical to the UI click order;
+                                # the auto-hook loop consumes this mapping in order.
+                                for nickname in nicknames:
+                                    handle = await asyncio.to_thread(
+                                        wizlaunch.launch_instance, nickname, game_path
+                                    )
+                                    launched_account_map[handle] = nickname
+                                    logger.info(f"Launched and logged in '{nickname}'.")
+                            except Exception as e:
+                                logger.error(f"Error launching instances: {e}")
+
+                        case xuanshu_gui.GUICommandType.ReorderAccounts:
+                            wizlaunch.reorder_accounts(com.data)
+
+                        case xuanshu_gui.GUICommandType.ReorderClients:
+                            handles = com.data
+                            client_map = {c.window_handle: c for c in walker.clients}
+                            new_order = [
+                                client_map[h] for h in handles if h in client_map
+                            ]
+                            remaining = [
+                                c
+                                for c in walker.clients
+                                if c.window_handle not in set(handles)
+                            ]
+                            walker.clients[:] = new_order + remaining
+                            for i, c in enumerate(walker.clients):
+                                c.title = f"p{i + 1}"
+                            _send_hooked_clients_update()
+
+                        case xuanshu_gui.GUICommandType.UnhookClient:
+                            handle = com.data
+                            for c in walker.clients[:]:
+                                if c.window_handle == handle:
+                                    await client_resizing_manager.teardown_client(
+                                        handle
+                                    )
+                                    window_config_applied.discard(handle)
+                                    try:
+                                        c.title = "Wizard101"
+                                        await c.close()
+                                    except Exception:
+                                        pass
+                                    if c.window_handle in walker._managed_handles:
+                                        walker._managed_handles.remove(c.window_handle)
+                                    walker.clients.remove(c)
+                                    released_handles.add(handle)
+                                    logger.info(f"Unhooked client (handle {handle}).")
+                                    break
+                            _send_hooked_clients_update()
+                            if walker.clients:
+                                _restart_always_on_tasks()
+                                _restart_active_toggle_tasks()
+
+                        case xuanshu_gui.GUICommandType.HookClient:
+                            handle = com.data
+                            # Remove from released set so it can be managed
+                            released_handles.discard(handle)
+                            # Check handle is still valid and not already managed
+                            if handle in walker._managed_handles:
+                                logger.debug(
+                                    f"Handle {handle} already managed, skipping."
+                                )
+                                _send_hooked_clients_update()
+                                continue
+                            all_handles = get_all_wizard_handles()
+                            if handle not in all_handles:
+                                logger.error(f"Handle {handle} no longer exists.")
+                                _send_hooked_clients_update()
+                                continue
+                            # Create client, assign title, hook, init
+                            walker._managed_handles.append(handle)
+                            nc = walker.client_cls(handle)
+                            walker.clients.append(nc)
+                            existing_nums = set()
+                            for c in walker.clients:
+                                if c.title.startswith("p") and c.title[1:].isdigit():
+                                    existing_nums.add(int(c.title[1:]))
+                            num = 1
+                            while num in existing_nums:
+                                num += 1
+                            nc.title = f"p{num}"
+                            _hooking_in_progress.add(handle)
+                            _send_hooked_clients_update()
+                            try:
+                                await nc.activate_hooks()
+                                await _init_client_attrs(nc)
+                                logger.info(
+                                    f"Manually hooked client '{nc.title}' (handle {handle})."
+                                )
+                            except wizwalker.errors.HookAlreadyActivated:
+                                await _init_client_attrs(nc)
+                                logger.info(
+                                    f"Manually hooked client '{nc.title}' (handle {handle}, already hooked)."
+                                )
+                            except Exception as e:
+                                logger.error(
+                                    f"Failed to hook client (handle {handle}): {e}"
+                                )
+                                walker._managed_handles.remove(handle)
+                                walker.clients.remove(nc)
+                                _hooking_in_progress.discard(handle)
+                                _send_hooked_clients_update()
+                                continue
+                            _hooking_in_progress.discard(handle)
+                            _send_hooked_clients_update()
+                            _restart_always_on_tasks()
+                            _restart_active_toggle_tasks()
+
+                        case xuanshu_gui.GUICommandType.KillClient:
+                            handle = com.data
+                            await client_resizing_manager.teardown_client(handle)
+                            window_config_applied.discard(handle)
+                            # If handle belongs to a hooked client, unhook first
+                            for c in walker.clients[:]:
+                                if c.window_handle == handle:
+                                    try:
+                                        c.title = "Wizard101"
+                                        await c.close()
+                                    except Exception:
+                                        pass
+                                    if c.window_handle in walker._managed_handles:
+                                        walker._managed_handles.remove(c.window_handle)
+                                    walker.clients.remove(c)
+                                    launched_account_map.pop(handle, None)
+                                    break
+                            # Terminate the OS process
+                            _kill_process_by_handle(handle)
+                            released_handles.discard(handle)
+                            logger.info(f"Killed client (handle {handle}).")
+                            _send_hooked_clients_update()
+                            if walker.clients:
+                                _restart_always_on_tasks()
+                                _restart_active_toggle_tasks()
+
+                        case xuanshu_gui.GUICommandType.RelaunchClient:
+                            handle, nickname = com.data
+                            await client_resizing_manager.teardown_client(handle)
+                            window_config_applied.discard(handle)
+                            # Unhook the hooked client
+                            for c in walker.clients[:]:
+                                if c.window_handle == handle:
+                                    try:
+                                        c.title = "Wizard101"
+                                        await c.close()
+                                    except Exception:
+                                        pass
+                                    if c.window_handle in walker._managed_handles:
+                                        walker._managed_handles.remove(c.window_handle)
+                                    walker.clients.remove(c)
+                                    launched_account_map.pop(handle, None)
+                                    break
+                            # Kill the process
+                            _kill_process_by_handle(handle)
+                            released_handles.discard(handle)
+                            logger.info(
+                                f"Killed client for relaunch (handle {handle}, account '{nickname}')."
+                            )
+                            _send_hooked_clients_update()
+                            # Relaunch via wizlaunch (credentials stay in Rust)
+                            try:
+                                game_path = str(utils.get_wiz_install())
+                                await asyncio.sleep(1)
+                                new_handle = await asyncio.to_thread(
+                                    wizlaunch.launch_instance, nickname, game_path
+                                )
+                                launched_account_map[new_handle] = nickname
+                                logger.info(f"Relaunched and logged in '{nickname}'.")
+                                _send_hooked_clients_update()
+                            except Exception as e:
+                                logger.error(f"Error relaunching '{nickname}': {e}")
+                            if walker.clients:
+                                _restart_always_on_tasks()
+                                _restart_active_toggle_tasks()
+
+                        case xuanshu_gui.GUICommandType.UpdateSettings:
+                            global speed_multiplier, use_potions, rpc_status, drop_status, anti_afk_status
+                            global buy_potions, use_team_up, client_to_follow, client_to_boost
+                            global questing_friend_tp, gear_switching_in_solo_zones, hitter_client
+                            global quest_party_enabled, questing_client_titles, questing_hitter_client_titles
+                            global quest_hitter_assignment_mode, quest_hitter_assignments
+                            global quest_friend_icons
+                            global ignore_pet_level_up, only_play_dance_game
+                            global fish_chest_only, fish_school, fish_rank, fish_id
+                            global fish_size_min, fish_size_max
+                            global kill_minions_first, automatic_team_based_combat, discard_duplicate_cards
+                            settings_dict = com.data
+                            quest_party_changed = False
+                            for key, value in settings_dict.items():
+                                match key:
+                                    case "speed_multiplier":
+                                        speed_multiplier = value
+                                    case "use_potions":
+                                        use_potions = value
+                                    case "rich_presence":
+                                        rpc_status = value
+                                    case "drop_logging":
+                                        drop_status = value
+                                    case "use_anti_afk":
+                                        anti_afk_status = value
+                                    case "buy_potions":
+                                        buy_potions = value
+                                    case "use_team_up":
+                                        use_team_up = value
+                                    case "client_to_follow":
+                                        client_to_follow = value
+                                    case "client_to_boost":
+                                        client_to_boost = value
+                                    case "friend_teleport":
+                                        questing_friend_tp = value
+                                    case "gear_switching_in_solo_zones":
+                                        gear_switching_in_solo_zones = value
+                                    case "hitter_client":
+                                        hitter_client = value
+                                    case "quest_party_enabled":
+                                        quest_party_enabled = bool(value)
+                                        quest_party_changed = True
+                                    case "questing_clients":
+                                        questing_client_titles = list(value or [])
+                                        quest_party_changed = True
+                                    case "questing_hitter_clients":
+                                        questing_hitter_client_titles = list(
+                                            value or []
+                                        )
+                                        quest_party_changed = True
+                                    case "quest_hitter_assignment_mode":
+                                        quest_hitter_assignment_mode = str(
+                                            value or "auto"
+                                        )
+                                        quest_party_changed = True
+                                    case "quest_hitter_assignments":
+                                        quest_hitter_assignments = dict(value or {})
+                                        quest_party_changed = True
+                                    case "quest_friend_icons":
+                                        quest_friend_icons = dict(value or {})
+                                        quest_party_changed = True
+                                    case "ignore_pet_level_up":
+                                        ignore_pet_level_up = value
+                                    case "only_play_dance_game":
+                                        only_play_dance_game = value
+                                    case "client_resizing":
+                                        client_resizing = bool(value)
+                                    case "fish_chest_only":
+                                        fish_chest_only = bool(value)
+                                    case "fish_school":
+                                        fish_school = str(value)
+                                    case "fish_rank":
+                                        fish_rank = int(value)
+                                    case "fish_id":
+                                        fish_id = int(value)
+                                    case "fish_size_min":
+                                        fish_size_min = float(value)
+                                    case "fish_size_max":
+                                        fish_size_max = float(value)
+                                    case "kill_minions_first":
+                                        kill_minions_first = value
+                                    case "automatic_team_based_combat":
+                                        automatic_team_based_combat = value
+                                    case "discard_duplicate_cards":
+                                        discard_duplicate_cards = value
+                            logger.debug(
+                                f"Settings updated: {list(settings_dict.keys())}"
+                            )
+                            if (
+                                quest_party_changed
+                                and questing_task is not None
+                                and not questing_task.done()
+                            ):
+                                questing_task.cancel()
+                                party = apply_questing_roles(True)
+                                if party.questers:
+                                    questing_task = asyncio.create_task(
+                                        try_task_coro(
+                                            questing_loop, walker.clients, True
+                                        )
+                                    )
+                                else:
+                                    questing_status = False
+                                    apply_questing_roles(False)
+                                    questing_task = None
+                                    gui_send_queue.put(
+                                        xuanshu_gui.GUICommand(
+                                            xuanshu_gui.GUICommandType.UpdateWindow,
+                                            ("QuestingStatus", "Disabled"),
+                                        )
+                                    )
+
+            except queue.Empty:
+                pass
+
+            if walker.clients:
+                gui_send_queue.put(
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
+                        (
+                            "Auto PetStatus",
+                            bool_to_string(
+                                auto_pet_status
+                                or hotkey_groups.active("toggle_auto_pet")
+                            ),
+                        ),
+                    )
+                )
+                gui_send_queue.put(
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
+                        ("Auto FishStatus", bool_to_string(auto_fish_status)),
+                    )
+                )
+
+            await asyncio.sleep(0.1)
+
+        else:
+            while True:
+                await asyncio.sleep(1)
+
+    async def potion_usage_loop():
+        # Auto potion usage on a per client basis.
+        async def async_potion(client: Client):
+            if use_potions:
+                while True:
+                    await asyncio.sleep(1)
+                    if (
+                        auto_potion_status
+                        and await is_free(client)
+                        and not any(
+                            [
+                                freecam_status,
+                                client.sigil_status,
+                                client.questing_status,
+                            ]
+                        )
+                    ):
+                        await auto_potions(client, buy=False)
+
+        await asyncio.gather(*[async_potion(p) for p in walker.clients])
+
+    async def rpc_loop():
+        if not rpc_status:
+            return
+
+        async def _close_rpc(rpc):
+            """Close RPC and its underlying transport to avoid ResourceWarning."""
+            try:
+                if hasattr(rpc, "sock_writer") and rpc.sock_writer:
+                    rpc.sock_writer.close()
+                    await rpc.sock_writer.wait_closed()
+            except Exception:
+                pass
+            try:
+                await rpc.close()
+            except Exception:
+                pass
+
+        rpc = None
+        client: Client = None
+        while True:
+            # Connect / reconnect
+            if rpc is None:
+                try:
+                    rpc = AioPresence(1000159655357587566)
+                    await rpc.connect()
+                except Exception:
+                    await _close_rpc(rpc)
+                    rpc = None
+                    await asyncio.sleep(15)
+                    continue
+
+            await asyncio.sleep(1)
+
+            # Disconnect RPC when no clients are managed
+            if not walker.clients:
+                if rpc is not None:
+                    try:
+                        await rpc.clear()
+                    except Exception:
+                        pass
+                    await _close_rpc(rpc)
+                    rpc = None
+                client = None
+                continue
+
+            # Pick the foreground client, or fall back to first
+            client = walker.clients[0]
+            for c in walker.clients:
+                if c.is_foreground:
+                    client = c
+                    break
+
+            # If our tracked client was removed, reset
+            if client not in walker.clients:
+                client = walker.clients[0]
+
+            try:
+                zone_name = await client.zone_name()
+            except Exception:
+                client = None
+                continue
+
+            if zone_name:
+                zone_list = zone_name.split("/")
+                if len(zone_list):
+                    status_str = zone_list[0]
+                else:
+                    status_str = zone_name
+
+                # parse zone name and make it more visually appealing
+                if len(zone_list) > 1:
+                    if "Housing_" in zone_name:
+                        status_str = status_str.replace("Housing_", "")
+                        end_zone_list = zone_list[-1].split("_")
+                        end_zone = f" - {end_zone_list[-1]}"
+
+                    elif "Housing" in zone_name:
+                        end_zone_list = zone_list[-1].split("_")
+
+                        if "School" in zone_list:
+                            status_str = end_zone_list[0] + "House"
+
+                        else:
+                            status_str = zone_list[1]
+
+                        end_zone = f" - {end_zone_list[-1]}"
+
+                    else:
+                        end_zone = None
+
+                    if not end_zone:
+                        area_list: list[str] = zone_list[-1].split("_")
+                        del area_list[0]
+
+                        for a in area_list.copy():
+                            if any([s.isdigit() for s in a]):
+                                area_list.remove(a)
+
+                        seperator = " "
+                        area = seperator.join(area_list)
+                        zone_word_list = re.findall("[A-Z][^A-Z]*", area)
+                        if zone_word_list:
+                            end_zone = f" - {seperator.join(zone_word_list)}"
+
+                        else:
+                            end_zone = ""
+
+            else:
+                end_zone = ""
+
+            status_str = status_str.replace("DragonSpire", "Dragonspyre")
+            status_list = status_str.split("_")
+            if len(status_list[0]) <= 3:
+                del status_list[0]
+
+            seperator = " "
+            status_str = seperator.join(status_list)
+
+            status_list = re.findall("[A-Z][^A-Z]*", status_str)
+            status_str = seperator.join(status_list)
+
+            if "ext" in end_zone.lower():
+                end_zone = " - Outside"
+
+            elif "int" in end_zone.lower():
+                end_zone = " - Inside"
+
+            try:
+                in_battle = await client.in_battle()
+            except Exception:
+                client = None
+                continue
+
+            if in_battle:
+                task_str = "Fighting "
+
+            elif questing_status:
+                task_str = "Questing "
+
+            elif sigil_status:
+                task_str = "Farming "
+
+            else:
+                task_str = ""
+
+            # Assign if a client is currently selected or not
+            if not any([c.is_foreground for c in walker.clients]):
+                details_pane = "Idle"
+
+            else:
+                details_pane = "Active"
+
+            try:
+                # Update the discord RPC status
+                await rpc.update(
+                    state=f"{task_str}In {status_str}{end_zone}", details=details_pane
+                )
+
+            except Exception:
+                await _close_rpc(rpc)
+                rpc = None
+
+    async def drop_logging_loop():
+        # Auto potion usage on a per client basis.
+        await asyncio.gather(*[logging_loop(p) for p in walker.clients])
+
+    async def client_resizing_loop():
+        """Keep hooked game windows resizable and their render aspect correct."""
+        while True:
+            try:
+                await client_resizing_manager.tick(walker.clients, client_resizing)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.opt(exception=e).debug("Client resizing maintenance failed.")
+            await asyncio.sleep(0.3)
+
+    async def zone_check_loop():
+        zone_blacklist = ["Raids", "Battlegrounds"]
+
+        explicit_zone_blacklist = [
+            "WizardCity/WC_Duel_Arena_New",
+            "WizardCity/KT_Duel_Arena",
+            "WizardCity/MB_Arena",
+            "WizardCity/MS_Arena",
+            "WizardCity/DS_Arena",
+            "WizardCity/CL_Arena",
+            "WizardCity/ZF_Arena",
+            "WizardCity/AV_Arena",
+            "WizardCity/AZ_Arena",
+            "WizardCity/PA_Arena",
+            "WizardCity/GH_Arena",
+            "WizardCity/LM_Arena",
+        ]
+
+        async def async_zone_check(client: Client):
+            while True:
+                await asyncio.sleep(0.25)
+                zone_name = await client.zone_name()
+                if zone_name in explicit_zone_blacklist:
+                    logger.critical(
+                        f"Client {client.title} entered area with known anticheat, killing {tool_name}."
+                    )
+                    await kill_tool(False)
+                if zone_name and "/" in zone_name:
+                    split_zone_name = zone_name.split("/")
+
+                    if any([i in split_zone_name[0] for i in zone_blacklist]):
+                        logger.critical(
+                            f"Client {client.title} entered area with known anticheat, killing {tool_name}."
+                        )
+                        await kill_tool(False)
+
+        await asyncio.gather(*[async_zone_check(p) for p in walker.clients])
+
+    await asyncio.sleep(0)
+    global walker
+    walker = ClientHandler()
+    # walker.clients = []
+    global gui_task
+    gui_task = asyncio.create_task(handle_gui())
+    await asyncio.sleep(2)
+    # logger.debug("1")
+
+    async def hooking_logic():
+        await asyncio.sleep(0.1)
+        if not get_all_wizard_handles():
+            logger.debug("Waiting for a Wizard101 client to be opened...")
+            while not get_all_wizard_handles():
+                await asyncio.sleep(1)
+        override_wiz_install_using_handle()
+        logger.debug(
+            "Wizard101 client(s) detected. Hook clients from the Launcher tab."
+        )
+
+    await hooking_logic()
+    logger.debug("Ready. Hook clients from the Launcher tab.")
+    global client_speeds
+    client_speeds = {}
+    _send_hooked_clients_update()
+    initial_setup_complete = True
+
+    # Register kill_tool hotkey (always bound, separate from enable/disable cycle)
+    _kill_binding = settings.get_hotkeys().get("kill_tool")
+    if _kill_binding:
+        _kill_mods = ModifierKeys.NOREPEAT
+        for _m in _kill_binding.get("modifiers", []):
+            _kill_mods |= ModifierKeys[_m]
+        await listener.add_hotkey(
+            Keycode[_kill_binding["key"]], kill_tool_hotkey, modifiers=_kill_mods
+        )
+        _active_bindings["kill_tool"] = _kill_binding
+    await enable_hotkeys()
+    logger.debug("Hotkeys ready!")
+    tool_status = True
+    exc = None
+
+    async def tool_active():
+        while tool_status:
+            await asyncio.sleep(0.1)
+
+    all_tasks = {}
+
+    # Names of always-on tasks that use walker.clients snapshots and must be
+    # restarted when the client list changes.
+    SNAPSHOT_TASK_NAMES = [
+        "anti_afk_loop",
+        "is_client_in_combat_loop",
+        "entity_detect_combat_loop",
+        "potion_usage_loop",
+        "drop_logging_loop",
+        "zone_check_loop",
+        "anti_afk_questing_loop",
+    ]
+    SNAPSHOT_TASK_FUNCS = {
+        "anti_afk_loop": anti_afk_loop,
+        "is_client_in_combat_loop": is_client_in_combat_loop,
+        "entity_detect_combat_loop": entity_detect_combat_loop,
+        "potion_usage_loop": potion_usage_loop,
+        "drop_logging_loop": drop_logging_loop,
+        "zone_check_loop": zone_check_loop,
+        "anti_afk_questing_loop": anti_afk_questing_loop,
+    }
+
+    def _restart_always_on_tasks():
+        """Cancel and recreate snapshot-based always-on tasks so they pick up new clients."""
+        for name in SNAPSHOT_TASK_NAMES:
+            old = all_tasks.get(name)
+            if old is not None and not old.cancelled():
+                old.cancel()
+            all_tasks[name] = asyncio.create_task(SNAPSHOT_TASK_FUNCS[name]())
+
+    def _restart_active_toggle_tasks():
+        """Cancel and recreate any currently-active toggle tasks so they pick up new clients."""
+        global combat_task, dialogue_task, sigil_task, questing_task, speed_task, auto_pet_task, auto_fish_task
+
+        if combat_task is not None and not combat_task.cancelled():
+            combat_task.cancel()
+            for c in walker.clients:
+                c.combat_status = True
+            combat_task = asyncio.create_task(
+                try_task_coro(combat_loop, walker.clients, True)
+            )
+
+        if dialogue_task is not None and not dialogue_task.cancelled():
+            dialogue_task.cancel()
+            dialogue_task = asyncio.create_task(
+                try_task_coro(dialogue_loop, walker.clients, True)
+            )
+
+        if sigil_task is not None and not sigil_task.cancelled():
+            sigil_task.cancel()
+            for c in walker.clients:
+                c.sigil_status = True
+            sigil_task = asyncio.create_task(
+                try_task_coro(sigil_loop, walker.clients, True)
+            )
+
+        if questing_task is not None and not questing_task.cancelled():
+            questing_task.cancel()
+            apply_questing_roles(True)
+            questing_task = asyncio.create_task(
+                try_task_coro(questing_loop, walker.clients, True)
+            )
+
+        if speed_task is not None and not speed_task.cancelled():
+            speed_task.cancel()
+            speed_task = asyncio.create_task(
+                try_task_coro(speed_switching, walker.clients)
+            )
+
+        if auto_pet_task is not None and not auto_pet_task.cancelled():
+            auto_pet_task.cancel()
+            for c in walker.clients:
+                c.feeding_pet_status = True
+            auto_pet_task = asyncio.create_task(
+                try_task_coro(auto_pet_loop, walker.clients, True)
+            )
+
+        if auto_fish_task is not None and not auto_fish_task.cancelled():
+            auto_fish_task.cancel()
+            auto_fish_task = asyncio.create_task(
+                try_task_coro(auto_fish_loop, walker.clients, True)
+            )
+
+    try:
+        all_tasks["foreground_client_switching"] = asyncio.create_task(
+            foreground_client_switching()
+        )
+        all_tasks["assign_foreground_clients"] = asyncio.create_task(
+            assign_foreground_clients()
+        )
+        all_tasks["anti_afk_loop"] = asyncio.create_task(anti_afk_loop())
+        all_tasks["is_client_in_combat_loop"] = asyncio.create_task(
+            is_client_in_combat_loop()
+        )
+        all_tasks["entity_detect_combat_loop"] = asyncio.create_task(
+            entity_detect_combat_loop()
+        )
+        all_tasks["potion_usage_loop"] = asyncio.create_task(potion_usage_loop())
+        all_tasks["rpc_loop"] = asyncio.create_task(rpc_loop())
+        all_tasks["drop_logging_loop"] = asyncio.create_task(drop_logging_loop())
+        all_tasks["client_resizing_loop"] = asyncio.create_task(client_resizing_loop())
+        all_tasks["zone_check_loop"] = asyncio.create_task(zone_check_loop())
+        all_tasks["anti_afk_questing_loop"] = asyncio.create_task(
+            anti_afk_questing_loop()
+        )
+        all_tasks["tool_active"] = asyncio.create_task(tool_active())
+        all_tasks["gui"] = gui_task
+
+        while True:
+            pending = [t for t in all_tasks.values() if t is not None and not t.done()]
+            if not pending:
+                break
+            done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_EXCEPTION)
+
+            should_exit = False
+            for t in done:
+                exc = t.exception()
+                if exc is None:
+                    continue
+                elif isinstance(exc, xuanshu_gui.ToolClosedException):
+                    logger.info("Tool close triggered by user.")
+                    should_exit = True
+                elif t == all_tasks.get("gui"):
+                    # GUI task errors are always fatal
+                    logger.opt(exception=exc).error("GUI task crashed")
+                    should_exit = True
+                else:
+                    # Client-dependent task died (memory error, dead process, etc.)
+                    # Non-fatal — the client is likely closed
+                    task_name = next((k for k, v in all_tasks.items() if v is t), "?")
+                    logger.opt(exception=exc).warning(f"Task '{task_name}' ended")
+            if should_exit:
+                break
+
+    finally:
+        for task in all_tasks.values():
+            if task is not None and not task.cancelled():
+                task.cancel()
+        # Also cancel any active toggle tasks
+        for task in [
+            combat_task,
+            dialogue_task,
+            sigil_task,
+            questing_task,
+            speed_task,
+            auto_pet_task,
+            auto_fish_task,
+        ]:
+            if task is not None and not task.cancelled():
+                task.cancel()
+        for task in list(bot_tasks.values()):
+            if task is not None and not task.done():
+                task.cancel()
+        bot_tasks.clear()
+
+        await ibao_groups.stop()
+        await hotkey_groups.stop()
+        await tool_finish()
+        # Signal GUI thread that unhooking is done so it can exit cleanly
+        try:
+            gui_send_queue.put(xuanshu_gui.GUICommand(xuanshu_gui.GUICommandType.Close))
+        except Exception:
+            pass
+
+
+def bool_to_string(input: bool):
+    if input:
+        return "Enabled"
+
+    else:
+        return "Disabled"
+
+
+# def handle_tool_updating():
+# 	version = get_latest_version()
+# 	update_server = None
+
+# 	try:
+# 		update_server = read_webpage(f"{repo_path_raw}/LatestVersion.txt")
+# 	except Exception as e:
+# 		print(f"Exception \"{type(e).__name__}\" occured when checking for updates: \"{e}\"")
+# 		return
+
+# 	if update_server is None:
+# 		return
+
+# 	if update_server is not None and update_server[1].lower() == 'false':
+# 		raise KeyboardInterrupt
+
+# 	if update_server is not None:
+# 		version_specific_data = update_server[2:]
+# 		version_status_check = ' '.join(version_specific_data)
+
+# 		if tool_version in version_status_check:
+# 			version_status_index = index_with_str(version_specific_data, tool_version)
+# 			version_status = version_specific_data[version_status_index].split(' ')[1]
+
+# 			if version_status.lower() == 'false':
+# 				raise KeyboardInterrupt
+
+# 			elif version_status.lower() == 'force':
+# 				auto_update()
+
+# 		if version and auto_updating:
+# 			if is_version_greater(version, tool_version):
+# 				auto_update()
+
+# 			if not is_version_greater(tool_version, version):
+# 				config_update()
+
+
+def run():
+    # main() and the GUI communicate through module-level queues.  This used to
+    # live directly under ``if __name__ == "__main__"``; after moving startup
+    # into run() for the PyInstaller entry point, plain assignments would create
+    # locals and the backend would crash as soon as it sent its first update.
+    global gui_send_queue, recv_queue
+
+    # Validate configs and update the tool
+    # handle_tool_updating()
+
+    current_log = logger.add(
+        f"logs/{tool_name} - {generate_timestamp()}.log",
+        encoding="utf-8",
+        enqueue=True,
+        backtrace=True,
+    )
+
+    # Set up GUI queues before starting anything
+    gui_send_queue = queue.Queue()
+    recv_queue = queue.Queue()
+
+    # Run async backend in a background thread so the GUI can run on the main thread (required by Qt)
+    backend_thread = threading.Thread(target=lambda: asyncio.run(main()), daemon=True)
+    backend_thread.start()
+
+    # Run GUI on the main thread (swap queue order: sending from window = receiving from backend)
+    xuanshu_gui.manage_gui(
+        recv_queue,
+        gui_send_queue,
+        theme_dict,
+        tool_name,
+        tool_version,
+        gui_on_top,
+        gui_langcode,
+        gui_font,
+        gui_font_size,
+        tool_author,
+        settings=settings,
+    )
+
+    logger.remove(current_log)
+
+
+if __name__ == "__main__":
+    run()

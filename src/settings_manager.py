@@ -160,8 +160,20 @@ class XuanShuSettings:
         if "hotkeys" not in self._data:
             self._data["hotkeys"] = dict(DEFAULT_HOTKEYS)
             self._save()
+        if self._remove_retired_settings():
+            self._save()
+
+    def _remove_retired_settings(self):
+        settings = self._data.get("settings", {})
+        retired = ("fish_stop_on_mount", "fish_mount_name", "stop_on_mount", "mount_name",
+                   "hotkey_client_groups", "hotkey_group_targets")
+        changed = any(key in settings for key in retired)
+        for key in retired:
+            settings.pop(key, None)
+        return changed
 
     def _save(self):
+        self._remove_retired_settings()
         self._path.write_text(json.dumps(self._data, indent=2), encoding="utf-8")
 
     def get_hotkeys(self) -> dict:

@@ -2,9 +2,9 @@
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPlainTextEdit, QFileDialog,
-    QPushButton, QLabel, QSizePolicy, QLineEdit,
+    QPushButton, QLabel, QSizePolicy,
 )
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt
 
 from src.gui.commands import GUICommand, GUICommandType
 from src.gui.helpers import configure_action_button, centered_label, repo_icon_btn, add_recent, show_recent_menu
@@ -200,13 +200,6 @@ def build_bot_tab(ctx):
     )
     client_checks = {}
     layout.addWidget(client_toolbar)
-    mount_row = QHBoxLayout()
-    stop_mount = ThemedCheckBox('获得坐骑后停止', ctx.stroke_color, ctx.text_color, ctx.alt_bg)
-    mount_name = QLineEdit()
-    mount_name.setPlaceholderText('目标坐骑完整名称（留空：任意坐骑）')
-    mount_row.addWidget(stop_mount)
-    mount_row.addWidget(mount_name)
-    layout.addLayout(mount_row)
 
     active_groups = []
     initialized_clients = [False]
@@ -359,8 +352,7 @@ def build_bot_tab(ctx):
             return
         ctx.send_queue.put(GUICommand(
             GUICommandType.ExecuteBot,
-            {'text': editor.toPlainText(), 'clients': targets,
-             'stop_on_mount': stop_mount.isChecked(), 'mount_name': mount_name.text().strip()},
+            {'text': editor.toPlainText(), 'clients': targets},
         ))
 
     def kill_bot_callback():

@@ -1339,14 +1339,6 @@ class VM:
 
         # TODO: is eval always fast enough to run in order during a TaskGroup
         match command_name:
-            case "stop_if_mount":
-                from src.mount_stop import has_mount
-                for client in clients:
-                    name = await has_mount(client, instruction.data[2][0])
-                    if name:
-                        logger.info('{} 已持有坐骑 {}，正常结束当前脚本。', client.title, name)
-                        self.kill()
-                        return
             case "set_zone":
                 for client in clients:
                     zone_name = await client.zone_name()

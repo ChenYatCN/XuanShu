@@ -12,7 +12,6 @@ class CommandKind(Enum):
     expr_eq = auto()
 
     kill = auto()
-    stop_if_mount = auto()
     sleep = auto()
     log = auto()
     teleport = auto()
