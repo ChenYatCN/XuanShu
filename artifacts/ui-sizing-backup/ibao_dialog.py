@@ -1,5 +1,4 @@
 """Hidden ibao-ST group control panel."""
-from src.gui.helpers import configure_action_button, configure_titlebar_button
 from time import monotonic
 import ctypes
 import ctypes.wintypes
@@ -106,18 +105,17 @@ def build_ibao_dialog(ctx):
     layout.setSpacing(8)
     titlebar = QWidget()
     title_row = QHBoxLayout(titlebar)
-    titlebar.setFixedHeight(32)
-    title_row.setContentsMargins(4, 0, 4, 0)
-    title_row.setSpacing(0)
-    title_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+    title_row.setContentsMargins(0, 0, 0, 0)
     title = QLabel('玄枢 · 挖矿转换生产线')
     title.setAlignment(Qt.AlignmentFlag.AlignCenter)
     close = QPushButton()
+    close.setFixedSize(28, 26)
     close.setToolTip('关闭窗口（采集继续运行）')
     close.clicked.connect(dialog.close)
-    title_row.addSpacing(64)
+    title_row.addSpacing(28)
     title_row.addWidget(title, 1)
-    minimize = QPushButton()
+    minimize = QPushButton('−')
+    minimize.setFixedSize(28, 26)
     minimize.setToolTip('最小化生产线（采集继续运行）')
     minimize.clicked.connect(dialog.showMinimized)
     title_row.addWidget(minimize)
@@ -261,14 +259,13 @@ def build_ibao_dialog(ctx):
         tools_row.addWidget(button)
     layout.addLayout(tools_row)
     actions = QHBoxLayout()
-    actions.setSpacing(6)
-    actions.setAlignment(Qt.AlignmentFlag.AlignVCenter)
     start = QPushButton()
     stop = QPushButton()
     for button, label in ((start, '启动所选'), (stop, '停止所选')):
         button.setToolTip(label)
         button.setAccessibleName(label)
-        configure_action_button(button)
+        button.setFixedSize(40, 36)
+        button.setIconSize(QSize(24, 24))
         button.setCursor(Qt.CursorShape.PointingHandCursor)
     actions.addStretch()
     actions.addWidget(start)
@@ -357,8 +354,10 @@ def build_ibao_dialog(ctx):
         for button, icon in ((start, 'play'), (stop, 'kill')):
             button.setStyleSheet(ctx.icon_btn_style)
             button.setIcon(ctx.titlebar_svg_icon(ctx.svgs[icon], 24))
-        configure_titlebar_button(minimize, ctx.titlebar_svg_icon, ctx.stroke_color)
-        configure_titlebar_button(close, ctx.titlebar_svg_icon, ctx.stroke_color, close=True)
+        close.setStyleSheet(ctx.icon_btn_style)
+        minimize.setStyleSheet(ctx.icon_btn_style)
+        close.setIcon(ctx.titlebar_svg_icon(
+            f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{ctx.stroke_color}" stroke-width="2"><path d="M6 6L18 18M6 18L18 6"/></svg>', 18))
     ctx.exports['ibao'] = {'set_available_clients': set_clients, 'set_running_groups': set_groups,
                            'set_saved_configs': lambda value: saved_configs.update(value),
                            'show_error': status.setText, 'retheme': retheme}

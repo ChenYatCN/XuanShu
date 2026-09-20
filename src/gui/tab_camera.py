@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QLabel
 from PyQt6.QtCore import Qt
 
 from src.gui.commands import GUICommand, GUICommandType, GUIKeys
-from src.gui.helpers import centered_label, repo_icon_btn, copy_callback
+from src.gui.helpers import centered_label, repo_icon_btn, copy_callback, library_svg
 
 
 def build_camera_tab(ctx):
@@ -87,11 +87,12 @@ def build_camera_tab(ctx):
         row.addWidget(inp, 1)
 
         if default is not None:
+            row_svg = library_svg('8-界面/用户.svg', ctx.stroke_color) if default == 'gid' else reset_svg
             reset_btn = QPushButton()
-            reset_btn.setIcon(ctx.titlebar_svg_icon(reset_svg, 14))
+            reset_btn.setIcon(ctx.titlebar_svg_icon(row_svg, 14))
             reset_btn.setFixedSize(20, 20)
             reset_btn.setStyleSheet(ctx.icon_btn_style)
-            ctx.tracked_svg_labels.append([reset_btn, reset_svg, 14, 'icon'])
+            ctx.tracked_svg_labels.append([reset_btn, row_svg, 14, 'icon'])
             reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             if default == 'gid':
                 reset_btn.setToolTip(ctx.tl('fetch_player_gid'))

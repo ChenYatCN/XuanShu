@@ -110,7 +110,7 @@ class ActionRegistry:
     def action_icon_btn(self, svg_str, tooltip, callback, action_id=None):
         btn = QPushButton()
         btn.setIcon(self._titlebar_svg_icon(svg_str, 32))
-        configure_action_button(btn)
+        btn.setFixedSize(40, 40)
         btn.setStyleSheet(self.icon_btn_style)
         btn.setToolTip(tooltip)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -147,4 +147,3 @@ class ActionRegistry:
             except RuntimeError:
                 pass
         self._icon_buttons = new_icon_buttons
-from src.gui.helpers import configure_action_button

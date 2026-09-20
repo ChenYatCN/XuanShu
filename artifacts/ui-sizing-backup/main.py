@@ -33,7 +33,6 @@ from src.gui.actions import ActionRegistry
 from src.gui.commands import GUICommand, GUICommandType, GUIKeys, _format_binding
 from src.gui.helpers import (
     build_shared_svgs,
-    configure_titlebar_button, titlebar_button_style, titlebar_control_svg,
     centered_label,
     copy_callback,
     copy_icon_btn,
@@ -152,8 +151,8 @@ def manage_gui(
     # ==================== Custom Titlebar ====================
     _tc = _text_color
     _sc = _stroke_color
-    _close_svg = titlebar_control_svg(_sc, close=True)
-    _minimize_svg = titlebar_control_svg(_sc)
+    _close_svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="{_sc}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>'
+    _minimize_svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="{_sc}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/></svg>'
     _pin_svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="{_sc}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>'
     _unpin_svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="{_sc}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M15 9.34V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H7.89"/><path d="m2 2 20 20"/><path d="M9 9v1.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h11"/></svg>'
 
@@ -177,8 +176,28 @@ def manage_gui(
     titlebar_layout.setSpacing(0)
     titlebar_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
-    _titlebar_btn_style = titlebar_button_style()
-    _close_btn_style = titlebar_button_style(close=True)
+    _titlebar_btn_style = (
+        "QPushButton {"
+        "  background-color: transparent;"
+        "  border: none;"
+        "  padding: 4px;"
+        "}"
+        "QPushButton:hover {"
+        "  background-color: rgba(255,255,255,30);"
+        "  border-radius: 4px;"
+        "}"
+    )
+    _close_btn_style = (
+        "QPushButton {"
+        "  background-color: transparent;"
+        "  border: none;"
+        "  padding: 4px;"
+        "}"
+        "QPushButton:hover {"
+        "  background-color: rgba(232,17,35,200);"
+        "  border-radius: 4px;"
+        "}"
+    )
 
     # Left side: pin button
     _is_pinned = [gui_on_top]
@@ -266,7 +285,7 @@ def manage_gui(
 
     # Right side: minimize + close
     minimize_btn = QPushButton()
-    configure_titlebar_button(minimize_btn, _titlebar_svg_icon, _sc)
+    minimize_btn.setIcon(_titlebar_svg_icon(_minimize_svg))
     minimize_btn.setFixedSize(32, 24)
     minimize_btn.setStyleSheet(_titlebar_btn_style)
     minimize_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -274,7 +293,7 @@ def manage_gui(
     titlebar_layout.addWidget(minimize_btn)
 
     close_btn = QPushButton()
-    configure_titlebar_button(close_btn, _titlebar_svg_icon, _sc, close=True)
+    close_btn.setIcon(_titlebar_svg_icon(_close_svg))
     close_btn.setFixedSize(32, 24)
     close_btn.setStyleSheet(_close_btn_style)
     close_btn.setCursor(Qt.CursorShape.PointingHandCursor)

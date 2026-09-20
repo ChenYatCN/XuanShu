@@ -144,6 +144,17 @@ hiddenimports = [
 ]
 
 datas = []
+icon_root = "assets/icon/game-icon-pack-v1.4-svg-zh/无间距"
+for icon_name in (
+    "9-媒体/停止.svg", "10-编辑/复制.svg", "9-媒体/链接-02.svg",
+    "9-媒体/时间.svg", "8-界面/用户组.svg", "1-游戏/卡牌.svg",
+    "2-物品/书.svg", "9-媒体/消息.svg", "8-界面/用户.svg",
+    "1-游戏/击中.svg",
+):
+    icon_path = ROOT / icon_root / icon_name
+    if not icon_path.is_file():
+        raise FileNotFoundError(icon_path)
+    datas.append((str(icon_path), str(icon_path.parent.relative_to(ROOT))))
 updater_exe = ROOT / "libs/updater/target/release/deimos-updater.exe"
 if updater_exe.is_file():
     datas.append((str(updater_exe), "."))

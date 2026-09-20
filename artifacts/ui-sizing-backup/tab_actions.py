@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QSize
 
 from src.gui.commands import GUICommand, GUICommandType
-from src.gui.helpers import configure_action_button, centered_label, repo_icon_btn, add_recent, show_recent_menu
+from src.gui.helpers import centered_label, repo_icon_btn, add_recent, show_recent_menu
 from src.gui.widgets import FlowLayout, ThemedCheckBox, ClientStatusLayout
 
 
@@ -95,7 +95,7 @@ def _make_toggle_btn(ctx, play_tooltip, kill_tooltip, execute_cb, kill_cb, actio
 
     btn = QPushButton()
     btn.setIcon(ctx.titlebar_svg_icon(ctx.svgs['play'], 32))
-    configure_action_button(btn)
+    btn.setFixedSize(40, 40)
     btn.setStyleSheet(ctx.icon_btn_style)
     btn.setToolTip(play_tooltip)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -135,8 +135,6 @@ def build_flythrough_tab(ctx):
     layout.addWidget(editor, 1)
 
     btn_row = QHBoxLayout()
-    btn_row.setSpacing(6)
-    btn_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
     def flythrough_import():
         filepath, _ = QFileDialog.getOpenFileName(ctx.window, ctx.tl('import_flythrough'), "", "Text Files (*.txt)")
@@ -329,8 +327,6 @@ def build_bot_tab(ctx):
     layout.addWidget(editor, 1)
 
     btn_row = QHBoxLayout()
-    btn_row.setSpacing(6)
-    btn_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
     def bot_import():
         filepath, _ = QFileDialog.getOpenFileName(ctx.window, ctx.tl('import_bot'), "", "Text Files (*.txt)")
@@ -379,7 +375,8 @@ def build_bot_tab(ctx):
         ctx.svgs['kill'], ctx.tl('kill_bot_selected'), kill_bot_callback,
         action_id='kill_selected_bot',
     )
-    configure_action_button(run_btn)
+    run_btn.setFixedSize(44, 44)
+    run_btn.setIconSize(QSize(24, 24))
 
     recent_btn = ctx.registry.action_icon_btn(ctx.svgs['recent'], ctx.tl('recent_imports'), lambda: None)
     recent_btn.clicked.disconnect()
@@ -521,8 +518,6 @@ def build_combat_tab(ctx):
     layout.addWidget(editor, 1)
 
     btn_row = QHBoxLayout()
-    btn_row.setSpacing(6)
-    btn_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
     def combat_import():
         filepath, _ = QFileDialog.getOpenFileName(ctx.window, ctx.tl('import_playstyle'), "", "Text Files (*.txt)")

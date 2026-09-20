@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QWidget, QPushButton, QLabel, QGroupBox, QVBoxLayout, QHBoxLayout,
     QSizePolicy, QMenu, QFileDialog,
 )
-from PyQt6.QtCore import Qt, QTimer, QEvent, QObject, QPoint, QSize
+from PyQt6.QtCore import Qt, QTimer, QEvent, QObject, QPoint
 from PyQt6.QtGui import QPixmap, QIcon, QPainter, QTransform, QColor
 from PyQt6.QtSvg import QSvgRenderer
 
@@ -40,31 +40,6 @@ def library_svg(relative_path, color, scale=0.82):
         side = max(width, height) / scale
         return f'viewBox="{x + (width-side)/2:g} {y + (height-side)/2:g} {side:g} {side:g}"'
     return re.sub(r'viewBox="([^"]+)"', padded_viewbox, svg, count=1)
-
-
-def configure_action_button(button):
-    """Combat toolbar baseline: small artwork, generous click target."""
-    button.setFixedSize(40, 40)
-    button.setIconSize(QSize(16, 16))
-
-
-def titlebar_control_svg(color, close=False):
-    path = 'M18 6 6 18M6 6l12 12' if close else 'M5 12h14'
-    return f'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="{path}"/></svg>'
-
-
-def titlebar_button_style(close=False):
-    hover = 'rgba(232,17,35,200)' if close else 'rgba(255,255,255,30)'
-    return ('QPushButton { background-color: transparent; border: none; padding: 4px; }'
-            f'QPushButton:hover {{ background-color: {hover}; border-radius: 4px; }}')
-
-
-def configure_titlebar_button(button, icon_factory, color, close=False):
-    button.setFixedSize(32, 24)
-    button.setIconSize(QSize(16, 16))
-    button.setIcon(icon_factory(titlebar_control_svg(color, close), 24))
-    button.setStyleSheet(titlebar_button_style(close))
-    button.setCursor(Qt.CursorShape.PointingHandCursor)
 
 
 def terminate_thread(thread: Thread):

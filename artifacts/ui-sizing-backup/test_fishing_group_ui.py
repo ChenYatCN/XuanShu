@@ -154,10 +154,8 @@ class FishingGroupUITests(unittest.TestCase):
         button.click()
         self.ctx.send_queue.put.assert_not_called()
         self.assertEqual(stop_selected.toolTip(), 'fish_stop_selected')
-        self.assertEqual(button.width(), 40)
-        self.assertEqual(button.iconSize().width(), 16)
-        self.assertEqual(stop_selected.size(), button.size())
-        self.assertEqual(stop_selected.iconSize(), button.iconSize())
+        self.assertEqual(button.width(), 44)
+        self.assertEqual(button.iconSize().width(), 24)
         stop_selected.click()
         command = self.ctx.send_queue.put.call_args.args[0]
         self.assertEqual(command.com_type, GUICommandType.StopFishingGroup)

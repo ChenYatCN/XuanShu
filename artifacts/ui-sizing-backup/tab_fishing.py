@@ -1,4 +1,3 @@
-from src.gui.helpers import configure_action_button
 from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
@@ -281,13 +280,13 @@ def build_fishing_tab(ctx):
 
     toggle_row = QHBoxLayout()
     toggle_row.setContentsMargins(0, 2, 0, 0)
-    toggle_row.setSpacing(6)
-    toggle_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+    toggle_row.setSpacing(8)
     toggle_row.addStretch(1)
     toggle = QPushButton()
     toggle.setObjectName("ToggleFishingGroup")
     toggle.setCursor(Qt.CursorShape.PointingHandCursor)
-    configure_action_button(toggle)
+    toggle.setFixedSize(44, 44)
+    toggle.setIconSize(QSize(24, 24))
     toggle.setStyleSheet(ctx.icon_btn_style)
     toggle_row.addWidget(toggle)
     toggle_row.addWidget(running_label, 1)
@@ -363,7 +362,8 @@ def build_fishing_tab(ctx):
 
     stop_selected = QPushButton()
     stop_selected.setObjectName("StopFishingGroup")
-    configure_action_button(stop_selected)
+    stop_selected.setFixedSize(40, 40)
+    stop_selected.setIconSize(QSize(32, 32))
     stop_selected.setCursor(Qt.CursorShape.PointingHandCursor)
     stop_selected.setStyleSheet(ctx.icon_btn_style)
     stop_selected.setToolTip(tl("fish_stop_selected"))
