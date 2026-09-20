@@ -91,7 +91,9 @@ class IbaoGroupTests(unittest.IsolatedAsyncioTestCase):
             await prepare_restarted_client(client)
         client.activate_hooks.assert_awaited_once_with(wait_for_ready=False)
         from src import ibao_core
-        click.assert_awaited_once_with(client, ibao_core.playButton)
+        click.assert_awaited_once()
+        self.assertIs(click.await_args.args[0]._client, client)
+        self.assertEqual(click.await_args.args[1], ibao_core.playButton)
         client.body.position.assert_awaited_once()
         self.assertEqual(client.send_key.await_count, 2)
         self.assertTrue(all(call.args[0].name == 'ESC' for call in client.send_key.call_args_list))
@@ -209,7 +211,7 @@ class IbaoGroupTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.Event().wait()
 
         async def guard(run, clients):
-            self.assertEqual(clients, [client])
+            self.assertEqual([c._client for c in clients], [client])
             try:
                 return await run()
             finally:

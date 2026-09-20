@@ -313,14 +313,14 @@ def build_ibao_dialog(ctx):
     def set_groups(groups):
         nonlocal last_rows, running
         last_rows = groups
-        active = [g for g in groups if g.get('state') in ('采集中', '正在重启', '正在停止')]
+        active = [g for g in groups if g.get('state') in ('采集中', '正在重启')]
         running = {name for g in active for name in g['clients']}
         for name in running:
             if name in checks:
                 checks[name].blockSignals(True)
                 checks[name].setChecked(True)
                 checks[name].blockSignals(False)
-        status.setText('；'.join(g['state'] + '：' + '+'.join(g['clients']) for g in active) if active else '未运行')
+        status.setText('运行中：' + '、'.join('+'.join(g['clients']) for g in active) if active else '未运行')
         collection_title.setText(f"本轮 {sum(g.get('collected', 0) for g in groups if not g.get('archived'))} · 历史 {sum(g.get('collected', 0) for g in groups if g.get('archived'))}")
         collection.setPlainText('\n\n'.join(
             f"{'、'.join(g['clients'])}  {g.get('account', '')}    {g.get('state', '采集中')}\n"

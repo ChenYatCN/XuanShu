@@ -15,116 +15,45 @@ from src.script_popups import run_with_automation_ui_guard
 IBAO_INACTIVITY_TIMEOUT = 180.0
 
 
-async def complete_before_cancel(task, on_cancel=None):
-    """Defer cancellation until an atomic input/native operation has released resources.
-
-    Shield alone is insufficient: its caller could finish while the operation
-    keeps running. Repeated cancellation must not interrupt the drain either.
-    Never use this for the farming loop, only finite input/cleanup operations.
-    """
-    cancelled = False
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            cancelled = True
-            if on_cancel is not None:
-                on_cancel()
-            if task.cancelled():
-                raise
-    result = task.result()
-    if cancelled:
-        raise asyncio.CancelledError
-    return result
-
-
-async def launch_for_recovery(launch, nickname, game_path, release):
-    """A native login thread cannot be cancelled by cancelling to_thread().
-
-    Join it before reporting stopped; on cancellation, release its exact
-    returned handle for manual use instead of hooking/clicking Play afterwards.
-    """
-    task = asyncio.create_task(asyncio.to_thread(launch, nickname, game_path))
-    try:
-        return await complete_before_cancel(task)
-    except asyncio.CancelledError:
-        release(task.result())
-        raise
-
-
 class _TrackedMouseHandler:
     """Forward mouse operations while recording input-producing actions."""
 
-    def __init__(self, mouse_handler, touch, check_active=lambda: None):
+    def __init__(self, mouse_handler, touch):
         self._mouse_handler = mouse_handler
         self._touch = touch
-        self._check_active = check_active
 
     def __getattr__(self, name):
         return getattr(self._mouse_handler, name)
 
-    async def _click(self, method, *args, **kwargs):
-        self._check_active()
-        aborted = asyncio.Event()
-        async def transaction():
-            async with self._mouse_handler:
-                # A stop during hook installation must release it, not click.
-                if aborted.is_set():
-                    return
-                self._check_active()
-                self._touch()
-                return await method(*args, **kwargs)
-        return await complete_before_cancel(
-            asyncio.create_task(transaction()), aborted.set)
-
     async def click_window(self, *args, **kwargs):
-        return await self._click(self._mouse_handler.click_window, *args, **kwargs)
+        self._touch()
+        async with self._mouse_handler:
+            return await self._mouse_handler.click_window(*args, **kwargs)
 
     async def click_window_with_name(self, *args, **kwargs):
-        return await self._click(self._mouse_handler.click_window_with_name, *args, **kwargs)
-
-    async def __aenter__(self):
-        # UI guards already use a mouse context. Actual ownership belongs to
-        # each atomic click above, never to the complete guard/farming session.
-        self._check_active()
-        return self
-
-    async def __aexit__(self, *args):
-        return False
+        self._touch()
+        async with self._mouse_handler:
+            return await self._mouse_handler.click_window_with_name(*args, **kwargs)
 
 
 class _TrackedClient:
     """Transparent client proxy that timestamps ibao keyboard/movement input."""
 
-    def __init__(self, client, touch, is_active=lambda: True):
+    def __init__(self, client, touch):
         self._client = client
-        self._is_active = is_active
-        self.mouse_handler = _TrackedMouseHandler(getattr(client, 'mouse_handler', None), touch, self._check_active)
+        self.mouse_handler = _TrackedMouseHandler(client.mouse_handler, touch)
         self._touch = touch
 
     def __getattr__(self, name):
         return getattr(self._client, name)
 
-    def __setattr__(self, name, value):
-        if name in ('_client', '_is_active', 'mouse_handler', '_touch'):
-            object.__setattr__(self, name, value)
-        else:
-            setattr(self._client, name, value)
-
-    def _check_active(self):
-        if not self._is_active():
-            raise asyncio.CancelledError
-
     async def send_key(self, *args, **kwargs):
-        self._check_active()
         self._touch()
-        # Complete key-up before acknowledging stop.
-        return await complete_before_cancel(asyncio.create_task(self._client.send_key(*args, **kwargs)))
+        return await self._client.send_key(*args, **kwargs)
 
     async def teleport(self, *args, **kwargs):
-        self._check_active()
         self._touch()
-        return await complete_before_cancel(asyncio.create_task(self._client.teleport(*args, **kwargs)))
+        return await self._client.teleport(*args, **kwargs)
 
 
 def parse_locations(text):
@@ -177,9 +106,8 @@ async def run_client(client, settings):
 
 async def prepare_restarted_client(client, timeout=60):
     """Dismiss the title, click Play and wait for a loaded character."""
-    client = _TrackedClient(client, lambda: None)
     async with asyncio.timeout(timeout):
-        await complete_before_cancel(asyncio.create_task(client.activate_hooks(wait_for_ready=False)))
+        await client.activate_hooks(wait_for_ready=False)
         while True:
             try:
                 ready = await ibao_core.is_visible_by_path(client.root_window, ibao_core.playButton)
@@ -204,9 +132,9 @@ async def prepare_restarted_client(client, timeout=60):
 
 async def _run_client_session(client, settings):
     scope = create_session(client, settings)
-    tracked_client = client if isinstance(client, _TrackedClient) else _TrackedClient(
-        client, settings.get('_activity_callback', lambda: None),
-        settings.get('_is_active', lambda: True))
+    tracked_client = _TrackedClient(
+        client, settings.get('_activity_callback', lambda: None)
+    )
     # Reuse exact original UI paths, but bound entry and allow cancellation.
     async with asyncio.timeout(60):
         while not await scope['is_visible_by_path'](tracked_client.root_window, scope['playButton']):
@@ -252,7 +180,7 @@ class IbaoGroups:
         self.results = saved.get('results', [])
         for row in self.results:
             row['archived'] = True
-            if row.get('state') in ('采集中', '正在重启', '正在停止'):
+            if row.get('state') in ('采集中', '正在重启'):
                 row['state'] = '上次运行中断'
         self._last_publish = self.clock()
 
@@ -264,7 +192,7 @@ class IbaoGroups:
                          'account': g['account'], 'collected': g['collected'],
                          'elapsed': elapsed, 'started_at': g['started_at'],
                          'restarts': g['restarts'],
-                         'state': '正在停止' if g.get('stopping') else ('正在重启' if g['recovering'] else '采集中')})
+                         'state': '正在重启' if g['recovering'] else '采集中'})
         return rows + deepcopy(self.results)
 
     def persist(self):
@@ -293,10 +221,8 @@ class IbaoGroups:
         self.recovery = recovery
 
     async def _guarded_worker(self, client, settings):
-        tracked = _TrackedClient(client, settings.get('_activity_callback', lambda: None),
-                                 settings.get('_is_active', lambda: True))
         return await self.ui_guard(
-            lambda: self.worker(client, settings), [tracked]
+            lambda: self.worker(client, settings), [client]
         )
 
     @staticmethod
@@ -313,8 +239,6 @@ class IbaoGroups:
         supervisor = asyncio.current_task()
         current_client = client
         while True:
-            if group.get('stopping'):
-                raise asyncio.CancelledError
             current_client.is_ibao = True
             last_activity = self.clock()
             last_signature = None
@@ -324,14 +248,10 @@ class IbaoGroups:
                 last_activity = self.clock()
 
             runtime_settings = deepcopy(settings)
-            attempt_active = [True]
-            runtime_settings['_is_active'] = lambda active=attempt_active: active[0] and not group.get('stopping', False)
             # Input attempts are not evidence of progress.
             runtime_settings['_activity_callback'] = lambda: None
             runtime_settings['_progress_callback'] = touch
-            def collected(runtime_settings=runtime_settings):
-                if not runtime_settings['_is_active']():
-                    return
+            def collected():
                 group['collected'] += 1
                 group['consecutive_restarts'] = 0
                 touch()
@@ -389,11 +309,8 @@ class IbaoGroups:
                     current_client.title,
                     round(self.inactivity_timeout),
                 )
-                attempt_active[0] = False
                 worker_task.cancel()
-                await complete_before_cancel(asyncio.gather(worker_task, return_exceptions=True))
-                if group.get('stopping'):
-                    raise asyncio.CancelledError
+                await asyncio.gather(worker_task, return_exceptions=True)
                 if self.recovery is None:
                     raise RuntimeError('未配置 ibao 客户端自动重启接口')
                 if group['consecutive_restarts'] >= 3:
@@ -423,10 +340,9 @@ class IbaoGroups:
                     current_client.title,
                 )
             finally:
-                attempt_active[0] = False
                 if not worker_task.done():
                     worker_task.cancel()
-                    await complete_before_cancel(asyncio.gather(worker_task, return_exceptions=True))
+                    await asyncio.gather(worker_task, return_exceptions=True)
                 group.pop('_worker_task', None)
 
     def notify(self):
@@ -453,7 +369,6 @@ class IbaoGroups:
                 'settings': deepcopy(settings),
                 'workers': [],
                 'recovering': False,
-                'stopping': False,
                 'collected': 0,
                 'account': account or '',
                 'started': self.clock(),
@@ -486,21 +401,12 @@ class IbaoGroups:
         self.persist()
 
     async def stop(self, titles=None):
-        groups = [g for g in self.groups if any(titles is None or c.title in titles for c, _ in g['workers'])]
-        await self._stop_groups(groups)
-
-    async def _stop_groups(self, groups):
-        tasks = []
-        for group in groups:
-            stopping = group.get('stopping', False)
-            group['stopping'] = True
-            for _, task in group['workers']:
-                tasks.append(task)
-                if not stopping:
-                    task.cancel()
-        self.notify()
+        tasks = [task for g in self.groups for c, task in g['workers']
+                 if titles is None or c.title in titles]
+        for task in tasks:
+            task.cancel()
         if tasks:
-            await complete_before_cancel(asyncio.gather(*tasks, return_exceptions=True))
+            await asyncio.gather(*tasks, return_exceptions=True)
         self.notify()
 
     async def remove_missing(self):
@@ -509,12 +415,14 @@ class IbaoGroups:
             self.notify()
             self.persist()
         live = {id(c) for c in self.clients()}
-        groups = [
-            group
+        tasks = [
+            task
             for group in self.groups
             if not group.get('recovering', False)
             for client, task in group['workers']
             if id(client) not in live or not getattr(client, 'is_running', lambda: True)()
         ]
-        if groups:
-            await self._stop_groups(groups)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)

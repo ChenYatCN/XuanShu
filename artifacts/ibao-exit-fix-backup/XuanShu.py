@@ -3010,7 +3010,6 @@ async def main():
         handle: int, nickname: str, preserved_title: str | None = None
     ) -> Client:
         """Relaunch one vault account, hook it, and preserve its client slot."""
-        from src.ibao_runtime import launch_for_recovery, complete_before_cancel
         old_client = next(
             (c for c in walker.clients if c.window_handle == handle), None
         )
@@ -3027,16 +3026,13 @@ async def main():
         if old_client is not None:
             try:
                 async with asyncio.timeout(10):
-                    await complete_before_cancel(asyncio.create_task(old_client.close()))
+                    await old_client.close()
             except Exception:
                 pass
-            finally:
-                if handle in walker._managed_handles:
-                    walker._managed_handles.remove(handle)
-                if old_client in walker.clients:
-                    walker.clients.remove(old_client)
-                released_handles.add(handle)
-                _send_hooked_clients_update()
+            if handle in walker._managed_handles:
+                walker._managed_handles.remove(handle)
+            if old_client in walker.clients:
+                walker.clients.remove(old_client)
         launched_account_map.pop(handle, None)
         _hooking_in_progress.discard(handle)
         _kill_process_by_handle(handle)
@@ -3054,15 +3050,8 @@ async def main():
 
         game_path = str(utils.get_wiz_install())
         await asyncio.sleep(1)
-        def release_cancelled_launch(new_handle):
-            # The native call has finished. Do not hook or click Play after a
-            # stop; keep this exact newly launched window available to the user.
-            launched_account_map[new_handle] = nickname
-            released_handles.add(new_handle)
-            _send_hooked_clients_update()
-
-        new_handle = await launch_for_recovery(
-            wizlaunch.launch_instance, nickname, game_path, release_cancelled_launch
+        new_handle = await asyncio.to_thread(
+            wizlaunch.launch_instance, nickname, game_path
         )
         launched_account_map[new_handle] = nickname
         released_handles.discard(new_handle)
@@ -3089,59 +3078,28 @@ async def main():
 
         _hooking_in_progress.add(new_handle)
         _send_hooked_clients_update()
-        config_task = None
         if client_resizing and new_handle not in window_config_applied:
             window_config_applied.add(new_handle)
-            config_task = asyncio.create_task(
+            asyncio.create_task(
                 _apply_account_window_config(new_client, new_handle, nickname)
             )
-        initialized = False
-        replacement_released = False
-        async def release_replacement():
-            nonlocal replacement_released
-            if replacement_released:
-                return
-            replacement_released = True
-            try:
-                await new_client.close()
-            except Exception as exc:
-                logger.warning('ibao 停止时释放新客户端 Hook 失败：{}', exc)
-            finally:
-                if new_handle in walker._managed_handles:
-                    walker._managed_handles.remove(new_handle)
-                if new_client in walker.clients:
-                    walker.clients.remove(new_client)
-                released_handles.add(new_handle)
         try:
             from src.ibao_runtime import prepare_restarted_client
 
             logger.info("ibao 重启后等待角色选择界面，必要时发送 ESC")
-            try:
-                await prepare_restarted_client(new_client)
-            except wizwalker.errors.HookAlreadyActivated:
-                pass
+            await prepare_restarted_client(new_client)
             await _init_client_attrs(new_client)
-            initialized = True
+        except wizwalker.errors.HookAlreadyActivated:
+            await _init_client_attrs(new_client)
+        except Exception:
+            if new_handle in walker._managed_handles:
+                walker._managed_handles.remove(new_handle)
+            if new_client in walker.clients:
+                walker.clients.remove(new_client)
+            raise
         finally:
-            async def finish_replacement():
-                if config_task is not None:
-                    if not config_task.done():
-                        config_task.cancel()
-                    await asyncio.gather(config_task, return_exceptions=True)
-                if not initialized:
-                    # Also runs for cancellation inside character preparation
-                    # or attribute setup. No UI may report stopped beforehand.
-                    await release_replacement()
-                _hooking_in_progress.discard(new_handle)
-                _send_hooked_clients_update()
-            try:
-                await complete_before_cancel(asyncio.create_task(finish_replacement()))
-            except asyncio.CancelledError:
-                # Stop can arrive after initialization but before ownership is
-                # returned to the supervisor. That replacement is ours too.
-                await complete_before_cancel(asyncio.create_task(release_replacement()))
-                _send_hooked_clients_update()
-                raise
+            _hooking_in_progress.discard(new_handle)
+            _send_hooked_clients_update()
 
         logger.info(
             f"Relaunched, logged in, and hooked '{nickname}' as {new_client.title}."

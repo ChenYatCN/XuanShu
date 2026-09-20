@@ -3,7 +3,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
-from PyQt6.QtWidgets import QApplication, QWidget, QPushButton, QPlainTextEdit, QCheckBox
+from PyQt6.QtWidgets import QApplication, QWidget, QPushButton, QPlainTextEdit, QCheckBox, QLabel
 from PyQt6.QtGui import QIcon
 from src.gui.ibao_dialog import build_ibao_dialog, LocationTable
 
@@ -41,6 +41,10 @@ class IbaoUITests(unittest.TestCase):
         self.assertTrue(check.isChecked())
         check.setChecked(False)
         self.assertEqual(ctx.send_queue.put.call_args.args[0].data, {'clients': ['p1']})
+        api['set_running_groups']([{'clients':['p1'], 'collected':12, 'state':'正在停止'}])
+        self.assertTrue(any(label.text() == '正在停止：p1' for label in dialog.findChildren(QLabel)))
+        self.assertTrue(check.isChecked())
+        self.assertFalse(any(label.text() == '未运行' for label in dialog.findChildren(QLabel)))
         api['set_running_groups']([{'clients': ['p1'], 'collected': 12, 'state': '已归档', 'archived': True}])
         self.assertEqual(report.toPlainText(), '')
         dialog.close()
