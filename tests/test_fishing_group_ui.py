@@ -170,10 +170,11 @@ class FishingGroupUITests(unittest.TestCase):
         render = Mock(return_value=QIcon())
         self.ctx.titlebar_svg_icon = render
         self.api['retheme']()
-        self.assertIn('<circle cx="16.5"', render.call_args.args[0])
+        from src.gui.tab_fishing import _fish_svg
+        self.assertEqual(_fish_svg(self.ctx.stroke_color), render.call_args.args[0])
         self.checks['p1'].setChecked(True)
         self.api['set_running_groups']([{'clients':['p1'], 'settings':{}}])
-        self.assertIn('<circle cx="16.5"', render.call_args.args[0])
+        self.assertEqual(_fish_svg(self.ctx.stroke_color), render.call_args.args[0])
         status = self.tab.findChild(QLabel, 'FishingRunningGroups')
         self.assertEqual(status.alignment(), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         selector = self.tab.findChild(QWidget, 'FishingClientSelector')

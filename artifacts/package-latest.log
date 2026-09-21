@@ -1,0 +1,141 @@
+102 INFO: PyInstaller: 6.20.0, contrib hooks: 2026.5
+102 INFO: Python: 3.13.12
+119 INFO: Platform: Windows-11-10.0.26200-SP0
+119 INFO: Python environment: D:\XuanShuTool\XuanShu-Project\XuanShu\.venv
+120 INFO: Removing temporary files and cleaning cache in C:\Users\ChenYat\AppData\Local\pyinstaller
+5216 INFO: Module search paths (PYTHONPATH):
+['D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages',
+ 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\src',
+ 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu',
+ 'D:\\program files\\Python\\python313\\python313.zip',
+ 'D:\\program files\\Python\\python313\\DLLs',
+ 'D:\\program files\\Python\\python313\\Lib',
+ 'D:\\program files\\Python\\python313',
+ 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv',
+ 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\win32',
+ 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\win32\\lib',
+ 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\Pythonwin',
+ 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu',
+ 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\src']
+5483 INFO: Appending 'datas' from .spec
+5485 INFO: checking Analysis
+5485 INFO: Building Analysis because Analysis-00.toc is non existent
+5486 INFO: Looking for Python shared library...
+5486 INFO: Using Python shared library: D:\program files\Python\python313\python313.dll
+5486 INFO: Running Analysis Analysis-00.toc
+5486 INFO: Target bytecode optimization level: 2
+5486 INFO: Initializing module dependency graph...
+5486 INFO: Initializing module graph hook caches...
+5496 INFO: Analyzing modules for base_library.zip ...
+6386 INFO: Processing standard module hook 'hook-encodings.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+7950 INFO: Processing standard module hook 'hook-pickle.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+8638 INFO: Processing standard module hook 'hook-heapq.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+9018 INFO: Caching module dependency graph...
+9047 INFO: Analyzing D:\XuanShuTool\XuanShu-Project\XuanShu\XuanShu.py
+9417 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+9606 INFO: Processing standard module hook 'hook-xml.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+9840 INFO: Processing standard module hook 'hook-sysconfig.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+9844 INFO: Processing standard module hook 'hook-_ctypes.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+10206 INFO: Processing standard module hook 'hook-platform.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+10222 INFO: Processing standard module hook 'hook-urllib3.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+10307 INFO: Processing pre-safe-import-module hook 'hook-backports.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+10309 INFO: SetuptoolsInfo: initializing cached setuptools info...
+10802 INFO: Setuptools: 'backports' appears to be a full setuptools-vendored copy - creating alias to 'setuptools._vendor.backports'!
+10808 INFO: Processing standard module hook 'hook-setuptools.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+10820 INFO: Processing pre-safe-import-module hook 'hook-distutils.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+10846 INFO: Processing pre-safe-import-module hook 'hook-jaraco.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+10847 INFO: Setuptools: 'jaraco' appears to be a full setuptools-vendored copy - creating alias to 'setuptools._vendor.jaraco'!
+10856 INFO: Processing pre-safe-import-module hook 'hook-more_itertools.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+10857 INFO: Setuptools: 'more_itertools' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.more_itertools'!
+10966 INFO: Processing pre-safe-import-module hook 'hook-typing_extensions.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+11043 INFO: Processing pre-safe-import-module hook 'hook-packaging.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+11216 INFO: Processing standard module hook 'hook-setuptools._vendor.jaraco.text.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+11218 INFO: Processing pre-safe-import-module hook 'hook-importlib_resources.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+11660 INFO: Processing pre-safe-import-module hook 'hook-importlib_metadata.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+11661 INFO: Setuptools: 'importlib_metadata' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.importlib_metadata'!
+11682 INFO: Processing standard module hook 'hook-setuptools._vendor.importlib_metadata.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+11704 INFO: Processing pre-safe-import-module hook 'hook-zipp.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+11705 INFO: Setuptools: 'zipp' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.zipp'!
+11924 INFO: Processing pre-safe-import-module hook 'hook-tomli.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+11925 INFO: Setuptools: 'tomli' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.tomli'!
+12341 INFO: Processing pre-safe-import-module hook 'hook-wheel.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+12342 INFO: Setuptools: 'wheel' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.wheel'!
+12799 INFO: Processing standard module hook 'hook-certifi.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+12835 INFO: Processing standard module hook 'hook-charset_normalizer.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+12957 INFO: Processing standard module hook 'hook-cryptography.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+14244 INFO: hook-cryptography: cryptography does not seem to be using dynamically linked OpenSSL.
+14731 INFO: Processing pre-find-module-path hook 'hook-wizwalker.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\packaging\\pyinstaller_hooks\\pre_find_module_path'
+14773 INFO: Processing standard module hook 'hook-appdirs.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+14969 INFO: Processing standard module hook 'hook-difflib.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+15140 INFO: Processing standard module hook 'hook-regex.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+16006 INFO: Processing standard module hook 'hook-PyQt6.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+16498 INFO: Processing standard module hook 'hook-PyQt6.QtCore.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+19493 INFO: Processing standard module hook 'hook-PyQt6.QtGui.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+32092 INFO: Processing standard module hook 'hook-PyQt6.QtSvg.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+33189 INFO: Processing standard module hook 'hook-PyQt6.QtWidgets.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+36779 INFO: Processing pre-find-module-path hook 'hook-wizwalker.extensions.wizsprinter.sprinty_combat.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\packaging\\pyinstaller_hooks\\pre_find_module_path'
+36872 INFO: Processing standard module hook 'hook-lark.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\lark\\__pyinstaller'
+37687 INFO: Processing standard module hook 'hook-xml.etree.cElementTree.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+38446 INFO: Analyzing hidden import 'wizwalker.extensions.wizsprinter.combat_lifting'
+38454 INFO: Analyzing hidden import 'wizwalker.memory.memory_objects.combat_action'
+38470 INFO: Analyzing hidden import 'lark.__pyinstaller'
+38471 INFO: Analyzing hidden import 'lark.__pyinstaller.hook-lark'
+38883 INFO: Processing standard module hook 'hook-win32ctypes.core.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+39668 INFO: Processing standard module hook 'hook-pycparser.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+40150 INFO: Analyzing hidden import 'lark.ast_utils'
+40152 INFO: Analyzing hidden import 'lark.grammars'
+40153 INFO: Analyzing hidden import 'lark.indenter'
+40157 INFO: Analyzing hidden import 'lark.reconstruct'
+40169 INFO: Analyzing hidden import 'lark.tools'
+40173 INFO: Analyzing hidden import 'lark.tools.nearley'
+40180 INFO: Analyzing hidden import 'lark.tools.serialize'
+40182 INFO: Analyzing hidden import 'lark.tools.standalone'
+40187 INFO: Analyzing hidden import 'lark.tree_templates'
+40195 INFO: Processing module hooks (post-graph stage)...
+40196 WARNING: Hidden import "pycparser.lextab" not found!
+40196 WARNING: Hidden import "pycparser.yacctab" not found!
+40307 INFO: Performing binary vs. data reclassification (187 entries)
+40384 INFO: Looking for ctypes DLLs
+40543 INFO: Analyzing run-time hooks ...
+40543 INFO: Including custom run-time hook 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\_pyi_rthook_font.py'
+40544 INFO: Including custom run-time hook 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\_pyi_rthook_wizsprinter.py'
+40549 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+40551 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+40553 INFO: Including run-time hook 'pyi_rth_setuptools.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+40555 INFO: Including run-time hook 'pyi_rth_multiprocessing.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+40558 INFO: Including run-time hook 'pyi_rth_pyqt6.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+40560 INFO: Processing pre-find-module-path hook 'hook-_pyi_rth_utils.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+40563 INFO: Processing standard module hook 'hook-_pyi_rth_utils.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+40565 INFO: Including run-time hook 'pyi_rth_cryptography_openssl.py' from 'D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\rthooks'
+40576 INFO: Creating base_library.zip...
+40770 INFO: Looking for dynamic libraries
+41519 INFO: Extra DLL search directories (AddDllDirectory): ['D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\bin']
+41519 INFO: Extra DLL search directories (PATH): ['D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\bin']
+42446 INFO: Warnings written to D:\XuanShuTool\XuanShu-Project\XuanShu\build\XuanShu\warn-XuanShu.txt
+42502 INFO: Graph cross-reference written to D:\XuanShuTool\XuanShu-Project\XuanShu\build\XuanShu\xref-XuanShu.html
+42622 INFO: checking PYZ
+42622 INFO: Building PYZ because PYZ-00.toc is non existent
+42622 INFO: Building PYZ (ZlibArchive) D:\XuanShuTool\XuanShu-Project\XuanShu\build\XuanShu\PYZ-00.pyz
+45379 INFO: Building PYZ (ZlibArchive) D:\XuanShuTool\XuanShu-Project\XuanShu\build\XuanShu\PYZ-00.pyz completed successfully.
+45398 INFO: checking PKG
+45398 INFO: Building PKG because PKG-00.toc is non existent
+45398 INFO: Building PKG (CArchive) XuanShu.pkg
+58161 INFO: Building PKG (CArchive) XuanShu.pkg completed successfully.
+58166 INFO: Bootloader D:\XuanShuTool\XuanShu-Project\XuanShu\.venv\Lib\site-packages\PyInstaller\bootloader\Windows-64bit-intel\runw.exe
+58166 INFO: checking EXE
+58166 INFO: Building EXE because EXE-00.toc is non existent
+58166 INFO: Building EXE from EXE-00.toc
+58167 INFO: Copying bootloader EXE to D:\XuanShuTool\XuanShu-Project\XuanShu\dist\XuanShu.exe
+58177 INFO: Copying icon to EXE
+58186 INFO: Copying version information to EXE
+58196 INFO: Copying 0 resources to EXE
+58196 INFO: Embedding manifest in EXE
+58206 INFO: Appending PKG archive to EXE
+58257 INFO: Fixing EXE headers
+58552 INFO: Building EXE from EXE-00.toc completed successfully.
+58557 INFO: Build complete! The results are available in: D:\XuanShuTool\XuanShu-Project\XuanShu\dist
+[XuanShu.spec] wizwalker: D:\XuanShuTool\XuanShu-Project\XuanShu\.venv\Lib\site-packages\wizwalker
+[XuanShu.spec] wizwalker.extensions.wizsprinter: D:\XuanShuTool\XuanShu-Project\XuanShu\.venv\Lib\site-packages\wizwalker\extensions\wizsprinter
+[XuanShu.spec] wizlaunch: D:\XuanShuTool\XuanShu-Project\XuanShu\.venv\Lib\site-packages\wizlaunch
+[XuanShu.spec] wizlaunch version: 0.3.1
+[XuanShu.spec] removed 45 contaminated binaries entries

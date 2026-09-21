@@ -2592,7 +2592,7 @@ async def main():
 
             safe_distance = 620
             while True:
-                await asyncio.sleep(0.25)
+                            await asyncio.sleep(0.25)
 
                 if p.questing_status:
                     if getattr(p, "quest_party_battle_rescue_active", False):

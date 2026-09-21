@@ -177,7 +177,7 @@ def build_hotkeys_tab(ctx):
                     dialogue_side_quests_callback,
                     True,
                     "SideQuestAccept",
-                    _toggle_icons["speech"],
+                    library_svg('9-媒体/消息.svg', sc),
                 ),
                 (
                     "toggle_sigil",

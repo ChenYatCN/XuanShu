@@ -1,4 +1,4 @@
-from src.gui.helpers import configure_action_button
+from src.gui.helpers import configure_action_button, library_svg
 from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
@@ -44,23 +44,11 @@ def _icon_toggle_style(ctx):
 
 
 def _chest_svg(stroke):
-    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"
-        viewBox="0 0 24 24" fill="none" stroke="{stroke}" stroke-width="1.8"
-        stroke-linecap="round" stroke-linejoin="round">
-        <path d="M5 9.5 6.5 5h11L19 9.5"/>
-        <rect x="3" y="9.5" width="18" height="10.5" rx="2"/>
-        <path d="M3 13h18M12 9.5V20M9.5 14.5h5"/>
-    </svg>'''
+    return library_svg('2-物品/箱子.svg', stroke)
 
 
 def _fish_svg(stroke):
-    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"
-        viewBox="0 0 24 24" fill="none" stroke="{stroke}" stroke-width="2"
-        stroke-linecap="round" stroke-linejoin="round">
-        <path d="M6.5 12c1.1-2.7 3.7-4.5 6.7-4.5 3.2 0 6 1.8 7.3 4.5-1.3 2.7-4.1 4.5-7.3 4.5-3 0-5.6-1.8-6.7-4.5Z"/>
-        <path d="m6.5 12-3.5-4v8l3.5-4ZM10.5 8.1 9 5.5M10.5 15.9 9 18.5"/>
-        <circle cx="16.5" cy="11" r=".7" fill="{stroke}" stroke="none"/>
-    </svg>'''
+    return library_svg('2-物品/钓鱼竿.svg', stroke)
 
 
 def _configure_icon_toggle(ctx, checkbox, svg):
