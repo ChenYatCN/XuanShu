@@ -7,7 +7,7 @@ name = "xuanshu"
 version = "2.1.3"
 description = "A Wizard101 automation tool"
 license = "GPL-3.0-only"
-requires-python = ">=3.13,<3.14"
+requires-python = ">=3.13"
 dependencies = [
     "loguru>=0.7.2",
     "pypresence>=4.3.0",
