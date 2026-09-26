@@ -79,7 +79,7 @@ def build_hotkeys_tab(ctx):
 
     # --- Left panel: Hotkey Manager ---
     hk_manager = QWidget()
-    hk_manager.setFixedWidth(320)
+    hk_manager.setFixedWidth(430)
     hk_manager_layout = QVBoxLayout(hk_manager)
     hk_manager_layout.setContentsMargins(0, 0, 0, 0)
     hk_manager_layout.setSpacing(4)
@@ -132,13 +132,20 @@ def build_hotkeys_tab(ctx):
     overview_table.verticalHeader().setVisible(False)
     overview_table.setShowGrid(False)
     overview_table.setAlternatingRowColors(True)
-    overview_table.verticalHeader().setDefaultSectionSize(27)
+    overview_table.verticalHeader().setDefaultSectionSize(32)
     overview_layout.addWidget(overview_table)
 
     def _style_overview():
+        alt_color = QColor(ctx.alt_bg)
+        if QColor(ctx.bg_color).lightness() < 128:
+            alt_color = alt_color.lighter(145)
+        else:
+            alt_color = alt_color.darker(115)
         overview_table.setStyleSheet(
             f'QTableWidget {{ background: {ctx.bg_color}; color: {ctx.text_color};'
-            f' alternate-background-color: {ctx.alt_bg}; border: none; }}'
+            f' alternate-background-color: {alt_color.name()}; border: none; }}'
+            f'QTableWidget::item {{ padding: 3px 6px;'
+            f' border-bottom: 3px solid {ctx.bg_color}; }}'
             f'QHeaderView::section {{ background: {ctx.alt_bg};'
             f' color: {ctx.text_color}; border: none; padding: 4px; }}'
         )
@@ -186,7 +193,7 @@ def build_hotkeys_tab(ctx):
             status_width = 28 * min(4, len(clients)) + (30 if len(clients) > 4 else 0)
             badges_host.setFixedWidth(status_width)
             badges_host.setVisible(bool(clients))
-            # Icon, key, edit and four gaps use 118 px of the 320 px list.
+            # Icon, key, edit and four gaps use 118 px of the list.
             name_label.setFixedWidth(min(165, hk_manager.width() - 118 - status_width))
             states = status_snapshot.get(action, {})
             for badge, client in zip(badges, clients[:4]):
@@ -594,7 +601,6 @@ def build_hotkeys_tab(ctx):
             more.clicked.connect(lambda _, action=action_id: _open_overview(action))
             badges_layout.addWidget(more)
             status_badges[action_id] = (badges, more, name_label)
-            row.addWidget(badges_host)
 
         _pencil_svg = ctx.svgs["pencil"]
         edit_btn = QPushButton(_p)
@@ -608,6 +614,8 @@ def build_hotkeys_tab(ctx):
         if not is_toggle:
             row.addStretch()
         row.addWidget(edit_btn)
+        if is_toggle:
+            row.addWidget(badges_host)
 
         if removable:
             _x_svg = ctx.svgs["x"]
@@ -748,9 +756,9 @@ def build_hotkeys_tab(ctx):
                         GUICommand(GUICommandType.RebindHotkey, (aid, None, None))
                     )
 
-    hk_manager_layout.addWidget(
-        registry.styled_btn(tl("reset_defaults"), _reset_hotkeys)
-    )
+    reset_btn = registry.styled_btn(tl("reset_defaults"), _reset_hotkeys)
+    reset_btn.setFixedWidth(300)
+    hk_manager_layout.addWidget(reset_btn, alignment=Qt.AlignmentFlag.AlignLeft)
     hotkeys_body.addWidget(hk_manager)
 
     # --- Right panel: Tool info ---
@@ -812,10 +820,10 @@ def build_hotkeys_tab(ctx):
 
     quest_party_status = QLabel()
     quest_party_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    quest_party_status.setTextFormat(Qt.TextFormat.PlainText)
     quest_party_status.setWordWrap(True)
     quest_party_status.setMinimumHeight(58)
-    quest_party_status.setMinimumWidth(340)
-    quest_party_status.setMaximumWidth(340)
+    quest_party_status.setFixedWidth(230)
     quest_party_status.setSizePolicy(
         QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred
     )
