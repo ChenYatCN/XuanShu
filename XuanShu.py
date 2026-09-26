@@ -661,6 +661,7 @@ async def tool_finish():
 
 @logger.catch()
 async def main():
+    paused_task_names = None
     global tool_status
     global original_client_locations
     global listener
@@ -834,6 +835,7 @@ async def main():
         global questing_status
         global questing_task
         global gui_send_queue
+        nonlocal paused_task_names
 
         if not freecam_status:
             for p in walker.clients:
@@ -855,7 +857,9 @@ async def main():
 
             else:
                 logger.debug("Sigil hotkey pressed, enabling auto sigil.")
-                if questing_task is not None and not questing_task.cancelled():
+                if questing_status or (
+                    questing_task is not None and not questing_task.done()
+                ):
                     logger.debug("Questing hotkey pressed, disabling auto questing.")
                     gui_send_queue.put(
                         xuanshu_gui.GUICommand(
@@ -863,11 +867,16 @@ async def main():
                             ("QuestingStatus", "Disabled"),
                         )
                     )
-                    questing_task.cancel()
-                    for p in walker.clients:
-                        p.questing_status = False
+                    task_to_stop = questing_task
                     questing_status = False
-                    questing_task = None
+                    if paused_task_names is not None:
+                        paused_task_names.discard("questing")
+                    if task_to_stop is not None:
+                        task_to_stop.cancel()
+                        await asyncio.gather(task_to_stop, return_exceptions=True)
+                    if questing_task is task_to_stop:
+                        questing_task = None
+                    apply_questing_roles(False)
 
                 gui_send_queue.put(
                     xuanshu_gui.GUICommand(
@@ -1001,6 +1010,15 @@ async def main():
             # a newly started party must block the quest worker before its first
             # movement, not only after the quester has changed zones once.
             client.quest_party_probe_pending = False
+            if not active:
+                client.quest_party_observed_zone = None
+                client.quest_party_status_session = None
+                client.quest_party_quest_worker_restart_requested = False
+                client.quest_party_battle_started_at = None
+                client.quest_party_battle_rescue_active = False
+                client.quest_party_battle_rescue_at = 0.0
+                client.quest_party_solo_gear_active = False
+                client.in_solo_zone = False
         if active:
             for hitter, quester in party.hitter_assignments:
                 quester.quest_party_hitters.append(hitter)
@@ -1013,13 +1031,19 @@ async def main():
         global questing_status
         global sigil_status
         global gui_send_queue
+        nonlocal paused_task_names
 
         if not freecam_status:
+            if questing_task is not None and questing_task.done():
+                questing_task = None
+                questing_status = False
+                apply_questing_roles(False)
             if questing_status or (
                 questing_task is not None and not questing_task.done()
             ):
                 questing_status = False
-                apply_questing_roles(False)
+                if paused_task_names is not None:
+                    paused_task_names.discard("questing")
                 logger.debug("Questing hotkey pressed, disabling auto questing.")
                 gui_send_queue.put(
                     xuanshu_gui.GUICommand(
@@ -1033,6 +1057,13 @@ async def main():
                     await asyncio.gather(task_to_stop, return_exceptions=True)
                 if questing_task is task_to_stop:
                     questing_task = None
+                apply_questing_roles(False)
+                gui_send_queue.put(
+                    xuanshu_gui.GUICommand(
+                        xuanshu_gui.GUICommandType.UpdateWindow,
+                        ("QuestPartyRuntimeStatus", ""),
+                    )
+                )
 
             else:
                 party = apply_questing_roles(True)
@@ -1050,6 +1081,8 @@ async def main():
                     )
                     return
 
+                if paused_task_names is not None:
+                    paused_task_names.discard("questing")
                 questing_status = True
                 for p in walker.clients:
                     p.sigil_status = False
@@ -2318,6 +2351,9 @@ async def main():
                     )
                     next_start_delay = 2.0
                 finally:
+                    if not worker.done():
+                        worker.cancel()
+                    await asyncio.gather(worker, return_exceptions=True)
                     if getattr(client, "quest_party_quest_worker_task", None) is worker:
                         client.quest_party_quest_worker_task = None
 
@@ -2418,11 +2454,11 @@ async def main():
                                     pass
                                 if questing_task is task_to_cancel:
                                     questing_task = None
+                                apply_questing_roles(False)
                                 await asyncio.sleep(1.0)
 
                                 if (
                                     questing_status
-                                    and client.questing_status
                                     and questing_task is None
                                 ):
                                     questing_task = asyncio.create_task(
@@ -3325,12 +3361,13 @@ async def main():
         )
         new_client.is_ibao = True
         _restart_always_on_tasks()
-        _restart_active_toggle_tasks()
+        await _restart_active_toggle_tasks()
         return new_client
 
     ibao_groups.set_recovery_handler(_recover_ibao_client)
 
     async def handle_gui():
+        nonlocal paused_task_names
 
         async def handle_coord_error(error: wizwalker.errors.MemoryReadError):
             if await is_visible_by_path(foreground_client, play_button_path):
@@ -3571,7 +3608,6 @@ async def main():
             )
 
         # Pause/resume state for client disconnect resilience
-        paused_task_names = None
         previous_client_count = None
         # Track total wizard handle count to detect when unmanaged clients appear/disappear
         last_known_handle_count = 0
@@ -3678,6 +3714,7 @@ async def main():
 
                         # Record which tasks were active, then cancel them all
                         active_tasks = set()
+                        stopped_questing_task = None
                         task_vars = {
                             "combat": combat_task,
                             "dialogue": dialogue_task,
@@ -3688,9 +3725,17 @@ async def main():
                             "auto_fish": auto_fish_task,
                         }
                         for name, task in task_vars.items():
-                            if task is not None and not task.cancelled():
+                            if task is not None and not task.done():
                                 active_tasks.add(name)
                                 task.cancel()
+                                if name == "questing":
+                                    stopped_questing_task = task
+
+                        if stopped_questing_task is not None:
+                            await asyncio.gather(
+                                stopped_questing_task, return_exceptions=True
+                            )
+                            apply_questing_roles(False)
 
                         dead_titles = [str(client.title) for client in dead]
                         interrupted_bot_groups = overlapping_bot_groups(
@@ -3862,7 +3907,7 @@ async def main():
                     _send_hooked_clients_update()
                     last_known_handle_count = len(get_all_wizard_handles())
                     _restart_always_on_tasks()
-                    _restart_active_toggle_tasks()
+                    await _restart_active_toggle_tasks()
                 else:
                     # Check if handle count changed (wizard window opened/closed externally)
                     current_handle_count = len(all_handles)
@@ -5393,7 +5438,7 @@ async def main():
                             _send_hooked_clients_update()
                             if walker.clients:
                                 _restart_always_on_tasks()
-                                _restart_active_toggle_tasks()
+                                await _restart_active_toggle_tasks()
 
                         case xuanshu_gui.GUICommandType.HookClient:
                             handle = com.data
@@ -5448,7 +5493,7 @@ async def main():
                             _hooking_in_progress.discard(handle)
                             _send_hooked_clients_update()
                             _restart_always_on_tasks()
-                            _restart_active_toggle_tasks()
+                            await _restart_active_toggle_tasks()
 
                         case xuanshu_gui.GUICommandType.KillClient:
                             handle = com.data
@@ -5474,7 +5519,7 @@ async def main():
                             _send_hooked_clients_update()
                             if walker.clients:
                                 _restart_always_on_tasks()
-                                _restart_active_toggle_tasks()
+                                await _restart_active_toggle_tasks()
 
                         case xuanshu_gui.GUICommandType.RelaunchClient:
                             handle, nickname = com.data
@@ -5514,7 +5559,7 @@ async def main():
                                 logger.error(f"Error relaunching '{nickname}': {e}")
                             if walker.clients:
                                 _restart_always_on_tasks()
-                                _restart_active_toggle_tasks()
+                                await _restart_active_toggle_tasks()
 
                         case xuanshu_gui.GUICommandType.UpdateSettings:
                             global speed_multiplier, use_potions, rpc_status, drop_status, anti_afk_status
@@ -5609,7 +5654,12 @@ async def main():
                                 and questing_task is not None
                                 and not questing_task.done()
                             ):
-                                questing_task.cancel()
+                                task_to_stop = questing_task
+                                task_to_stop.cancel()
+                                await asyncio.gather(task_to_stop, return_exceptions=True)
+                                if questing_task is task_to_stop:
+                                    questing_task = None
+                                apply_questing_roles(False)
                                 party = apply_questing_roles(True)
                                 if party.questers:
                                     questing_task = asyncio.create_task(
@@ -6036,7 +6086,7 @@ async def main():
                 old.cancel()
             all_tasks[name] = asyncio.create_task(SNAPSHOT_TASK_FUNCS[name]())
 
-    def _restart_active_toggle_tasks():
+    async def _restart_active_toggle_tasks():
         """Cancel and recreate any currently-active toggle tasks so they pick up new clients."""
         global combat_task, dialogue_task, sigil_task, questing_task, speed_task, auto_pet_task, auto_fish_task
 
@@ -6062,8 +6112,11 @@ async def main():
                 try_task_coro(sigil_loop, walker.clients, True)
             )
 
-        if questing_task is not None and not questing_task.cancelled():
-            questing_task.cancel()
+        if questing_task is not None and not questing_task.done():
+            task_to_stop = questing_task
+            task_to_stop.cancel()
+            await asyncio.gather(task_to_stop, return_exceptions=True)
+            apply_questing_roles(False)
             apply_questing_roles(True)
             questing_task = asyncio.create_task(
                 try_task_coro(questing_loop, walker.clients, True)
