@@ -47,6 +47,8 @@ class QuestTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             client.in_solo_zone = True
             client.quest_party_probe_pending = True
             client.quest_party_quest_worker_zone = 'old zone'
+            client.quest_party_group_dungeon_zone = 'old dungeon'
+            client.quest_party_confirmed_dungeon_transition = ('before', 'after')
         apply_roles(False)
         for client in clients:
             self.assertFalse(client.questing_status)
@@ -54,6 +56,8 @@ class QuestTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(client.quest_party_observed_zone)
             self.assertIsNone(client.quest_party_status_session)
             self.assertIsNone(client.quest_party_quest_worker_zone)
+            self.assertIsNone(client.quest_party_group_dungeon_zone)
+            self.assertIsNone(client.quest_party_confirmed_dungeon_transition)
             self.assertFalse(client.quest_party_quest_worker_restart_requested)
             self.assertFalse(client.quest_party_probe_pending)
             self.assertFalse(client.quest_party_battle_rescue_active)

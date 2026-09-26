@@ -60,9 +60,15 @@ class ClientHandler:
         new_clients = []
         for handle in all_handles:
             if handle not in self._managed_handles:
+                if not utils.get_pid_from_handle(handle):
+                    continue
+                try:
+                    new_client = self.client_cls(handle)
+                except Exception:
+                    # The window can disappear between enumeration and open.
+                    # Keep it unmanaged so a later poll may retry.
+                    continue
                 self._managed_handles.append(handle)
-
-                new_client = self.client_cls(handle)
                 self.clients.append(new_client)
                 new_clients.append(new_client)
 

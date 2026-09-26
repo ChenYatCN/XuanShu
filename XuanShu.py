@@ -1006,6 +1006,8 @@ async def main():
             client.questing_status = active and id(client) in participant_ids
             client.quest_party_hitters = []
             client.quest_party_quest_worker_zone = None
+            client.quest_party_group_dungeon_zone = None
+            client.quest_party_confirmed_dungeon_transition = None
             # Recompute this state every time roles are applied.  In particular,
             # a newly started party must block the quest worker before its first
             # movement, not only after the quester has changed zones once.
@@ -1676,27 +1678,34 @@ async def main():
     async def dialogue_loop(members=None):
         # auto advances dialogue for every client, individually and concurrently
         async def async_dialogue(client: Client):
-            while True:
-                if not freecam_status:
-                    if await close_npc_quest_menu(client):
-                        continue
-                    if await is_visible_by_path(client, advance_dialog_path):
-                        has_decline_button = await is_visible_by_path(
-                            client, decline_quest_path
-                        )
-                        if has_decline_button and not getattr(
-                            client, "hotkey_accept_sidequests", side_quest_status
-                        ):
-                            await client.send_key(key=Keycode.ESC)
-                            await asyncio.sleep(0.25)
-                            if await is_visible_by_path(client, advance_dialog_path):
+            client.auto_dialogue_running = True
+            try:
+                while True:
+                    if not freecam_status:
+                        if await close_npc_quest_menu(client):
+                            continue
+                        if await is_visible_by_path(client, advance_dialog_path):
+                            has_decline_button = await is_visible_by_path(
+                                client, decline_quest_path
+                            )
+                            if has_decline_button and (
+                                getattr(client, "mainline_chain_retry_active", False)
+                                or not getattr(
+                                    client, "hotkey_accept_sidequests", side_quest_status
+                                )
+                            ):
                                 await client.send_key(key=Keycode.ESC)
-                            await asyncio.sleep(0.25)
-                        else:
-                            await client.send_key(key=Keycode.SPACEBAR)
-                            await asyncio.sleep(0.25)
-                        continue
-                await asyncio.sleep(0.05)
+                                await asyncio.sleep(0.25)
+                                if await is_visible_by_path(client, advance_dialog_path):
+                                    await client.send_key(key=Keycode.ESC)
+                                await asyncio.sleep(0.25)
+                            else:
+                                await client.send_key(key=Keycode.SPACEBAR)
+                                await asyncio.sleep(0.25)
+                            continue
+                    await asyncio.sleep(0.05)
+            finally:
+                client.auto_dialogue_running = False
 
         await gather_owned(
             *[
@@ -1814,6 +1823,8 @@ async def main():
             logger.info(f"打手 {hitter.title} 开始跟随做任务客户端 {quester.title}。")
             loop = asyncio.get_running_loop()
             last_quester_zone = getattr(quester, "quest_party_observed_zone", None)
+            dungeon_transition_from_zone = None
+            released_group_dungeon_zone = None
             quester_zone_stable_since = None
             last_objective = None
             objective_stable_since = None
@@ -1901,6 +1912,20 @@ async def main():
                     await client.send_key(Keycode.ESC, 0.1)
                     await asyncio.sleep(0.2)
 
+            async def wait_before_friend_retry(exc: Exception):
+                nonlocal failure_count, next_retry_at
+                await close_stale_friend_ui(hitter)
+                failure_count += 1
+                delay = friend_follow_retry_delay(failure_count)
+                next_retry_at = loop.time() + delay
+                update_party_status(
+                    hitter, quester, f"好友传送重试等待 {int(delay)}s"
+                )
+                logger.debug(
+                    f"打手 {hitter.title} 跟随 {quester.title} 暂未成功，"
+                    f"{delay:.0f} 秒后重试：{exc}"
+                )
+
             async def teleport_to_quester_from_friend_list(
                 client: Client, wizard_name, friend_icon
             ):
@@ -1977,14 +2002,32 @@ async def main():
 
                     quester_zone = await quester.zone_name()
                     now = loop.time()
+                    group_dungeon_zone = getattr(
+                        quester, "quest_party_group_dungeon_zone", None
+                    )
+                    if (
+                        group_dungeon_zone is not None
+                        and group_dungeon_zone != quester_zone
+                    ):
+                        quester.quest_party_group_dungeon_zone = None
+                    group_dungeon_ready = (
+                        group_dungeon_zone is not None
+                        and group_dungeon_zone == quester_zone
+                    )
                     if quester_zone != last_quester_zone:
+                        dungeon_transition_from_zone = last_quester_zone
+                        released_group_dungeon_zone = None
                         if last_quester_zone is not None:
-                            if is_probe_hitter:
+                            if is_probe_hitter and not group_dungeon_ready:
                                 quester.quest_party_probe_pending = True
                             logger.debug(
                                 f"做任务客户端 {quester.title} 已切换区域："
                                 f"{last_quester_zone} -> {quester_zone}；"
-                                "暂停下一次任务传送并等待打手探测。"
+                                + (
+                                    "全组已进入地牢，按任务端区域同步。"
+                                    if group_dungeon_ready
+                                    else "暂停下一次任务传送并等待打手探测。"
+                                )
                             )
                         last_quester_zone = quester_zone
                         quester.quest_party_observed_zone = quester_zone
@@ -2029,10 +2072,37 @@ async def main():
                             continue
 
                     hitter_zone = await hitter.zone_name()
+                    if (
+                        is_probe_hitter
+                        and not group_dungeon_ready
+                        and dungeon_transition_from_zone is not None
+                        and quester_zone_stable_since is not None
+                        and now - quester_zone_stable_since >= 1.5
+                        and await quest_reader.party_hitters_confirmed_dungeon_transition(
+                            dungeon_transition_from_zone
+                        )
+                    ):
+                        quester.quest_party_group_dungeon_zone = quester_zone
+                        quester.quest_party_quest_worker_zone = quester_zone
+                        group_dungeon_ready = True
+                        logger.info(
+                            f"做任务客户端 {quester.title} 与所有打手已确认地牢切换；"
+                            "取消本轮单人区域等待，按任务端区域同步。"
+                        )
                     probe_pending = bool(
                         is_probe_hitter
                         and getattr(quester, "quest_party_probe_pending", False)
                     )
+                    if (
+                        group_dungeon_ready
+                        and is_probe_hitter
+                        and released_group_dungeon_zone != quester_zone
+                    ):
+                        await complete_zone_probe(False)
+                        released_group_dungeon_zone = quester_zone
+                        probe_pending = False
+                        blocked_instance_zone = None
+                        blocked_instance_retry_at = 0.0
                     if not is_probe_hitter and getattr(
                         quester, "quest_party_probe_pending", False
                     ):
@@ -2047,7 +2117,8 @@ async def main():
                         # list so equal zone paths from separate instances are
                         # not mistaken for the same area.
                         same_live_area = (
-                            not probe_pending or await hitter_is_in_quester_area()
+                            (not probe_pending and not group_dungeon_ready)
+                            or await hitter_is_in_quester_area()
                         )
 
                     if same_live_area:
@@ -2072,6 +2143,9 @@ async def main():
                             update_party_status(hitter, quester, "已归队")
                         continue
 
+                    if group_dungeon_ready:
+                        blocked_instance_zone = None
+                        blocked_instance_retry_at = 0.0
                     if blocked_instance_zone == quester_zone:
                         if now < blocked_instance_retry_at:
                             update_party_status(
@@ -2160,7 +2234,8 @@ async def main():
                                 timeout=15.0,
                             )
                         same_zone_probe = bool(
-                            probe_pending and hitter_zone_before_probe == quester_zone
+                            (probe_pending or group_dungeon_ready)
+                            and hitter_zone_before_probe == quester_zone
                         )
                         # Original leader mode waited long enough for the game's
                         # "friend busy / closed instance" response to appear even
@@ -2191,6 +2266,9 @@ async def main():
                             else:
                                 raise RuntimeError("好友传送未到达任务客户端所在区域")
 
+                        if group_dungeon_ready and not await hitter_is_in_quester_area():
+                            raise RuntimeError("好友传送后未确认与任务客户端处于同一副本")
+
                         if probe_pending:
                             await complete_zone_probe(False)
                         failure_count = 0
@@ -2198,6 +2276,9 @@ async def main():
                     except asyncio.CancelledError:
                         raise
                     except FriendBusyOrInstanceClosed as exc:
+                        if group_dungeon_ready:
+                            await wait_before_friend_retry(exc)
+                            continue
                         await close_stale_friend_ui(hitter)
                         blocked_instance_zone = quester_zone
                         blocked_instance_retry_at = loop.time() + 60.0
@@ -2213,6 +2294,9 @@ async def main():
                                 await click_window_by_path(
                                     hitter, friend_is_busy_and_dungeon_reset_path
                                 )
+                            if group_dungeon_ready:
+                                await wait_before_friend_retry(exc)
+                                continue
                             blocked_instance_zone = quester_zone
                             blocked_instance_retry_at = loop.time() + 60.0
                             await complete_zone_probe(True)
@@ -2224,17 +2308,7 @@ async def main():
                                 f"等待 {quester.title} 离开当前区域。"
                             )
                             continue
-                        await close_stale_friend_ui(hitter)
-                        failure_count += 1
-                        delay = friend_follow_retry_delay(failure_count)
-                        next_retry_at = loop.time() + delay
-                        update_party_status(
-                            hitter, quester, f"好友传送重试等待 {int(delay)}s"
-                        )
-                        logger.debug(
-                            f"打手 {hitter.title} 跟随 {quester.title} 暂未成功，"
-                            f"{delay:.0f} 秒后重试：{exc}"
-                        )
+                        await wait_before_friend_retry(exc)
             finally:
                 remove_party_status(hitter)
 
@@ -3118,6 +3192,8 @@ async def main():
         client.quest_party_solo_gear_active = False
         client.quest_party_observed_zone = None
         client.quest_party_quest_worker_zone = None
+        client.quest_party_group_dungeon_zone = None
+        client.quest_party_confirmed_dungeon_transition = None
         client.quest_party_hitters = []
         client.quest_party_status_session = None
         client.quest_party_quest_worker_task = None
@@ -3855,33 +3931,44 @@ async def main():
                 hooked_any = False
                 launch_order = [h for h in launched_account_map if h in unmanaged]
                 for handle in launch_order:
-                    walker._managed_handles.append(handle)
-                    nc = walker.client_cls(handle)
-                    walker.clients.append(nc)
-                    existing_nums = set()
-                    for c in walker.clients:
-                        if c.title.startswith("p") and c.title[1:].isdigit():
-                            existing_nums.add(int(c.title[1:]))
-                    num = 1
-                    while num in existing_nums:
-                        num += 1
-                    nc.title = f"p{num}"
-                    _hooking_in_progress.add(handle)
-                    _send_hooked_clients_update()
-                    nickname = launched_account_map.get(handle)
-                    if (
-                        client_resizing
-                        and nickname
-                        and handle not in window_config_applied
-                    ):
-                        window_config_applied.add(handle)
-                        # Window setup can spend a few seconds waiting for the
-                        # game's video manager; do not block detection of the
-                        # remaining account windows while it runs.
-                        asyncio.create_task(
-                            _apply_account_window_config(nc, handle, nickname)
-                        )
+                    # Window enumeration and process lookup can race with a
+                    # newly launched (or closing) game window.  Leave the
+                    # handle unmanaged so the next poll can retry it.
+                    if not utils.get_pid_from_handle(handle):
+                        continue
                     try:
+                        nc = walker.client_cls(handle)
+                    except Exception as e:
+                        logger.debug(
+                            f"Vault-launched client handle {handle} is not ready for hooking: {e}"
+                        )
+                        continue
+                    walker._managed_handles.append(handle)
+                    walker.clients.append(nc)
+                    _hooking_in_progress.add(handle)
+                    try:
+                        existing_nums = set()
+                        for c in walker.clients:
+                            if c.title.startswith("p") and c.title[1:].isdigit():
+                                existing_nums.add(int(c.title[1:]))
+                        num = 1
+                        while num in existing_nums:
+                            num += 1
+                        nc.title = f"p{num}"
+                        _send_hooked_clients_update()
+                        nickname = launched_account_map.get(handle)
+                        if (
+                            client_resizing
+                            and nickname
+                            and handle not in window_config_applied
+                        ):
+                            window_config_applied.add(handle)
+                            # Window setup can spend a few seconds waiting for the
+                            # game's video manager; do not block detection of the
+                            # remaining account windows while it runs.
+                            asyncio.create_task(
+                                _apply_account_window_config(nc, handle, nickname)
+                            )
                         await nc.activate_hooks()
                         await _init_client_attrs(nc)
                         logger.info(
@@ -3900,6 +3987,7 @@ async def main():
                         )
                         walker._managed_handles.remove(handle)
                         walker.clients.remove(nc)
+                        _send_hooked_clients_update()
                     finally:
                         _hooking_in_progress.discard(handle)
 
@@ -5456,21 +5544,32 @@ async def main():
                                 logger.error(f"Handle {handle} no longer exists.")
                                 _send_hooked_clients_update()
                                 continue
+                            if not utils.get_pid_from_handle(handle):
+                                logger.warning(
+                                    f"Handle {handle} has no live game process yet; try hooking again shortly."
+                                )
+                                continue
                             # Create client, assign title, hook, init
-                            walker._managed_handles.append(handle)
-                            nc = walker.client_cls(handle)
-                            walker.clients.append(nc)
-                            existing_nums = set()
-                            for c in walker.clients:
-                                if c.title.startswith("p") and c.title[1:].isdigit():
-                                    existing_nums.add(int(c.title[1:]))
-                            num = 1
-                            while num in existing_nums:
-                                num += 1
-                            nc.title = f"p{num}"
-                            _hooking_in_progress.add(handle)
-                            _send_hooked_clients_update()
                             try:
+                                nc = walker.client_cls(handle)
+                            except Exception as e:
+                                logger.warning(
+                                    f"Handle {handle} is not ready for hooking: {e}"
+                                )
+                                continue
+                            walker._managed_handles.append(handle)
+                            walker.clients.append(nc)
+                            _hooking_in_progress.add(handle)
+                            try:
+                                existing_nums = set()
+                                for c in walker.clients:
+                                    if c.title.startswith("p") and c.title[1:].isdigit():
+                                        existing_nums.add(int(c.title[1:]))
+                                num = 1
+                                while num in existing_nums:
+                                    num += 1
+                                nc.title = f"p{num}"
+                                _send_hooked_clients_update()
                                 await nc.activate_hooks()
                                 await _init_client_attrs(nc)
                                 logger.info(
@@ -5487,10 +5586,10 @@ async def main():
                                 )
                                 walker._managed_handles.remove(handle)
                                 walker.clients.remove(nc)
-                                _hooking_in_progress.discard(handle)
                                 _send_hooked_clients_update()
                                 continue
-                            _hooking_in_progress.discard(handle)
+                            finally:
+                                _hooking_in_progress.discard(handle)
                             _send_hooked_clients_update()
                             _restart_always_on_tasks()
                             await _restart_active_toggle_tasks()

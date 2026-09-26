@@ -11,6 +11,7 @@ from src.auto_pet import auto_pet
 from src.interaction_prompts import (
     is_dungeon_entry_prompt, interaction_kind, quest_has_action, quest_interaction_matches,
     split_quest_location, collect_object_name, portal_kind, resolve_portal_destination,
+    plain_text,
 )
 from src.teleport_math import *
 from wizwalker import XYZ, Keycode, MemoryReadError, Client, Rectangle, HookAlreadyActivated, HookNotActive
@@ -751,11 +752,17 @@ class Quester():
                 quest_xyz = await talking_client.quest_position.position()
             except Exception:
                 quest_xyz = None
-            return quest_text, quest_xyz
+            try:
+                quest_id = await talking_client.quest_id()
+            except Exception:
+                quest_id = None
+            return quest_text, quest_xyz, quest_id
 
         def quest_state_changed(before, after) -> bool:
-            before_text, before_xyz = before
-            after_text, after_xyz = after
+            before_text, before_xyz, before_id = before
+            after_text, after_xyz, after_id = after
+            if before_id is not None and after_id is not None and before_id != after_id:
+                return True
             if after_text != before_text:
                 return True
             if before_xyz is not None and after_xyz is not None:
@@ -763,6 +770,9 @@ class Quester():
             return False
 
         initial_state = await read_quest_state()
+        mainline_turn_in = await self._mainline_turn_in_snapshot(
+            talking_client, initial_state[2]
+        )
         after_talking_paths = (
             exit_zafaria_class_picture_button,
             exit_pet_leveled_up_button_path,
@@ -770,7 +780,11 @@ class Quester():
         )
 
         for attempt in range(1, 4):
-            if attempt > 1:
+            if attempt == 1:
+                await gather_owned(
+                    *[p.send_key(Keycode.X, 0.1) for p in present_clients]
+                )
+            else:
                 logger.warning(
                     f"Client {talking_client.title} - Quest did not update after "
                     f"dialogue; retrying NPC interaction ({attempt}/3)."
@@ -787,6 +801,10 @@ class Quester():
             ):
                 if quest_state_changed(initial_state, await read_quest_state()):
                     await asyncio.sleep(1.0)
+                    await gather_owned(
+                        *[exit_menus(c, after_talking_paths) for c in present_clients]
+                    )
+                    await self._continue_mainline_chain(talking_client, mainline_turn_in)
                     return True
                 await asyncio.sleep(0.15)
 
@@ -823,6 +841,7 @@ class Quester():
                 logger.debug(
                     f"Client {talking_client.title} - Quest update confirmed."
                 )
+                await self._continue_mainline_chain(talking_client, mainline_turn_in)
                 return True
 
             await asyncio.sleep(1.25)
@@ -830,6 +849,7 @@ class Quester():
                 logger.debug(
                     f"Client {talking_client.title} - Delayed quest update confirmed."
                 )
+                await self._continue_mainline_chain(talking_client, mainline_turn_in)
                 return True
 
         logger.error(
@@ -837,6 +857,156 @@ class Quester():
             "after 3 attempts; keeping the quester near the NPC for another retry."
         )
         return False
+
+    async def _mainline_turn_in_snapshot(self, client: Client, quest_id):
+        """Keep the quest and NPC identity from before the first X press."""
+        if not isinstance(quest_id, int) or quest_id <= 0:
+            return None
+        try:
+            quest = (await (await client.quest_manager()).quest_data()).get(quest_id)
+            if quest is None or not await quest.mainline():
+                return None
+            npc = plain_text(await get_popup_title(client)).casefold()
+            if not npc or interaction_kind(await self.read_popup(client)) != "talk":
+                return None
+            return quest_id, await client.zone_name(), await client.body.position(), npc
+        except Exception as exc:
+            logger.trace("Mainline handoff snapshot unavailable: {}", exc)
+            return None
+
+    async def _continue_mainline_chain(self, client: Client, snapshot) -> None:
+        """Retry a confirmed mainline handoff only while the same NPC is in reach."""
+        if snapshot is None:
+            return
+        _, zone, anchor, npc = snapshot
+
+        async def current_quest():
+            try:
+                quest_id = await client.quest_id()
+                if quest_id == 0:
+                    return 0, None
+                quest = (await (await client.quest_manager()).quest_data()).get(quest_id)
+                return quest_id, await quest.mainline() if quest is not None else None
+            except Exception:
+                return None, None
+
+        async def ready_to_retry():
+            if not (getattr(client, "questing_status", False)
+                    and getattr(client, "auto_dialogue_running", False)):
+                return False
+            if (getattr(client, "quest_party_probe_pending", False)
+                    or getattr(client, "quest_party_battle_rescue_active", False)
+                    or getattr(client, "quest_party_quest_worker_restart_requested", False)):
+                return False
+            if not await is_free_leader_questing(client):
+                return False
+            if (await is_visible_by_path(client, decline_quest_path)
+                    or await is_visible_by_path(client, cancel_multiple_quest_menu_path)):
+                return False
+            if await client.zone_name() != zone or calc_Distance(
+                await client.body.position(), anchor
+            ) > 300:
+                return False
+            if not await is_visible_by_path(client, npc_range_path):
+                return False
+            if interaction_kind(await self.read_popup(client)) != "talk":
+                return False
+            return plain_text(await get_popup_title(client)).casefold() == npc
+
+        # A nonzero active quest may be a side quest selected by the game.  It
+        # does not prove the next mainline is missing, so never press X for it.
+        quest_id, _ = await current_quest()
+        if (quest_id != 0 or not getattr(client, "questing_status", False)
+                or not getattr(client, "auto_dialogue_running", False)):
+            return
+
+        # The quest ID can clear before the last dialogue/reward page appears.
+        # Require three quiet seconds before treating the handoff as missing.
+        quiet_since = None
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
+            quest_id, _ = await current_quest()
+            if quest_id != 0 or not getattr(client, "questing_status", False):
+                return
+            if not getattr(client, "auto_dialogue_running", False):
+                return
+            if await client.zone_name() != zone or await client.in_battle():
+                return
+            if await is_free_leader_questing(client):
+                if quiet_since is None:
+                    quiet_since = time.monotonic()
+                elif time.monotonic() - quiet_since >= 3.0:
+                    break
+            else:
+                quiet_since = None
+            await asyncio.sleep(0.2)
+        else:
+            return
+
+        quest_id, _ = await current_quest()
+        if quest_id != 0 or not await ready_to_retry():
+            return
+
+        client.mainline_chain_retry_active = True
+        pressed = False
+        try:
+            for attempt in range(1, 3):
+                quest_id, _ = await current_quest()
+                if quest_id != 0 or not await ready_to_retry():
+                    return
+                logger.info(
+                    f"Client {client.title} - Mainline ended without a new tracked "
+                    f"quest; retrying the same NPC ({attempt}/2)."
+                )
+                await client.send_key(Keycode.X, 0.15)
+                pressed = True
+                appeared = False
+                quiet_since = None
+                deadline = time.monotonic() + 25.0
+                while time.monotonic() < deadline:
+                    quest_id, mainline = await current_quest()
+                    if quest_id is None:
+                        return
+                    if quest_id != 0:
+                        if mainline:
+                            logger.info(
+                                f"Client {client.title} - Mainline handoff confirmed "
+                                f"with Quest ID {quest_id}."
+                            )
+                        return
+                    if (not getattr(client, "questing_status", False)
+                            or not getattr(client, "auto_dialogue_running", False)
+                            or await client.is_loading() or await client.in_battle()
+                            or await client.zone_name() != zone):
+                        return
+                    if await is_visible_by_path(client, cancel_multiple_quest_menu_path):
+                        await close_npc_quest_menu(client)
+                        return
+                    if await is_free_leader_questing(client):
+                        if quiet_since is None:
+                            quiet_since = time.monotonic()
+                        elif time.monotonic() - quiet_since >= (1.5 if appeared else 4.0):
+                            break
+                    else:
+                        appeared = True
+                        quiet_since = None
+                    await asyncio.sleep(0.2)
+                await asyncio.sleep(1.25)
+            logger.warning(
+                f"Client {client.title} - Mainline handoff still unconfirmed "
+                "after two same-NPC retries; stopping this handoff."
+            )
+        finally:
+            # The normal dialogue worker treats a left-hand decline button as
+            # a side-quest offer while this flag is set, even if side quests
+            # are otherwise enabled.  Dismiss a lingering offer on exit.
+            try:
+                if pressed and await is_visible_by_path(client, decline_quest_path):
+                    await client.send_key(Keycode.ESC, 0.1)
+            except Exception as exc:
+                logger.debug("Could not dismiss lingering quest offer: {}", exc)
+            finally:
+                client.mainline_chain_retry_active = False
 
     async def quest_interaction_ready(self, client, xyz, leader_client=None):
         if await client.is_loading() or await client.in_battle():
@@ -1136,7 +1306,6 @@ class Quester():
                 else:
                     msg = sigil_msg_check.lower()
                     if interaction_kind(msg) == "talk":
-                        await gather_owned(*[p.send_key(Keycode.X, 0.1) for p in self.clients])
                         logger.debug('Talking to NPC')
                         quest_updated = await self.handle_npc_talking_quests(
                             self.current_leader_client, self.clients
@@ -1495,10 +1664,16 @@ class Quester():
                 continue
 
             current_zone = await self.client.zone_name()
-            if current_zone != zone_before:
+            if current_zone and current_zone != zone_before:
+                self.client.quest_party_confirmed_dungeon_transition = (
+                    zone_before, current_zone
+                )
                 if getattr(self.client, "quest_party_hitters", []):
                     self.client.quest_party_quest_worker_zone = current_zone
-                    self.client.quest_party_probe_pending = True
+                    self.client.quest_party_probe_pending = (
+                        getattr(self.client, "quest_party_group_dungeon_zone", None)
+                        != current_zone
+                    )
                 break
 
             if saw_loading or not await is_visible_by_path(
@@ -1563,6 +1738,46 @@ class Quester():
             await asyncio.sleep(0.5)
         return entry_clients
 
+    async def party_dungeon_entry_complete(
+        self, entry_clients: list[Client], entry_zone: str
+    ) -> bool:
+        """Confirm every assigned party member left the entrance after the X prompt."""
+        hitters = getattr(self.client, "quest_party_hitters", [])
+        if (
+            not entry_zone
+            or not hitters
+            or any(hitter not in entry_clients for hitter in hitters)
+        ):
+            return False
+        for client in [self.client, *hitters]:
+            if await client.is_loading():
+                return False
+            zone = await client.zone_name()
+            if not zone or zone == entry_zone:
+                return False
+        return True
+
+    async def party_hitters_confirmed_dungeon_transition(
+        self, previous_quester_zone: str | None
+    ) -> bool:
+        """Check delayed dungeon confirmations against this quester's transition."""
+        hitters = getattr(self.client, "quest_party_hitters", [])
+        if not previous_quester_zone or not hitters:
+            return False
+        for hitter in hitters:
+            transition = getattr(
+                hitter, "quest_party_confirmed_dungeon_transition", None
+            )
+            if (
+                not transition
+                or transition[0] != previous_quester_zone
+                or not transition[1]
+                or await hitter.is_loading()
+                or await hitter.zone_name() != transition[1]
+            ):
+                return False
+        return True
+
     async def _quest_party_probe_blocks_movement(self) -> bool:
         """Pause quest movement until the assigned hitter finishes its zone probe."""
         if not getattr(self.client, "quest_party_hitters", []):
@@ -1578,6 +1793,16 @@ class Quester():
                 f"keeping quest movement paused: {exc}"
             )
             return True
+
+        group_dungeon_zone = getattr(
+            self.client, "quest_party_group_dungeon_zone", None
+        )
+        if group_dungeon_zone is not None and group_dungeon_zone == current_zone:
+            self.client.quest_party_quest_worker_zone = current_zone
+            self.client.quest_party_probe_pending = False
+            return False
+        if group_dungeon_zone is not None:
+            self.client.quest_party_group_dungeon_zone = None
 
         worker_zone = getattr(
             self.client, "quest_party_quest_worker_zone", None
@@ -1677,6 +1902,8 @@ class Quester():
                     if is_dungeon_entry_prompt(sigil_msg_check):
                         # Handles entering dungeons
                         entry_clients = await self.prepare_party_dungeon_entry()
+                        entry_zone = await self.client.zone_name()
+                        self.client.quest_party_group_dungeon_zone = None
                         await gather_owned(
                             *[p.send_key(Keycode.X, 0.1) for p in entry_clients]
                         )
@@ -1700,22 +1927,28 @@ class Quester():
                         for c in loading_clients:
                             while await c.is_loading():
                                 await asyncio.sleep(0.1)
-                        if (
-                            getattr(self.client, "quest_party_hitters", [])
-                            and await self.client.zone_name()
-                            != zone_before_quest_move
+                        current_zone = await self.client.zone_name()
+                        if getattr(self.client, "quest_party_hitters", []) and (
+                            current_zone and current_zone != entry_zone
                         ):
-                            self.client.quest_party_quest_worker_zone = (
-                                await self.client.zone_name()
-                            )
-                            self.client.quest_party_probe_pending = True
-                            logger.debug(
-                                f"Client {self.client.title} entered a dungeon; pausing for hitter probe."
-                            )
+                            self.client.quest_party_quest_worker_zone = current_zone
+                            if await self.party_dungeon_entry_complete(
+                                entry_clients, entry_zone
+                            ):
+                                self.client.quest_party_group_dungeon_zone = current_zone
+                                self.client.quest_party_probe_pending = False
+                                logger.info(
+                                    f"Client {self.client.title} and assigned hitters "
+                                    "entered the dungeon; resuming party zone sync."
+                                )
+                            else:
+                                self.client.quest_party_probe_pending = True
+                                logger.debug(
+                                    f"Client {self.client.title} entered a dungeon; pausing for hitter probe."
+                                )
                             return
                     elif interaction_kind(sigil_msg_check) == "talk":
                         logger.debug('Talking to NPC')
-                        await self.client.send_key(Keycode.X, 0.1)
                         quest_updated = await self.handle_npc_talking_quests(
                             self.client, [self.client]
                         )
