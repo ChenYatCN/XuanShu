@@ -326,11 +326,11 @@ def build_stats_tab(ctx):
     calc_col.addStretch()
 
     stats_content.addStretch(1)
-    stats_content.addWidget(duel_circle, alignment=Qt.AlignmentFlag.AlignVCenter)
+    stats_content.addWidget(duel_circle)
     stats_content.addStretch(1)
-    stats_content.addWidget(calc_widget, alignment=Qt.AlignmentFlag.AlignVCenter)
+    stats_content.addWidget(calc_widget)
     stats_content.addStretch(1)
-    stats_layout.addLayout(stats_content, 1)
+    stats_layout.addLayout(stats_content)
 
     # Auto-refresh: poll combat state every 3 seconds when stats tab is active
     stats_timer = QTimer(tab)
@@ -344,6 +344,8 @@ def build_stats_tab(ctx):
     # Update readout when crit/damage inputs change
     crit_check.stateChanged.connect(lambda: _update_damage_readout())
     damage_input.textChanged.connect(lambda: _update_damage_readout())
+
+    stats_layout.addStretch()
 
     # Export state for event loop
     ctx.exports['stats'] = {

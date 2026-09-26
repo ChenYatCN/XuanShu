@@ -4,7 +4,8 @@ import unittest
 from collections import defaultdict
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-from PyQt6.QtWidgets import QApplication, QComboBox, QCheckBox, QLabel, QWidget
+from PyQt6.QtWidgets import QApplication, QComboBox, QCheckBox, QLabel, QPushButton, QTableWidget, QWidget
+from PyQt6.QtCore import QPoint
 from PyQt6.QtGui import QIcon
 from src.gui.actions import ActionRegistry
 from src.gui.commands import GUICommandType
@@ -20,7 +21,8 @@ class HotkeyGroupUITests(unittest.TestCase):
         settings = Mock()
         settings.get_hotkeys.return_value = {}
         self.ctx = SimpleNamespace(settings=settings, tl=lambda key: key, send_queue=Mock(),
-            stroke_color='#80d8e8', text_color='#eeeeee', alt_bg='#222233', icon_btn_style='',
+            stroke_color='#80d8e8', text_color='#eeeeee', bg_color='#171822',
+            alt_bg='#222233', icon_btn_style='',
             svgs=defaultdict(lambda: '<svg xmlns="http://www.w3.org/2000/svg"/>'),
             titlebar_svg_icon=lambda *_: QIcon(), tracked_svg_labels=[], widget_tags={}, exports={},
             repo_base='', wiki_base='', tool_name='XuanShu', tool_version='test')
@@ -91,7 +93,7 @@ class HotkeyGroupUITests(unittest.TestCase):
             self.assertEqual(self.ctx.send_queue.put.call_args.args[0].data,
                              {'action': action, 'clients': ['p1', 'p2']})
 
-    def test_client_wrap_does_not_move_logo_or_progress(self):
+    def test_client_row_does_not_move_logo_or_progress(self):
         self.tab.resize(1000, 500)
         self.tab.show()
         self.api['set_available_clients'](['p1'])
@@ -105,4 +107,53 @@ class HotkeyGroupUITests(unittest.TestCase):
         self.app.processEvents()
         self.assertEqual(info.geometry(), before)
         host = self.tab.findChild(QWidget, 'HotkeyClientTargets')
-        self.assertLessEqual(host.geometry().right(), info.geometry().left())
+        selector = host.parentWidget().parentWidget()
+        self.assertLess(
+            selector.mapTo(self.tab, QPoint(0, selector.height())).y(),
+            info.mapTo(self.tab, QPoint(0, 0)).y(),
+        )
+        self.assertEqual(len({self.checks()[f'p{i}'].geometry().y() for i in range(1, 13)}), 1)
+
+    def test_status_badges_fold_and_overview_follow_live_clients(self):
+        self.tab.resize(1000, 500)
+        self.tab.show()
+        button = next(b for b in self.tab.findChildren(QPushButton)
+                      if b.toolTip() == '状态总览')
+        for count, expected in ((1, None), (4, None), (5, '+1'),
+                                (6, '+2'), (8, '+4'), (10, '+6'), (12, '+8')):
+            self.api['set_available_clients']([f'p{i}' for i in range(1, count + 1)])
+            self.api['update_client_states']({
+                'toggle_combat': {f'p{i}': i % 2 == 1 for i in range(1, count + 1)}
+            })
+            self.app.processEvents()
+            row = self.ctx.registry.row_widgets['toggle_combat']
+            labels = [label.text() for label in row.findChildren(QLabel)]
+            self.assertIn('● p1', labels)
+            if count >= 2:
+                self.assertIn('○ p2', labels)
+            if count >= 5:
+                self.assertNotIn('● p5', labels)
+            more = next((b for b in row.findChildren(QPushButton)
+                         if b.text().startswith('+')), None)
+            if expected is None:
+                self.assertTrue(more is None or not more.isVisible())
+            else:
+                self.assertIsNotNone(more)
+                self.assertEqual(more.text(), expected)
+                self.assertIn(f'p{count}', more.toolTip())
+                if count >= 6:
+                    self.assertIn('○ p6', more.toolTip())
+        more.click()
+        table = self.tab.findChild(QTableWidget)
+        self.assertEqual(table.columnCount(), 13)
+        self.assertEqual(table.horizontalHeaderItem(12).text(), 'p12')
+        combat_row = next(row for row in range(table.rowCount())
+                          if table.item(row, 0).text() == 'combat_toggle')
+        self.assertEqual(table.item(combat_row, 1).text(), '●')
+        self.assertEqual(table.item(combat_row, 2).text(), '○')
+        self.api['set_available_clients'](['p1', 'p2'])
+        self.api['update_client_states']({'toggle_combat': {'p1': True, 'p2': False}})
+        self.assertEqual(table.columnCount(), 3)
+        self.assertFalse(more.isVisible())
+        button.click()
+        self.assertEqual(table.rowCount(), 9)

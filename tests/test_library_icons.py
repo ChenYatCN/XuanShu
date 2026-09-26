@@ -18,12 +18,13 @@ class LibraryIconsTests(unittest.TestCase):
         loop = next(n for n in tree.body if isinstance(n, ast.For)
                     and isinstance(n.target, ast.Name) and n.target.id == 'icon_name')
         names = ast.literal_eval(loop.iter)
-        self.assertEqual(len(names), 16)
+        self.assertEqual(len(names), 17)
         for name in names:
             for color in ('#63cdda', '#202020'):
                 svg = library_svg(name, color)
                 self.assertNotIn('currentColor', svg)
-                if name in ('8-界面/人物怪物列表.svg', '8-界面/界面.svg'):
+                if name in ('8-界面/人物怪物列表.svg', '8-界面/界面.svg',
+                            '8-界面/用户列表.svg'):
                     self.assertIn(f'fill="{color}"', svg)
                 else:
                     self.assertIn('fill="none"', svg)

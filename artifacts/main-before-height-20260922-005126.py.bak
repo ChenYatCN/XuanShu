@@ -28,28 +28,26 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from src.branding import DISPLAY_NAME, REPOSITORY_URL, UPSTREAM_URL
+
 from src.gui.actions import ActionRegistry
 from src.gui.commands import GUICommand, GUICommandType, GUIKeys, _format_binding
 from src.gui.helpers import (
     build_shared_svgs,
+    configure_titlebar_button, titlebar_button_style, titlebar_control_svg,
     centered_label,
-    configure_titlebar_button,
     copy_callback,
     copy_icon_btn,
     init_recent_imports,
     resource_path,
-    titlebar_button_style,
-    titlebar_control_svg,
 )
-from src.gui.ibao_dialog import TripleClickGate, build_ibao_dialog
 from src.gui.icon_manager import apply_app_icon, get_current_icon_path
 from src.gui.popups import show_entity_list_popup, show_ui_tree_popup
 from src.gui.tab_actions import build_bot_tab, build_combat_tab, build_flythrough_tab
 from src.gui.tab_camera import build_camera_tab
 from src.gui.tab_dev_utils import build_dev_utils_tab
-from src.gui.tab_fishing import build_fishing_tab
 from src.gui.tab_hotkeys import build_hotkeys_tab
+from src.gui.tab_fishing import build_fishing_tab
+from src.gui.ibao_dialog import build_ibao_dialog, TripleClickGate
 from src.gui.tab_launcher import build_launcher_tab
 from src.gui.tab_stats import build_stats_tab
 from src.gui.theme import compute_styles
@@ -60,6 +58,7 @@ from src.gui.widgets import (
     PyQtSink,
 )
 from src.lang import load_lang
+from src.branding import DISPLAY_NAME, REPOSITORY_URL, UPSTREAM_URL
 
 
 class GUIContext:
@@ -85,7 +84,9 @@ def manage_gui(
 
     # Set AppUserModelID so Windows uses our icon in taskbar/process list
     try:
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("xuanshu.XuanShu")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "xuanshu.XuanShu"
+        )
     except Exception:
         pass
 
@@ -98,7 +99,7 @@ def manage_gui(
         )
     )
 
-    _vp_height = 500
+    _vp_height = 450
 
     # Compute styles from theme dict (includes font in stylesheet)
     styles = compute_styles(theme_dict, gui_font, gui_font_size)
@@ -138,9 +139,6 @@ def manage_gui(
     except Exception:
         pass
     window.setStyleSheet(styles["groupbox_style"])
-    screen = window.screen() or app.primaryScreen()
-    if screen is not None:
-        _vp_height = min(_vp_height, screen.availableGeometry().height())
     window.setFixedHeight(_vp_height)
 
     apply_app_icon(app, window)
@@ -314,19 +312,15 @@ def manage_gui(
 
     free_tool_label = QLabel(tl("free_tool"))
     free_tool_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    free_tool_label.setSizePolicy(
-        QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
-    )
+    free_tool_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
     free_tool_label.setContentsMargins(0, 0, 0, 0)
     content_layout.addWidget(free_tool_label)
 
     tabs = AnimatedTabWidget(duration=200)
     tabs.divider_color = _stroke_color
-    tabs.setStyleSheet(
-        "QTabWidget::tab-bar { alignment: center; }"
-        "QTabWidget::pane { padding-top: 8px; }"
-    )
-    content_layout.addWidget(tabs, 1)
+    tabs.setStyleSheet("QTabWidget::tab-bar { alignment: center; }"
+                      "QTabWidget::pane { padding-top: 8px; }")
+    content_layout.addWidget(tabs)
 
     # Widget tag registry for backend updates
     widget_tags = {}
@@ -433,13 +427,11 @@ def manage_gui(
     tabs.addTab(fishing_tab, tl("fishing"))
     ibao_dialog = build_ibao_dialog(ctx)
     ibao_clicks = TripleClickGate()
-
     def reveal_ibao(index):
         if ibao_clicks.click(tabs.widget(index) is bot_tab):
             ibao_dialog.show()
             ibao_dialog.raise_()
             ibao_dialog.activateWindow()
-
     tabs.tabBarClicked.connect(reveal_ibao)
 
     ctx.current_tab_name = ""
@@ -710,15 +702,13 @@ def manage_gui(
                         elif tag == "BotGroups":
                             bot_exports.get("set_running_groups", lambda v: None)(value)
                         elif tag == "FishingGroups":
-                            fishing_exports.get("set_running_groups", lambda v: None)(
-                                value
-                            )
+                            fishing_exports.get("set_running_groups", lambda v: None)(value)
                         elif tag == "IbaoGroups":
-                            ctx.exports["ibao"]["set_running_groups"](value)
+                            ctx.exports['ibao']['set_running_groups'](value)
                         elif tag == "IbaoData":
-                            ctx.exports["ibao"]["set_saved_configs"](value)
+                            ctx.exports['ibao']['set_saved_configs'](value)
                         elif tag == "IbaoError":
-                            ctx.exports["ibao"]["show_error"](value)
+                            ctx.exports['ibao']['show_error'](value)
                         elif tag == "FishingToggle":
                             fishing_exports.get("toggle_selected", lambda: None)()
                         elif tag == "Auto FishStatus":
@@ -730,8 +720,6 @@ def manage_gui(
                             if widget is not None:
                                 widget.setText(str(value))
                                 widget.setVisible(bool(value))
-                        elif tag == "HotkeyClientStates":
-                            hotkeys_exports["update_client_states"](value)
                         else:
                             widget = widget_tags.get(tag)
                             if widget is not None:
@@ -859,14 +847,9 @@ def manage_gui(
                         _rebuild_hooked_clients_list()
                         _update_mc = hotkeys_exports.get("update_multi_client_state")
                         hooked_count = len(_last_hooked_data.get("hooked", []))
-                        hotkeys_exports.get(
-                            "set_available_clients", lambda value: None
-                        )(
-                            [
-                                info.get("title", "")
-                                for info in _last_hooked_data.get("hooked", [])
-                            ]
-                        )
+                        hotkeys_exports.get("set_available_clients", lambda value: None)([
+                            info.get("title", "") for info in _last_hooked_data.get("hooked", [])
+                        ])
                         if _update_mc:
                             _update_mc(hooked_count)
                         _update_dev_mass = dev_utils_exports.get("update_mass_state")
@@ -874,31 +857,23 @@ def manage_gui(
                             _update_dev_mass(hooked_count)
                         _update_bot_clients = bot_exports.get("set_available_clients")
                         if _update_bot_clients:
-                            _update_bot_clients(
-                                [
-                                    info.get("title", "")
-                                    for info in _last_hooked_data.get("hooked", [])
-                                ]
-                            )
-                        fishing_exports.get("set_available_clients", lambda v: None)(
-                            [
+                            _update_bot_clients([
                                 info.get("title", "")
                                 for info in _last_hooked_data.get("hooked", [])
-                            ]
-                        )
-                        ctx.exports["ibao"]["set_available_clients"](
-                            [info for info in _last_hooked_data.get("hooked", [])]
-                        )
+                            ])
+                        fishing_exports.get("set_available_clients", lambda v: None)([
+                            info.get("title", "") for info in _last_hooked_data.get("hooked", [])
+                        ])
+                        ctx.exports['ibao']['set_available_clients']([
+                            info for info in _last_hooked_data.get('hooked', [])])
                         _update_combat_clients = combat_exports.get(
                             "set_available_clients"
                         )
                         if _update_combat_clients:
-                            _update_combat_clients(
-                                [
-                                    info.get("title", "")
-                                    for info in _last_hooked_data.get("hooked", [])
-                                ]
-                            )
+                            _update_combat_clients([
+                                info.get("title", "")
+                                for info in _last_hooked_data.get("hooked", [])
+                            ])
 
                     case GUICommandType.ClearLaunchCheckboxes:
                         if account_list and not (

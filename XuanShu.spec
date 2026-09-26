@@ -151,7 +151,7 @@ for icon_name in (
     "2-物品/书.svg", "9-媒体/消息.svg", "8-界面/用户.svg",
     "1-游戏/击中.svg", "2-物品/钓鱼竿.svg", "2-物品/箱子.svg",
     "8-界面/界面.svg", "8-界面/人物怪物列表.svg",
-    "9-媒体/锁链.svg", "9-媒体/断链.svg",
+    "9-媒体/锁链.svg", "9-媒体/断链.svg", "8-界面/用户列表.svg",
 ):
     icon_path = ROOT / icon_root / icon_name
     if not icon_path.is_file():

@@ -1,5 +1,6 @@
 import asyncio
 import ast
+from collections import defaultdict
 import statistics
 from pathlib import Path
 from types import SimpleNamespace
@@ -50,6 +51,7 @@ class HotkeyRuntimeScopeTests(unittest.IsolatedAsyncioTestCase):
             bool_to_string=lambda value: 'Enabled' if value else 'Disabled',
             xuanshu_gui=SimpleNamespace(GUICommand=GUICommand, GUICommandType=GUICommandType),
             bot_tasks={('p1',): object()})
+        namespace['scoped_worker_active'] = defaultdict(set)
         exec(compile(ast.Module(body=[function], type_ignores=[]), 'XuanShu.py', 'exec'), namespace)
         manager = HotkeyGroups(lambda: clients, namespace['run_hotkey_group'])
         namespace['hotkey_groups'] = manager

@@ -1,22 +1,16 @@
 # Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
 import os
-from html import escape
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QPixmap
 from PyQt6.QtWidgets import (
     QFrame,
-    QDialog,
     QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QTableWidget,
-    QTableWidgetItem,
-    QHeaderView,
-    QAbstractItemView,
     QVBoxLayout,
     QWidget,
 )
@@ -37,12 +31,9 @@ from src.gui.tab_actions import _build_client_toolbar
 
 def build_hotkeys_tab(ctx):
     tab = QWidget()
-    hotkeys_layout = QVBoxLayout(tab)
+    hotkeys_layout = QHBoxLayout(tab)
     hotkeys_layout.setContentsMargins(4, 4, 4, 4)
     hotkeys_layout.setSpacing(4)
-    hotkeys_body = QHBoxLayout()
-    hotkeys_body.setContentsMargins(0, 0, 0, 0)
-    hotkeys_body.setSpacing(4)
 
     registry = ctx.registry
     tl = ctx.tl
@@ -87,124 +78,9 @@ def build_hotkeys_tab(ctx):
     target_toolbar.setObjectName('HotkeyClientTargets')
     target_flow.itemAt(0).widget().setText('客户端')
     target_toolbar.setToolTip('快捷键只作用于勾选的客户端；新注入客户端默认选中。')
-    target_toolbar.setFixedHeight(24)
     all_clients.setEnabled(False)
-    target_flow.max_clients_per_row = 0
-    selector_scroll = QScrollArea(tab)
-    selector_scroll.setFrameShape(QFrame.Shape.NoFrame)
-    selector_scroll.setWidgetResizable(True)
-    selector_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    selector_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-    selector_scroll.setFixedHeight(42)
-    selector_scroll.setWidget(target_toolbar)
-    overview_icon = library_svg('8-界面/用户列表.svg', ctx.stroke_color)
-    overview_btn = QPushButton(tab)
-    overview_btn.setIcon(ctx.titlebar_svg_icon(overview_icon, 16))
-    overview_btn.setFixedSize(24, 24)
-    overview_btn.setStyleSheet(ctx.icon_btn_style)
-    overview_btn.setToolTip('状态总览')
-    overview_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    ctx.tracked_svg_labels.append([overview_btn, overview_icon, 16, 'icon'])
-    toolbar_row = QHBoxLayout()
-    toolbar_row.setContentsMargins(0, 0, 0, 0)
-    toolbar_row.addWidget(selector_scroll, 1)
-    toolbar_row.addWidget(overview_btn)
-    hotkeys_layout.addLayout(toolbar_row)
-
-    toggle_names = {}
-    status_badges = {}
-    status_snapshot = {}
-    overview_dialog = QDialog(tab)
-    overview_dialog.setWindowTitle('状态总览')
-    overview_dialog.resize(660, 350)
-    overview_layout = QVBoxLayout(overview_dialog)
-    overview_table = QTableWidget(overview_dialog)
-    overview_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-    overview_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-    overview_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-    overview_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
-    overview_table.verticalHeader().setVisible(False)
-    overview_table.setShowGrid(False)
-    overview_table.setAlternatingRowColors(True)
-    overview_table.verticalHeader().setDefaultSectionSize(27)
-    overview_layout.addWidget(overview_table)
-
-    def _style_overview():
-        overview_table.setStyleSheet(
-            f'QTableWidget {{ background: {ctx.bg_color}; color: {ctx.text_color};'
-            f' alternate-background-color: {ctx.alt_bg}; border: none; }}'
-            f'QHeaderView::section {{ background: {ctx.alt_bg};'
-            f' color: {ctx.text_color}; border: none; padding: 4px; }}'
-        )
-
-    _style_overview()
-
-    def _ordered_clients():
-        return list(client_checks)
-
-    def _refresh_overview():
-        clients = _ordered_clients()
-        overview_table.setRowCount(len(toggle_names))
-        overview_table.setColumnCount(len(clients) + 1)
-        overview_table.setHorizontalHeaderLabels(['功能', *clients])
-        overview_table.setColumnWidth(0, 125)
-        for col in range(1, len(clients) + 1):
-            overview_table.setColumnWidth(col, 62)
-        for row, (action, name) in enumerate(toggle_names.items()):
-            overview_table.setItem(row, 0, QTableWidgetItem(name))
-            for col, client in enumerate(clients, 1):
-                enabled = status_snapshot.get(action, {}).get(client, False)
-                item = QTableWidgetItem('●' if enabled else '○')
-                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item.setForeground(QColor(ctx.stroke_color if enabled else '#858998'))
-                overview_table.setItem(row, col, item)
-
-    def _open_overview(action=None):
-        _refresh_overview()
-        overview_dialog.setWindowTitle(
-            '状态总览' if action is None else f'状态总览 · {toggle_names[action]}'
-        )
-        overview_dialog.show()
-        overview_dialog.raise_()
-        if action is not None:
-            overview_table.scrollToItem(
-                overview_table.item(list(toggle_names).index(action), 0)
-            )
-
-    overview_btn.clicked.connect(lambda: _open_overview())
-
-    def _refresh_status():
-        clients = _ordered_clients()
-        for action, (badges, more) in status_badges.items():
-            states = status_snapshot.get(action, {})
-            for badge, client in zip(badges, clients[:4]):
-                enabled = states.get(client, False)
-                badge.setText(f"{'●' if enabled else '○'} {client}")
-                badge.setStyleSheet(
-                    f"color: {ctx.stroke_color if enabled else '#858998'}; font-size: 10px;"
-                )
-                badge.setToolTip(client)
-                badge.show()
-            for badge in badges[len(clients[:4]):]:
-                badge.hide()
-            hidden = clients[4:]
-            if hidden:
-                more.setText(f'+{len(hidden)}')
-                more.setToolTip('<div style="white-space:nowrap">' + '<br>'.join(
-                    f"<span style='color:{ctx.stroke_color if states.get(client, False) else '#858998'}'>"
-                    f"{'●' if states.get(client, False) else '○'} {escape(client)}</span>"
-                    for client in hidden
-                ) + '</div>')
-                more.show()
-            else:
-                more.hide()
-        if overview_dialog.isVisible():
-            _refresh_overview()
-
-    def update_client_states(snapshot):
-        status_snapshot.clear()
-        status_snapshot.update(snapshot)
-        _refresh_status()
+    target_flow.max_clients_per_row = 5
+    hk_manager_layout.addWidget(target_toolbar)
 
     def sync_all_check():
         if updating_checks[0]:
@@ -240,17 +116,11 @@ def build_hotkeys_tab(ctx):
             check.toggled.connect(sync_all_check)
             client_checks[name] = check
             target_flow.addWidget(check)
-        target_toolbar.setMinimumWidth(
-            sum(target_flow.itemAt(i).widget().sizeHint().width()
-                for i in range(target_flow.count()))
-            + max(0, target_flow.count() - 1) * 10 + 4
-        )
         all_clients.setEnabled(bool(names))
         all_clients.blockSignals(True)
         all_clients.setChecked(bool(names) and all(c.isChecked() for c in client_checks.values()))
         all_clients.blockSignals(False)
         updating_checks[0] = False
-        _refresh_status()
 
     sc = ctx.stroke_color
     _toggle_icons = {
@@ -506,7 +376,7 @@ def build_hotkeys_tab(ctx):
             name_label = QLabel(display_name, _p)
 
         # icon(20) + key(70) + edit(20) + clear/spacer(20) + spacing ≈ 140px
-        _name_max = 82 if is_toggle else 165
+        _name_max = 165
 
         if category:
             _chevron_svg = _toggle_icons["chevron"]
@@ -540,7 +410,6 @@ def build_hotkeys_tab(ctx):
             row.addWidget(name_group)
         else:
             name_label.setMaximumWidth(_name_max)
-            name_label.setToolTip(display_name)
             name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             name_label.setSizePolicy(
                 QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
@@ -553,35 +422,11 @@ def build_hotkeys_tab(ctx):
             row.addWidget(name_label)
 
         key_label = QLabel(registry.get_binding_display(action_id), _p)
-        key_label.setFixedWidth(48 if is_toggle else 70)
+        key_label.setFixedWidth(70)
         key_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         key_label.setStyleSheet(f"color: {ctx.text_color}; font-style: italic;")
         registry.key_labels[action_id] = key_label
         row.addWidget(key_label)
-
-        if is_toggle:
-            toggle_names[action_id] = display_name
-            badges_host = QWidget(_p)
-            badges_host.setFixedSize(142, 20)
-            badges_layout = QHBoxLayout(badges_host)
-            badges_layout.setContentsMargins(0, 0, 0, 0)
-            badges_layout.setSpacing(0)
-            badges = []
-            for _ in range(4):
-                badge = QLabel(badges_host)
-                badge.setFixedWidth(28)
-                badges_layout.addWidget(badge)
-                badges.append(badge)
-            more = QPushButton(badges_host)
-            more.setFixedSize(30, 20)
-            more.setStyleSheet(
-                f'color: {ctx.stroke_color}; background: transparent; border: none;'
-            )
-            more.setCursor(Qt.CursorShape.PointingHandCursor)
-            more.clicked.connect(lambda _, action=action_id: _open_overview(action))
-            badges_layout.addWidget(more)
-            status_badges[action_id] = (badges, more)
-            row.addWidget(badges_host)
 
         _pencil_svg = ctx.svgs["pencil"]
         edit_btn = QPushButton(_p)
@@ -606,7 +451,7 @@ def build_hotkeys_tab(ctx):
             ctx.tracked_svg_labels.append([clear_btn, _x_svg, 14, "icon"])
             registry.clear_btns[action_id] = clear_btn
             row.addWidget(clear_btn)
-        elif not is_toggle:
+        else:
             tail_spacer = QLabel(_p)
             tail_spacer.setFixedSize(20, 20)
             row.addWidget(tail_spacer)
@@ -736,7 +581,7 @@ def build_hotkeys_tab(ctx):
     hk_manager_layout.addWidget(
         registry.styled_btn(tl("reset_defaults"), _reset_hotkeys)
     )
-    hotkeys_body.addWidget(hk_manager)
+    hotkeys_layout.addWidget(hk_manager)
 
     # --- Right panel: Tool info ---
     info_widget = QWidget()
@@ -828,14 +673,12 @@ def build_hotkeys_tab(ctx):
     ctx.widget_tags["QuestPartyRuntimeStatus"] = quest_party_status
 
     info_layout.addStretch()
-    hotkeys_body.addWidget(info_widget)
-    hotkeys_layout.addLayout(hotkeys_body, 1)
+    hotkeys_layout.addWidget(info_widget)
 
     # Store static IDs and the dynamic row adder for main.py to use
     static_ids = {aid for _, actions in _hk_categories for aid, *_ in actions}
 
     set_available_clients([])
-    _refresh_overview()
     _update_multi_client_state(0)
 
     def _retheme():
@@ -858,14 +701,11 @@ def build_hotkeys_tab(ctx):
             f'<b>{ctx.tool_name}</b> <a href="{_cl_url}" style="color: {ctx.text_color}; text-decoration: none;">v{ctx.tool_version}</a>'
         )
         quest_party_status.setStyleSheet(_quest_party_status_style())
-        _style_overview()
-        _refresh_status()
 
     ctx.exports["hotkeys"] = {
         "add_dynamic_hk_row": _add_dynamic_hk_row,
         "static_ids": static_ids,
         "set_available_clients": set_available_clients,
-        "update_client_states": update_client_states,
         "selected_clients": selected_clients,
         "update_multi_client_state": _update_multi_client_state,
         "retheme": _retheme,
