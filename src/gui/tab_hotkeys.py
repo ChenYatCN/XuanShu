@@ -39,7 +39,7 @@ def build_hotkeys_tab(ctx):
     tab = QWidget()
     hotkeys_layout = QVBoxLayout(tab)
     hotkeys_layout.setContentsMargins(4, 4, 4, 4)
-    hotkeys_layout.setSpacing(4)
+    hotkeys_layout.setSpacing(0)
     hotkeys_body = QHBoxLayout()
     hotkeys_body.setContentsMargins(0, 0, 0, 0)
     hotkeys_body.setSpacing(4)
@@ -95,7 +95,12 @@ def build_hotkeys_tab(ctx):
     selector_scroll.setWidgetResizable(True)
     selector_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     selector_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-    selector_scroll.setFixedHeight(42)
+    selector_scroll.setFixedHeight(24)
+    selector_scroll.horizontalScrollBar().rangeChanged.connect(
+        lambda minimum, maximum: selector_scroll.setFixedHeight(
+            42 if maximum > minimum else 24
+        )
+    )
     selector_scroll.setWidget(target_toolbar)
     overview_icon = library_svg('8-界面/用户列表.svg', ctx.stroke_color)
     overview_btn = QPushButton(tab)
@@ -107,8 +112,9 @@ def build_hotkeys_tab(ctx):
     ctx.tracked_svg_labels.append([overview_btn, overview_icon, 16, 'icon'])
     toolbar_row = QHBoxLayout()
     toolbar_row.setContentsMargins(0, 0, 0, 0)
+    toolbar_row.setSpacing(4)
     toolbar_row.addWidget(selector_scroll, 1)
-    toolbar_row.addWidget(overview_btn)
+    toolbar_row.addWidget(overview_btn, alignment=Qt.AlignmentFlag.AlignTop)
     hotkeys_layout.addLayout(toolbar_row)
 
     toggle_names = {}
@@ -175,7 +181,13 @@ def build_hotkeys_tab(ctx):
 
     def _refresh_status():
         clients = _ordered_clients()
-        for action, (badges, more) in status_badges.items():
+        for action, (badges, more, name_label) in status_badges.items():
+            badges_host = more.parentWidget()
+            status_width = 28 * min(4, len(clients)) + (30 if len(clients) > 4 else 0)
+            badges_host.setFixedWidth(status_width)
+            badges_host.setVisible(bool(clients))
+            # Icon, key, edit and four gaps use 118 px of the 320 px list.
+            name_label.setFixedWidth(min(165, hk_manager.width() - 118 - status_width))
             states = status_snapshot.get(action, {})
             for badge, client in zip(badges, clients[:4]):
                 enabled = states.get(client, False)
@@ -431,7 +443,7 @@ def build_hotkeys_tab(ctx):
     hk_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     hk_scroll_widget = QWidget()
     hk_scroll_layout = QVBoxLayout(hk_scroll_widget)
-    hk_scroll_layout.setContentsMargins(0, 2, 0, 2)
+    hk_scroll_layout.setContentsMargins(0, 0, 0, 2)
     hk_scroll_layout.setSpacing(2)
 
     _dynamic_header_added = [False]
@@ -485,6 +497,7 @@ def build_hotkeys_tab(ctx):
         # appearing as top-level windows (parentless QPushButtons flash on Windows).
         _p = hk_scroll_widget
         row = QHBoxLayout()
+        row.setAlignment(Qt.AlignmentFlag.AlignLeft)
         row.setSpacing(2)
         row.setContentsMargins(0, 0, 0, 0)
 
@@ -506,7 +519,7 @@ def build_hotkeys_tab(ctx):
             name_label = QLabel(display_name, _p)
 
         # icon(20) + key(70) + edit(20) + clear/spacer(20) + spacing ≈ 140px
-        _name_max = 82 if is_toggle else 165
+        _name_max = 165
 
         if category:
             _chevron_svg = _toggle_icons["chevron"]
@@ -553,7 +566,7 @@ def build_hotkeys_tab(ctx):
             row.addWidget(name_label)
 
         key_label = QLabel(registry.get_binding_display(action_id), _p)
-        key_label.setFixedWidth(48 if is_toggle else 70)
+        key_label.setFixedWidth(70)
         key_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         key_label.setStyleSheet(f"color: {ctx.text_color}; font-style: italic;")
         registry.key_labels[action_id] = key_label
@@ -580,7 +593,7 @@ def build_hotkeys_tab(ctx):
             more.setCursor(Qt.CursorShape.PointingHandCursor)
             more.clicked.connect(lambda _, action=action_id: _open_overview(action))
             badges_layout.addWidget(more)
-            status_badges[action_id] = (badges, more)
+            status_badges[action_id] = (badges, more, name_label)
             row.addWidget(badges_host)
 
         _pencil_svg = ctx.svgs["pencil"]
@@ -592,6 +605,8 @@ def build_hotkeys_tab(ctx):
         edit_btn.setToolTip(tl("bind_hotkey"))
         edit_btn.clicked.connect(_make_edit_handler(action_id))
         ctx.tracked_svg_labels.append([edit_btn, _pencil_svg, 14, "icon"])
+        if not is_toggle:
+            row.addStretch()
         row.addWidget(edit_btn)
 
         if removable:
@@ -835,6 +850,7 @@ def build_hotkeys_tab(ctx):
     static_ids = {aid for _, actions in _hk_categories for aid, *_ in actions}
 
     set_available_clients([])
+    _refresh_status()
     _refresh_overview()
     _update_multi_client_state(0)
 

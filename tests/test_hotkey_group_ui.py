@@ -108,17 +108,41 @@ class HotkeyGroupUITests(unittest.TestCase):
         self.assertEqual(info.geometry(), before)
         host = self.tab.findChild(QWidget, 'HotkeyClientTargets')
         selector = host.parentWidget().parentWidget()
-        self.assertLess(
+        overview = next(b for b in self.tab.findChildren(QPushButton)
+                        if b.toolTip() == '状态总览')
+        self.assertEqual(overview.y(), selector.y())
+        self.assertEqual(selector.height(), 24)
+        self.assertGreater(overview.x(), info.geometry().left())
+        self.assertGreaterEqual(overview.geometry().right(), self.tab.width() - 8)
+        category = next(label for label in self.tab.findChildren(QLabel)
+                        if label.text() == '<b>cat_toggles</b>')
+        gap = category.mapTo(self.tab, QPoint()).y() - (selector.y() + selector.height())
+        self.assertEqual(gap, 0)
+        self.assertEqual(status.width(), 340)
+        self.assertLessEqual(
             selector.mapTo(self.tab, QPoint(0, selector.height())).y(),
             info.mapTo(self.tab, QPoint(0, 0)).y(),
         )
         self.assertEqual(len({self.checks()[f'p{i}'].geometry().y() for i in range(1, 13)}), 1)
+        self.tab.resize(680, 500)
+        self.app.processEvents()
+        self.assertEqual(selector.height(), 42)
+        self.assertEqual(overview.y(), selector.y())
 
     def test_status_badges_fold_and_overview_follow_live_clients(self):
         self.tab.resize(1000, 500)
         self.tab.show()
         button = next(b for b in self.tab.findChildren(QPushButton)
                       if b.toolTip() == '状态总览')
+        self.app.processEvents()
+        row = self.ctx.registry.row_widgets['toggle_combat']
+        key = self.ctx.registry.key_labels['toggle_combat']
+        edit = next(b for b in row.findChildren(QPushButton)
+                    if b.toolTip() == 'bind_hotkey')
+        icon = row.findChildren(QLabel)[0]
+        self.assertGreaterEqual(key.x() - icon.x(), 150)
+        self.assertGreaterEqual(edit.x() - key.x(), 60)
+        self.assertLessEqual(edit.x() - key.geometry().right() - 1, 4)
         for count, expected in ((1, None), (4, None), (5, '+1'),
                                 (6, '+2'), (8, '+4'), (10, '+6'), (12, '+8')):
             self.api['set_available_clients']([f'p{i}' for i in range(1, count + 1)])
@@ -127,7 +151,26 @@ class HotkeyGroupUITests(unittest.TestCase):
             })
             self.app.processEvents()
             row = self.ctx.registry.row_widgets['toggle_combat']
+            icon = row.findChildren(QLabel)[0]
+            self.assertEqual(icon.width(), 20)
+            self.assertLessEqual(icon.x(), 4)
             labels = [label.text() for label in row.findChildren(QLabel)]
+            badges_host = next(label.parentWidget() for label in row.findChildren(QLabel)
+                               if label.text() == '● p1')
+            self.assertEqual(
+                badges_host.width(), 28 * min(4, count) + (30 if count > 4 else 0)
+            )
+            edit = next(b for b in row.findChildren(QPushButton)
+                        if b.toolTip() == 'bind_hotkey')
+            self.assertEqual(row.width(), 320)
+            name = next(label for label in row.findChildren(QLabel)
+                        if label.text() == 'combat_toggle')
+            self.assertEqual(name.width(), min(165, 202 - badges_host.width()))
+            self.assertLessEqual(
+                edit.x() - key.geometry().right() - 1,
+                badges_host.width() + 4,
+            )
+            self.assertLessEqual(edit.geometry().right(), row.width())
             self.assertIn('● p1', labels)
             if count >= 2:
                 self.assertIn('○ p2', labels)
@@ -157,3 +200,7 @@ class HotkeyGroupUITests(unittest.TestCase):
         self.assertFalse(more.isVisible())
         button.click()
         self.assertEqual(table.rowCount(), 9)
+        self.api['set_available_clients']([])
+        self.app.processEvents()
+        self.assertFalse(badges_host.isVisible())
+        self.assertLessEqual(edit.x() - key.geometry().right() - 1, 4)
