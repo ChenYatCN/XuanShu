@@ -50,8 +50,7 @@ def build_hotkeys_tab(ctx):
     settings = ctx.settings
     scoped_actions = {'toggle_speed', 'toggle_combat', 'toggle_dialogue',
                       'toggle_dialogue_side_quests', 'toggle_sigil', 'toggle_questing',
-                      'toggle_auto_pet', 'toggle_auto_potion', 'toggle_freecam',
-                      'quest_tp', 'freecam_tp', 'friend_tp', 'mass_tp', 'xyz_sync', 'x_press'}
+                      'toggle_auto_pet', 'toggle_auto_potion'}
     client_checks = {}
     updating_checks = [False]
 
@@ -86,7 +85,7 @@ def build_hotkeys_tab(ctx):
     target_toolbar, target_flow, all_clients, _ = _build_client_toolbar(ctx, None, None)
     target_toolbar.setObjectName('HotkeyClientTargets')
     target_flow.itemAt(0).widget().setText('客户端')
-    target_toolbar.setToolTip('快捷键只作用于勾选的客户端；新注入客户端默认选中。')
+    target_toolbar.setToolTip('勾选仅影响上方分组开关；自由视角、传送及多开快捷键不受勾选影响。')
     target_toolbar.setFixedHeight(24)
     all_clients.setEnabled(False)
     target_flow.max_clients_per_row = 0

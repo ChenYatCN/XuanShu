@@ -12,6 +12,28 @@ from src.task_lifecycle import gather_owned
 
 
 class HotkeyRuntimeScopeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_direct_multi_client_hotkeys_exclude_operated_client_from_peers(self):
+        clients = [SimpleNamespace(title=f'p{i}') for i in range(1, 4)]
+        tree = ast.parse(Path('XuanShu.py').read_text(encoding='utf-8'))
+        names = {'x_press_hotkey', 'xyz_sync_hotkey', 'mass_navmap_teleport_hotkey'}
+        functions = [node for node in ast.walk(tree)
+                     if isinstance(node, ast.AsyncFunctionDef) and node.name in names]
+        namespace = dict(
+            walker=SimpleNamespace(clients=clients), foreground_client=clients[0],
+            freecam_status=False, mass_key_press=AsyncMock(), xyz_sync=AsyncMock(),
+            navmap_teleport=AsyncMock(), Keycode=SimpleNamespace(X='X'),
+        )
+        exec(compile('from __future__ import annotations\n' +
+                     ast.unparse(ast.Module(body=functions, type_ignores=[])),
+                     'XuanShu.py', 'exec'), namespace)
+        await namespace['x_press_hotkey']()
+        await namespace['xyz_sync_hotkey']()
+        await namespace['mass_navmap_teleport_hotkey']()
+        for mock in (namespace['mass_key_press'], namespace['xyz_sync'],
+                     namespace['navmap_teleport']):
+            self.assertIs(mock.await_args.args[0], clients[0])
+            self.assertEqual(mock.await_args.args[1], clients[1:])
+
     def teleport_runtime(self, teleport):
         tree = ast.parse(Path('XuanShu.py').read_text(encoding='utf-8'))
         function = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)

@@ -91,10 +91,12 @@ class GUICommandType(Enum):
     # Launcher
     LaunchInstance = auto()
     SaveAccount = auto()       # GUI -> Backend: data = (nickname, steam: bool)
-    UpdateAccount = auto()     # GUI -> Backend: data = (nickname, steam: bool); updates settings only
+    UpdateAccount = auto()     # GUI -> Backend: data = (old_nickname, new_nickname, steam: bool)
+    UpdateAccountCredentials = auto()  # GUI -> Backend: data = nickname
     DeleteAccount = auto()
     LoadAccounts = auto()
     UpdateAccountList = auto()
+    AccountActionError = auto()  # Backend -> GUI: human-readable account error
     ReorderAccounts = auto()
     UnhookClient = auto()
     HookClient = auto()

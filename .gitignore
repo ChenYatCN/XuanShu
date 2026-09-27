@@ -10,6 +10,7 @@ testbot.txt
 !XuanShu.spec
 build/
 dist/
+outputs/
 *.env
 .secret/*
 .secret

@@ -18,8 +18,53 @@ fn prompt_save_account(py: Python<'_>, nickname: String) -> PyResult<()> {
 
 #[pyfunction]
 fn delete_account(nickname: String) -> PyResult<()> {
-    credential_store::delete_credential(&nickname)?;
+    if credential_store::has_credential(&nickname) {
+        credential_store::delete_credential(&nickname)?;
+    }
     metadata::remove_nickname(&nickname)?;
+    Ok(())
+}
+
+#[pyfunction]
+fn create_steam_account(nickname: String) -> PyResult<()> {
+    if nickname.trim().is_empty() || metadata::account_exists(&nickname)? || credential_store::has_credential(&nickname) {
+        return Err(VaultError::MetadataIo("Account nickname is empty or already exists".into()).into());
+    }
+    metadata::rename_and_set_steam(&nickname, &nickname, true)?;
+    Ok(())
+}
+
+/// Move the existing Windows credential with the nickname; never expose it to Python.
+#[pyfunction]
+fn update_account(old: String, new: String, steam: bool) -> PyResult<()> {
+    if new.trim().is_empty() || new != new.trim() {
+        return Err(VaultError::MetadataIo("Account nickname cannot be empty or padded".into()).into());
+    }
+    if !metadata::account_exists(&old)? && !credential_store::has_credential(&old) {
+        return Err(VaultError::MetadataIo(format!("Account '{old}' does not exist")).into());
+    }
+    if old != new && (metadata::account_exists(&new)? || credential_store::has_credential(&new)) {
+        return Err(VaultError::MetadataIo(format!("Account '{new}' already exists")).into());
+    }
+    let previous = metadata::load()?;
+    let had_credential = credential_store::has_credential(&old);
+    if old != new && had_credential {
+        let (username, password) = credential_store::read_credential(&old)?;
+        credential_store::write_credential(&new, &username, &password)?;
+    }
+    if let Err(error) = metadata::rename_and_set_steam(&old, &new, steam) {
+        if old != new && had_credential {
+            let _ = credential_store::delete_credential(&new);
+        }
+        return Err(error.into());
+    }
+    if old != new && had_credential {
+        if let Err(error) = credential_store::delete_credential(&old) {
+            let _ = metadata::save(&previous);
+            let _ = credential_store::delete_credential(&new);
+            return Err(error.into());
+        }
+    }
     Ok(())
 }
 
@@ -38,6 +83,11 @@ fn reorder_accounts(ordered: Vec<String>) -> PyResult<()> {
 
 #[pyfunction]
 fn has_account(nickname: String) -> PyResult<bool> {
+    Ok(metadata::account_exists(&nickname)? || credential_store::has_credential(&nickname))
+}
+
+#[pyfunction]
+fn has_account_credential(nickname: String) -> PyResult<bool> {
     Ok(credential_store::has_credential(&nickname))
 }
 
@@ -49,6 +99,9 @@ fn has_account(nickname: String) -> PyResult<bool> {
 #[pyfunction]
 fn validate_account(nickname: String) -> PyResult<Option<String>> {
     match metadata::get_steam(&nickname)? {
+        Some(false) if !credential_store::has_credential(&nickname) => Ok(Some(
+            "Normal login credentials are missing. Update account credentials.".to_string(),
+        )),
         Some(_) => Ok(None),
         None => Ok(Some(
             "This account was saved before Steam support was added. \
@@ -161,8 +214,10 @@ fn launch_instance(
         launcher::enable_window(handle, false);
         std::thread::sleep(std::time::Duration::from_secs(2));
 
-        let (username, password) = credential_store::read_credential(&nickname)?;
-        login::login_to_instance(handle, &username, &password)?;
+        if !steam {
+            let (username, password) = credential_store::read_credential(&nickname)?;
+            login::login_to_instance(handle, &username, &password)?;
+        }
 
         launcher::enable_window(handle, true);
 
@@ -186,6 +241,8 @@ fn launch_instances(
     for nickname in &nicknames {
         steam_flags.push(metadata::get_steam(nickname)?.unwrap_or(false));
     }
+    let steam_by_nick: HashMap<String, bool> = nicknames.iter().cloned()
+        .zip(steam_flags.iter().copied()).collect();
     let any_steam = steam_flags.iter().any(|&s| s);
     py.allow_threads(|| {
         if any_steam {
@@ -272,8 +329,10 @@ fn launch_instances(
 
         let mut results = HashMap::new();
         for (nickname, handle) in handle_for_nick {
-            let (username, password) = credential_store::read_credential(&nickname)?;
-            login::login_to_instance(handle, &username, &password)?;
+            if !steam_by_nick.get(&nickname).copied().unwrap_or(false) {
+                let (username, password) = credential_store::read_credential(&nickname)?;
+                login::login_to_instance(handle, &username, &password)?;
+            }
             launcher::enable_window(handle, true);
             results.insert(nickname, handle);
         }
@@ -303,9 +362,12 @@ pub fn wizlaunch(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", "0.3.1")?;  // 0.3.1: spawn all clients up front (mixed Steam modes no longer serialize); pair windows to accounts by PID
     m.add_function(wrap_pyfunction!(prompt_save_account, m)?)?;
     m.add_function(wrap_pyfunction!(delete_account, m)?)?;
+    m.add_function(wrap_pyfunction!(create_steam_account, m)?)?;
+    m.add_function(wrap_pyfunction!(update_account, m)?)?;
     m.add_function(wrap_pyfunction!(list_accounts, m)?)?;
     m.add_function(wrap_pyfunction!(reorder_accounts, m)?)?;
     m.add_function(wrap_pyfunction!(has_account, m)?)?;
+    m.add_function(wrap_pyfunction!(has_account_credential, m)?)?;
     m.add_function(wrap_pyfunction!(validate_account, m)?)?;
     m.add_function(wrap_pyfunction!(get_account_steam, m)?)?;
     m.add_function(wrap_pyfunction!(set_account_steam, m)?)?;

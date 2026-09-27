@@ -54,6 +54,68 @@ from PyQt6.QtSvg import QSvgRenderer
 from src.gui.commands import _QT_KEY_TO_KEYCODE, _MODIFIER_KEYS, _format_binding
 
 
+class ThemedContextMenuEditor(QPlainTextEdit):
+    """Keep Qt's edit actions while drawing their menu for the active theme."""
+
+    _EDIT_ICONS = {
+        'edit-undo': 'edit_undo',
+        'edit-redo': 'edit_redo',
+        'edit-cut': 'edit_cut',
+        'edit-copy': 'clipboard',
+        'edit-paste': 'edit_paste',
+        'edit-delete': 'trash',
+        'select-all': 'edit_select_all',
+    }
+
+    def __init__(self, ctx, parent=None):
+        super().__init__(parent)
+        self._theme_ctx = ctx
+
+    def create_themed_context_menu(self):
+        menu = self.createStandardContextMenu()
+        ctx = self._theme_ctx
+        accent = QColor(ctx.stroke_color)
+        background = QColor(ctx.alt_bg)
+        foreground = QColor(ctx.text_color)
+        disabled = QColor(
+            (background.red() + foreground.red()) // 2,
+            (background.green() + foreground.green()) // 2,
+            (background.blue() + foreground.blue()) // 2,
+        ).name()
+        hover = f'rgba({accent.red()},{accent.green()},{accent.blue()},45)'
+        menu.setStyleSheet(
+            f'QMenu {{ background-color: {ctx.alt_bg}; color: {ctx.text_color}; '
+            f'border: 1px solid {ctx.stroke_color}; }}'
+            'QMenu::item { padding: 5px 18px 5px 8px; }'
+            f'QMenu::item:selected {{ background-color: {hover}; color: {ctx.text_color}; }}'
+            f'QMenu::item:disabled {{ color: {disabled}; }}'
+            'QMenu::item:disabled:selected { background-color: transparent; }'
+            f'QMenu::separator {{ height: 1px; background-color: {disabled}; margin: 3px 8px; }}'
+        )
+        for action in menu.actions():
+            icon_name = self._EDIT_ICONS.get(action.objectName())
+            if icon_name is None:
+                continue
+            svg = ctx.svgs[icon_name]
+            normal = ctx.titlebar_svg_icon(svg, 16).pixmap(16, 16)
+            muted = ctx.titlebar_svg_icon(
+                svg.replace(ctx.stroke_color, disabled), 16
+            ).pixmap(16, 16)
+            icon = QIcon()
+            icon.addPixmap(normal, QIcon.Mode.Normal)
+            icon.addPixmap(normal, QIcon.Mode.Active)
+            icon.addPixmap(muted, QIcon.Mode.Disabled)
+            action.setIcon(icon)
+        return menu
+
+    def contextMenuEvent(self, event):
+        menu = self.create_themed_context_menu()
+        try:
+            menu.exec(event.globalPos())
+        finally:
+            menu.deleteLater()
+
+
 class FlowLayout(QLayout):
     """Compact left-to-right layout that wraps widgets onto new rows."""
 

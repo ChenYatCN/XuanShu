@@ -674,7 +674,7 @@ async def main():
     async def x_press_hotkey():
         await mass_key_press(
             foreground_client,
-            background_clients,
+            [c for c in walker.clients if c is not foreground_client],
             "X Press",
             Keycode.X,
             duration=0.1,
@@ -683,7 +683,9 @@ async def main():
 
     async def xyz_sync_hotkey():
         await xyz_sync(
-            foreground_client, background_clients, turn_after=True, debug=True
+            foreground_client,
+            [c for c in walker.clients if c is not foreground_client],
+            turn_after=True, debug=True,
         )
 
     async def navmap_teleport_hotkey():
@@ -695,7 +697,9 @@ async def main():
     async def mass_navmap_teleport_hotkey():
         if not freecam_status:
             await navmap_teleport(
-                foreground_client, background_clients, mass_teleport=True, debug=True
+                foreground_client,
+                [c for c in walker.clients if c is not foreground_client],
+                mass_teleport=True, debug=True,
             )
 
     async def toggle_speed_hotkey():
@@ -914,46 +918,56 @@ async def main():
 
     legacy_freecam_ids = set()
 
-    async def toggle_freecam_hotkey(debug: bool = True):
+    async def toggle_freecam_hotkey(debug: bool = True, client: Client = None):
         global freecam_status
         global freecam_player_lock_task
-        if foreground_client:
-            if await is_free(foreground_client):
+        client = client or foreground_client
+        if client:
+            if await is_free(client):
                 try:
-                    if await foreground_client.game_client.is_freecam():
+                    if await client.game_client.is_freecam():
                         if debug:
                             logger.debug("Freecam hotkey pressed, disabling freecam.")
                         await stop_freecam_player_lock()
-                        await foreground_client.camera_elastic()
-                        legacy_freecam_ids.discard(id(foreground_client))
-                        freecam_status = False
+                        await client.camera_elastic()
+                        legacy_freecam_ids.discard(id(client))
+                        freecam_status = bool(legacy_freecam_ids)
                         gui_send_queue.put(
                             xuanshu_gui.GUICommand(
                                 xuanshu_gui.GUICommandType.UpdateWindow,
-                                ("FreecamStatus", "Disabled"),
+                                ("FreecamStatus", bool_to_string(freecam_status)),
                             )
                         )
                     else:
                         if debug:
                             logger.debug("Freecam hotkey pressed, enabling freecam.")
 
-                        locked_position = await foreground_client.body.position()
-                        locked_orientation = await foreground_client.body.orientation()
-                        await sync_camera(foreground_client)
-                        await foreground_client.camera_freecam()
+                        # Only the operated client may remain in shortcut freecam.
+                        # Leave the previous client in elastic camera before
+                        # replacing its movement lock.
+                        legacy_freecam_ids.intersection_update(id(c) for c in walker.clients)
+                        for other in walker.clients:
+                            if other is not client and id(other) in legacy_freecam_ids:
+                                await other.camera_elastic()
+                                legacy_freecam_ids.discard(id(other))
+                        await stop_freecam_player_lock()
+                        freecam_status = bool(legacy_freecam_ids)
+                        locked_position = await client.body.position()
+                        locked_orientation = await client.body.orientation()
+                        await sync_camera(client)
+                        await client.camera_freecam()
                         # wizwalker freezes the shared movement update while
                         # freecam is active. Restore it so pets, NPCs and other
                         # world movement continue instead of appearing paused.
-                        await foreground_client._unpatch_movement_update()
-                        await stop_freecam_player_lock()
+                        await client._unpatch_movement_update()
                         freecam_player_lock_task = asyncio.create_task(
                             lock_freecam_player(
-                                foreground_client,
+                                client,
                                 locked_position,
                                 locked_orientation,
                             )
                         )
-                        legacy_freecam_ids.add(id(foreground_client))
+                        legacy_freecam_ids.add(id(client))
                         freecam_status = True
                         gui_send_queue.put(
                             xuanshu_gui.GUICommand(
@@ -976,15 +990,16 @@ async def main():
                     )
 
     async def tp_to_freecam_hotkey():
-        if foreground_client:
+        client = foreground_client
+        if client:
             logger.debug(
                 "Freecam TP hotkey pressed, teleporting foreground client to freecam position."
             )
-            if await foreground_client.game_client.is_freecam():
-                camera = await foreground_client.game_client.free_camera_controller()
+            if await client.game_client.is_freecam():
+                camera = await client.game_client.free_camera_controller()
                 camera_pos = await camera.position()
-                await toggle_freecam_hotkey(False)
-                await foreground_client.teleport(
+                await toggle_freecam_hotkey(False, client)
+                await client.teleport(
                     camera_pos, wait_on_inuse=True, purge_on_after_unuser_fixer=True
                 )
 
@@ -1003,11 +1018,15 @@ async def main():
         participants = party.questers + party.hitters if party.questers else []
         participant_ids = {id(client) for client in participants}
         for client in (walker.clients if members is None else members):
+            was_questing = client.questing_status
             client.questing_status = active and id(client) in participant_ids
+            if client.questing_status and not was_questing:
+                client._xuanshu_mainline_id = None
             client.quest_party_hitters = []
             client.quest_party_quest_worker_zone = None
             client.quest_party_group_dungeon_zone = None
             client.quest_party_confirmed_dungeon_transition = None
+            client.quest_dungeon_recovery = None
             # Recompute this state every time roles are applied.  In particular,
             # a newly started party must block the quest worker before its first
             # movement, not only after the quester has changed zones once.
@@ -1219,6 +1238,7 @@ async def main():
         "toggle_dialogue_side_quests", "toggle_sigil", "toggle_questing",
         "toggle_auto_pet", "toggle_auto_potion", "toggle_freecam",
     )
+    grouped_hotkey_actions = set(hotkey_toggle_actions) - {"toggle_freecam"}
     scoped_worker_active = {action: set() for action in hotkey_toggle_actions}
 
     async def run_hotkey_group(action, members):
@@ -1238,14 +1258,12 @@ async def main():
             "toggle_questing": "Questing",
             "toggle_auto_pet": "Auto Pet",
             "toggle_auto_potion": "Auto Potion",
-            "toggle_freecam": "Freecam",
         }
         flags = {
             "toggle_combat": "combat_status",
             "toggle_sigil": "sigil_status",
             "toggle_auto_pet": "auto_pet_status",
             "toggle_dialogue_side_quests": "hotkey_accept_sidequests",
-            "toggle_freecam": "hotkey_freecam",
         }
         flag = flags.get(action)
         old_flags = [(c, getattr(c, flag, None)) for c in members] if flag else []
@@ -1325,7 +1343,7 @@ async def main():
                                 await is_free(client)
                                 and not client.questing_status
                                 and not client.sigil_status
-                                and not getattr(client, "hotkey_freecam", False)
+                                and id(client) not in legacy_freecam_ids
                             ):
                                 await auto_potions(client, buy=False)
 
@@ -1333,82 +1351,6 @@ async def main():
                         *[
                             tracked_worker(
                                 c, lambda c=c: scoped_potions(c)
-                            )
-                            for c in members
-                        ]
-                    )
-                case "toggle_freecam":
-
-                    async def scoped_camera(client):
-                        if not await is_free(client):
-                            raise ValueError(f"{client.title} 当前不能启用自由视角")
-                        position = await client.body.position()
-                        orientation = await client.body.orientation()
-                        try:
-                            await sync_camera(client)
-                            await client.camera_freecam()
-                            await client._unpatch_movement_update()
-                            await lock_freecam_player(client, position, orientation)
-                        finally:
-                            if client in walker.clients:
-                                try:
-                                    await client.camera_elastic()
-                                except Exception as exc:
-                                    logger.debug("自由视角清理：{}", exc)
-
-                    await gather_owned(
-                        *[
-                            tracked_worker(
-                                c, lambda c=c: scoped_camera(c)
-                            )
-                            for c in members
-                        ]
-                    )
-                case "mass_tp":
-                    source = foreground_client if foreground_client in members else None
-                    await navmap_teleport(
-                        source,
-                        [c for c in members if c is not source],
-                        mass_teleport=True,
-                        debug=True,
-                        isolate_errors=True,
-                    )
-                case "quest_tp" | "friend_tp" | "x_press" | "xyz_sync" | "freecam_tp":
-                    # The chosen source must also belong to the selected set.
-                    source = (
-                        foreground_client
-                        if foreground_client in members
-                        else members[0]
-                    )
-
-                    async def scoped_once(client):
-                        if action == "quest_tp":
-                            await navmap_teleport(client, [], debug=True)
-                        elif action == "friend_tp":
-                            await friend_teleport_sync([client], debug=True)
-                        elif action == "x_press":
-                            await client.send_key(key=Keycode.X, seconds=0.1)
-                        elif action == "xyz_sync":
-                            if client is not source:
-                                await xyz_sync(
-                                    source, [client], turn_after=True, debug=True
-                                )
-                        elif await client.game_client.is_freecam():
-                            camera = await client.game_client.free_camera_controller()
-                            position = await camera.position()
-                            # Stop only this client's scoped camera controller.
-                            await hotkey_groups.stop_client("toggle_freecam", client)
-                            await client.camera_elastic()
-                            await client.teleport(
-                                position,
-                                wait_on_inuse=True,
-                                purge_on_after_unuser_fixer=True,
-                            )
-
-                    await gather_owned(
-                        *[
-                            run_client_worker(
-                                c, lambda: walker.clients, lambda c=c: scoped_once(c)
                             )
                             for c in members
                         ]
@@ -2505,6 +2447,15 @@ async def main():
                         if recovery_candidate and not await is_free(client):
                             recovery_candidate = False
 
+                        # Let the confirmed-dungeon questbook fallback run once
+                        # before the heavier stationary-task restart takes over.
+                        dungeon_recovery = getattr(client, "quest_dungeon_recovery", None)
+                        if (recovery_candidate and isinstance(dungeon_recovery, dict)
+                                and not dungeon_recovery.get("attempted")
+                                and dungeon_recovery.get("since") is not None
+                                and time.monotonic() - dungeon_recovery["since"] < 210.0):
+                            recovery_candidate = False
+
                         # restart questing
                         if (
                             recovery_candidate
@@ -3194,6 +3145,7 @@ async def main():
         client.quest_party_quest_worker_zone = None
         client.quest_party_group_dungeon_zone = None
         client.quest_party_confirmed_dungeon_transition = None
+        client.quest_dungeon_recovery = None
         client.quest_party_hitters = []
         client.quest_party_status_session = None
         client.quest_party_quest_worker_task = None
@@ -4104,6 +4056,9 @@ async def main():
                             raise xuanshu_gui.ToolClosedException
                         case xuanshu_gui.GUICommandType.ToggleHotkeyGroup:
                             action = com.data.get("action")
+                            if action not in grouped_hotkey_actions:
+                                logger.warning("该快捷键不参与客户端分组。")
+                                continue
                             legacy_task = {
                                 "toggle_speed": speed_task,
                                 "toggle_combat": combat_task,
@@ -4122,7 +4077,6 @@ async def main():
                                     action == "toggle_dialogue_side_quests"
                                     and side_quest_status
                                 )
-                                or (action == "toggle_freecam" and freecam_status)
                             )
                             if legacy_active:
                                 logger.warning(
@@ -4145,7 +4099,6 @@ async def main():
                                 GUIKeys.toggle_questing: "toggle_questing",
                                 GUIKeys.toggle_auto_pet: "toggle_auto_pet",
                                 GUIKeys.toggle_auto_potion: "toggle_auto_potion",
-                                GUIKeys.toggle_freecam: "toggle_freecam",
                             }.get(com.data)
                             if grouped_action and hotkey_groups.active(grouped_action):
                                 logger.warning(
@@ -5385,12 +5338,17 @@ async def main():
                                 # Backward compatibility with older launcher UIs.
                                 nickname, steam_mode = com.data, False
                             try:
-                                await asyncio.to_thread(
-                                    wizlaunch.prompt_save_account, nickname
-                                )
-                                wizlaunch.set_account_steam(nickname, bool(steam_mode))
+                                if wizlaunch.has_account(nickname):
+                                    raise RuntimeError(f"Account '{nickname}' already exists")
+                                if steam_mode:
+                                    wizlaunch.create_steam_account(nickname)
+                                else:
+                                    await asyncio.to_thread(
+                                        wizlaunch.prompt_save_account, nickname
+                                    )
+                                    wizlaunch.set_account_steam(nickname, False)
                                 logger.info(f"Account '{nickname}' saved.")
-                            except RuntimeError as e:
+                            except (RuntimeError, AttributeError) as e:
                                 logger.info(f"Account save cancelled or failed: {e}")
                             gui_send_queue.put(
                                 xuanshu_gui.GUICommand(
@@ -5400,16 +5358,54 @@ async def main():
                             )
 
                         case xuanshu_gui.GUICommandType.UpdateAccount:
-                            nickname, steam_mode = com.data
+                            nickname, new_nickname, steam_mode = com.data
                             try:
-                                wizlaunch.set_account_steam(nickname, bool(steam_mode))
+                                wizlaunch.update_account(nickname, new_nickname, bool(steam_mode))
+                                if new_nickname != nickname:
+                                    for handle, account_name in list(launched_account_map.items()):
+                                        if account_name == nickname:
+                                            launched_account_map[handle] = new_nickname
+                                    for client in walker.clients:
+                                        if getattr(client, "account_nick", None) == nickname:
+                                            client.account_nick = new_nickname
+                                if not steam_mode and not wizlaunch.has_account_credential(new_nickname):
+                                    try:
+                                        await asyncio.to_thread(
+                                            wizlaunch.prompt_save_account, new_nickname
+                                        )
+                                    except RuntimeError as e:
+                                        logger.info(
+                                            f"Normal login credential entry cancelled or failed for '{new_nickname}': {e}"
+                                        )
                                 logger.info(
-                                    f"Account '{nickname}' launch mode updated."
+                                    f"Account '{nickname}' updated."
                                 )
-                            except RuntimeError as e:
+                            except (RuntimeError, AttributeError) as e:
                                 logger.warning(
                                     f"Could not update account '{nickname}': {e}"
                                 )
+                                gui_send_queue.put(
+                                    xuanshu_gui.GUICommand(
+                                        xuanshu_gui.GUICommandType.AccountActionError,
+                                        str(e),
+                                    )
+                                )
+                            gui_send_queue.put(
+                                xuanshu_gui.GUICommand(
+                                    xuanshu_gui.GUICommandType.UpdateAccountList,
+                                    build_account_list_payload(),
+                                )
+                            )
+
+                        case xuanshu_gui.GUICommandType.UpdateAccountCredentials:
+                            nickname = com.data
+                            try:
+                                await asyncio.to_thread(
+                                    wizlaunch.prompt_save_account, nickname
+                                )
+                                logger.info(f"Account '{nickname}' credentials updated.")
+                            except RuntimeError as e:
+                                logger.info(f"Account credential update cancelled or failed: {e}")
                             gui_send_queue.put(
                                 xuanshu_gui.GUICommand(
                                     xuanshu_gui.GUICommandType.UpdateAccountList,

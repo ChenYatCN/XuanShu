@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import QApplication, QComboBox, QCheckBox, QLabel, QPushBut
 from PyQt6.QtCore import QPoint
 from PyQt6.QtGui import QIcon
 from src.gui.actions import ActionRegistry
-from src.gui.commands import GUICommandType
+from src.gui.commands import GUICommandType, GUIKeys
 from src.gui.tab_hotkeys import build_hotkeys_tab
 
 
@@ -99,16 +99,32 @@ class HotkeyGroupUITests(unittest.TestCase):
         self.api['set_available_clients'](['p2'])
         self.assertEqual(self.api['selected_clients'](), ['p2'])
 
-    def test_all_supported_actions_share_only_selected_targets(self):
+    def test_grouped_actions_share_only_selected_targets(self):
         self.api['set_available_clients'](['p1', 'p2', 'p3'])
         self.checks()['p3'].setChecked(False)
         for action in ('toggle_speed', 'toggle_combat', 'toggle_dialogue',
                        'toggle_dialogue_side_quests', 'toggle_sigil', 'toggle_questing',
-                       'toggle_auto_pet', 'toggle_auto_potion', 'toggle_freecam',
-                       'quest_tp', 'mass_tp', 'freecam_tp', 'friend_tp', 'xyz_sync', 'x_press'):
+                       'toggle_auto_pet', 'toggle_auto_potion'):
             self.ctx.registry.callbacks[action]()
             self.assertEqual(self.ctx.send_queue.put.call_args.args[0].data,
                              {'action': action, 'clients': ['p1', 'p2']})
+
+    def test_freecam_teleports_and_multi_client_actions_ignore_checks(self):
+        self.api['set_available_clients'](['p1', 'p2'])
+        self.checks()['bot_target_all'].setChecked(False)
+        expected = {
+            'toggle_freecam': (GUICommandType.ToggleOption, GUIKeys.toggle_freecam),
+            'quest_tp': (GUICommandType.Teleport, GUIKeys.hotkey_quest_tp),
+            'freecam_tp': (GUICommandType.Teleport, GUIKeys.hotkey_freecam_tp),
+            'friend_tp': (GUICommandType.FriendTeleport, None),
+            'mass_tp': (GUICommandType.Teleport, GUIKeys.mass_hotkey_mass_tp),
+            'xyz_sync': (GUICommandType.XYZSync, None),
+            'x_press': (GUICommandType.XPress, None),
+        }
+        for action, (command_type, data) in expected.items():
+            self.ctx.registry.callbacks[action]()
+            command = self.ctx.send_queue.put.call_args.args[0]
+            self.assertEqual((command.com_type, command.data), (command_type, data), action)
 
     def test_client_row_does_not_move_logo_or_progress(self):
         self.tab.resize(1000, 500)

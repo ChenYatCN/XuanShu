@@ -114,7 +114,7 @@ def build_launcher_tab(ctx):
 
     # --- Account dialog and helpers ---
     def _show_account_dialog(nickname: str = None, steam: bool = False):
-        """Add an account or update its per-account launch options."""
+        """Add or edit an account without handling a password in Qt."""
         editing = nickname is not None
         dlg = QDialog(ctx.window)
         dlg.setWindowTitle(tl('update_account') if editing else tl('add_account'))
@@ -122,43 +122,66 @@ def build_launcher_tab(ctx):
         dlg_layout = QVBoxLayout(dlg)
 
         dlg_layout.addWidget(QLabel(tl('nickname')))
-        nick_input = None
+        nick_input = QLineEdit()
+        nick_input.setPlaceholderText(tl('nickname'))
         if editing:
-            dlg_layout.addWidget(QLabel(nickname))
-        else:
-            nick_input = QLineEdit()
-            nick_input.setPlaceholderText(tl('nickname'))
-            dlg_layout.addWidget(nick_input)
+            nick_input.setText(nickname)
+        dlg_layout.addWidget(nick_input)
+        validation_label = QLabel('')
+        validation_label.setStyleSheet('color: #D9534F;')
+        dlg_layout.addWidget(validation_label)
 
         steam_cb = QCheckBox(tl('steam_mode'))
         steam_cb.setChecked(bool(steam))
         dlg_layout.addWidget(steam_cb)
+
+        if editing:
+            credentials_btn = QPushButton(tl('update_account_credentials'))
+            credentials_btn.setStyleSheet(ctx.btn_style)
+            credentials_btn.clicked.connect(
+                lambda: send_queue.put(
+                    GUICommand(GUICommandType.UpdateAccountCredentials, nickname)
+                )
+            )
+            credentials_btn.setVisible(not steam_cb.isChecked())
+            steam_cb.toggled.connect(lambda checked: credentials_btn.setVisible(not checked))
+            dlg_layout.addWidget(credentials_btn)
 
         save_btn = QPushButton(tl('save_account'))
         save_btn.setStyleSheet(ctx.btn_style)
 
         def _on_save():
             steam_value = steam_cb.isChecked()
+            nick = nick_input.text().strip()
+            if not nick:
+                validation_label.setText(tl('nickname_required'))
+                return
+            if nick != nickname and nick in account_checkboxes:
+                validation_label.setText(tl('account_already_exists'))
+                return
             if editing:
                 send_queue.put(
                     GUICommand(
                         GUICommandType.UpdateAccount,
-                        (nickname, steam_value),
+                        (nickname, nick, steam_value),
                     )
                 )
                 dlg.accept()
                 return
 
-            nick = nick_input.text().strip()
-            if not nick:
-                return
             send_queue.put(
                 GUICommand(GUICommandType.SaveAccount, (nick, steam_value))
             )
             dlg.accept()
 
         save_btn.clicked.connect(_on_save)
-        dlg_layout.addWidget(save_btn)
+        buttons = QHBoxLayout()
+        buttons.addWidget(save_btn)
+        cancel_btn = QPushButton(tl('cancel'))
+        cancel_btn.setStyleSheet(ctx.btn_style)
+        cancel_btn.clicked.connect(dlg.reject)
+        buttons.addWidget(cancel_btn)
+        dlg_layout.addLayout(buttons)
 
         dlg.adjustSize()
         dlg.exec()
@@ -194,14 +217,19 @@ def build_launcher_tab(ctx):
             lbl.setStyleSheet("color: rgba(255,255,255,80);" if ctx.theme in ('black', 'dark') else "color: rgba(0,0,0,80);")
             lbl.setToolTip(tl('already_active'))
 
-        if error:
-            def _edit_this():
-                _show_account_dialog(nickname=nickname, steam=bool(steam))
+        def _edit_this():
+            _show_account_dialog(nickname=nickname, steam=bool(steam))
 
+        if error:
             warning_btn = launcher_small_icon_btn(
                 ctx, _warning_svg, error, _edit_this
             )
             row_layout.addWidget(warning_btn)
+
+        edit_btn = launcher_small_icon_btn(
+            ctx, svgs['pencil'], tl('edit_account'), _edit_this
+        )
+        row_layout.addWidget(edit_btn)
 
         def _window_config():
             from src.gui.window_config_dialog import show_window_config_dialog

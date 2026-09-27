@@ -24,7 +24,7 @@ pub struct WindowConfig {
     pub borderless: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountMetadata {
     pub version: u32,
     pub nicknames_order: Vec<String>,
@@ -107,22 +107,51 @@ pub fn reorder(ordered: &[String]) -> Result<(), VaultError> {
 /// Get nicknames in stored order, falling back to credential store order.
 pub fn get_ordered_nicknames(cred_nicknames: &[String]) -> Result<Vec<String>, VaultError> {
     let meta = load()?;
-    if meta.nicknames_order.is_empty() {
-        return Ok(cred_nicknames.to_vec());
-    }
-    // Return ordered nicknames that exist in credential store, then any new ones
-    let mut result = Vec::new();
-    for nick in &meta.nicknames_order {
-        if cred_nicknames.contains(nick) {
-            result.push(nick.clone());
-        }
-    }
+    // Steam-only accounts have metadata but no Windows credential.
+    let mut result = meta.nicknames_order;
     for nick in cred_nicknames {
         if !result.contains(nick) {
             result.push(nick.clone());
         }
     }
     Ok(result)
+}
+
+pub fn account_exists(nickname: &str) -> Result<bool, VaultError> {
+    let meta = load()?;
+    Ok(meta.nicknames_order.iter().any(|n| n == nickname)
+        || meta.steam_map.contains_key(nickname)
+        || meta.gid_map.contains_key(nickname)
+        || meta.window_map.contains_key(nickname))
+}
+
+pub fn rename_and_set_steam(old: &str, new: &str, steam: bool) -> Result<(), VaultError> {
+    let mut meta = load()?;
+    if old != new {
+        if meta.nicknames_order.iter().any(|n| n == new)
+            || meta.steam_map.contains_key(new)
+            || meta.gid_map.contains_key(new)
+            || meta.window_map.contains_key(new)
+        {
+            return Err(VaultError::MetadataIo(format!("Account '{new}' already exists")));
+        }
+        if let Some(position) = meta.nicknames_order.iter().position(|n| n == old) {
+            meta.nicknames_order[position] = new.to_string();
+        } else {
+            meta.nicknames_order.push(new.to_string());
+        }
+        if let Some(gid) = meta.gid_map.remove(old) {
+            meta.gid_map.insert(new.to_string(), gid);
+        }
+        if let Some(cfg) = meta.window_map.remove(old) {
+            meta.window_map.insert(new.to_string(), cfg);
+        }
+        meta.steam_map.remove(old);
+    } else if !meta.nicknames_order.iter().any(|n| n == new) {
+        meta.nicknames_order.push(new.to_string());
+    }
+    meta.steam_map.insert(new.to_string(), steam);
+    save(&meta)
 }
 
 pub fn update_gid(nickname: &str, gid: u64) -> Result<(), VaultError> {

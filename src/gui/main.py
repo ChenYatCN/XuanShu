@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSizePolicy,
@@ -842,6 +843,9 @@ def manage_gui(
                     case GUICommandType.UpdateAccountList:
                         if com.data is not None:
                             _populate_account_list(com.data)
+
+                    case GUICommandType.AccountActionError:
+                        QMessageBox.warning(window, tl('update_account'), str(com.data))
 
                     case GUICommandType.UpdateHookedClients:
                         if com.data:
