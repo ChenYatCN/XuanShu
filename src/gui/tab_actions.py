@@ -8,7 +8,7 @@ from PyQt6.QtCore import Qt
 
 from src.gui.commands import GUICommand, GUICommandType
 from src.gui.helpers import configure_action_button, centered_label, repo_icon_btn, add_recent, show_recent_menu
-from src.gui.widgets import FlowLayout, ThemedCheckBox, ClientStatusLayout, ThemedContextMenuEditor
+from src.gui.widgets import FlowLayout, ThemedCheckBox, ClientStatusLayout
 
 
 def _build_client_toolbar(ctx, wiki_tooltip_key, wiki_path, with_status=False,
@@ -508,7 +508,7 @@ def build_combat_tab(ctx):
 
     set_available_clients([])
 
-    editor = ThemedContextMenuEditor(ctx)
+    editor = QPlainTextEdit()
     ctx.widget_tags['combat_config'] = editor
     layout.addWidget(editor, 1)
 

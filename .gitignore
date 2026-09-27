@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 logs/
+XuanShuData/
 XuanShu-Testconfig.ini
 venv
 *.exe

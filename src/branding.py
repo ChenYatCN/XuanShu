@@ -3,12 +3,27 @@
 
 import os
 import shutil
+import sys
 from pathlib import Path
 
 APP_NAME = "XuanShu"
 DISPLAY_NAME = "玄枢 · XuanShu"
 REPOSITORY_URL = "https://github.com/ChenYatCN/Deimos-Wizard101-main"
 UPSTREAM_URL = "https://github.com/Deimos-Wizard101/Deimos-Wizard101"
+
+
+def runtime_dir() -> Path:
+    """The EXE's folder, or the source checkout when launched from Python."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[1]
+
+
+def runtime_data_dir() -> Path:
+    """Regenerable caches and temporary output beside the running program."""
+    target = runtime_dir() / f"{APP_NAME}Data"
+    target.mkdir(parents=True, exist_ok=True)
+    return target
 
 
 def appdata_dir() -> Path:

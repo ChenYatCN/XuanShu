@@ -15,7 +15,7 @@ import tempfile
 import time
 import zlib
 from pathlib import Path
-from src.branding import appdata_dir
+from src.branding import runtime_data_dir
 
 from loguru import logger
 
@@ -28,7 +28,7 @@ _SERVICES = {}
 
 
 def cache_directory():
-    base = appdata_dir()
+    base = runtime_data_dir()
     return base / 'collect_cache'
 
 

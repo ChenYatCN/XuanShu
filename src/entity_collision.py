@@ -1,11 +1,10 @@
 # Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
 import json
 import math
-import os
 import re
 import threading
 from pathlib import Path
-from src.branding import appdata_dir
+from src.branding import runtime_data_dir
 from xml.etree import ElementTree as etree
 
 from loguru import logger
@@ -262,9 +261,8 @@ def _teleporter_model_asset(name: str) -> str | None:
 
 
 def _footprint_cache_path(revision: str) -> Path:
-    """Writable, per-revision footprint cache location (alongside XuanShu settings)."""
-    appdata = os.environ.get("APPDATA", "")
-    base = appdata_dir()
+    """Writable, per-revision footprint cache beside the running program."""
+    base = runtime_data_dir()
     return base / "footprint_cache" / (revision.replace(".", "_") + ".json")
 
 
@@ -282,10 +280,9 @@ def _client_version(revision: str) -> str:
 
 
 def _typelist_cache_path(key: str) -> Path:
-    """Writable katsuba TypeList location (alongside XuanShu settings), keyed by ``key`` (the
+    """Writable katsuba TypeList location beside the running program, keyed by ``key`` (the
     client version, e.g. ``Wizard_1_610`` — see ``_client_version``)."""
-    appdata = os.environ.get("APPDATA", "")
-    base = appdata_dir()
+    base = runtime_data_dir()
     return base / "types" / (key.replace(".", "_") + ".json")
 
 

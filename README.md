@@ -6,6 +6,8 @@
 
 设置位于 `%APPDATA%/XuanShu/settings.json`，首次启动复制旧 DeimosCN / Deimos-CN / Deimos 目录中的设置、主题和自定义图标，不覆盖已有设置，不删除旧配置。账号存储继续由 wizlaunch 管理。
 
+采集、碰撞和类型缓存，以及日志、更新临时文件，保存在程序所在目录的 `XuanShuData/` 中。旧 `%APPDATA%/XuanShu` 内的缓存不会自动删除；设置、主题和自定义图标仍保留在原位置。
+
 ## 使用方法
 
 1. 确保所有游戏客户端都已登录，并进入需要操作的角色。

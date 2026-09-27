@@ -9,7 +9,7 @@ Flow (frozen builds only):
   1. ``get_latest_release`` queries the GitHub Releases API.
   2. ``is_newer`` compares it against the running version (semver-aware,
      including pre-release ordering).
-  3. ``download_update`` streams the new ``XuanShu.exe`` into ``%APPDATA%`` and
+  3. ``download_update`` streams the new ``XuanShu.exe`` beside the running app and
      verifies its SHA256.
   4. ``apply_and_relaunch`` extracts the embedded ``deimos-updater.exe`` helper
      and spawns it detached; the helper waits for us to exit, swaps the exe and
@@ -27,7 +27,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from src.branding import appdata_dir
+from src.branding import runtime_data_dir
 from typing import Callable, Optional
 
 import requests
@@ -58,8 +58,7 @@ def is_frozen() -> bool:
 
 def update_dir() -> Path:
     """Writable scratch directory for downloads / the helper / its log."""
-    appdata = os.environ.get("APPDATA", "")
-    d = appdata_dir() / "update"
+    d = runtime_data_dir() / "update"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

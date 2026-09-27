@@ -36,6 +36,7 @@ from src.bot_targeting import (
     resolve_bot_clients,
     unpack_bot_command,
 )
+from src.branding import runtime_data_dir
 from src.client_resizing import ClientResizingManager
 from src.combat_targeting import TargetingSprintyCombat
 from src.command_parser import execute_flythrough, parse_command
@@ -6388,8 +6389,10 @@ def run():
     # Validate configs and update the tool
     # handle_tool_updating()
 
+    log_dir = runtime_data_dir() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
     current_log = logger.add(
-        f"logs/{tool_name} - {generate_timestamp()}.log",
+        log_dir / f"{tool_name} - {generate_timestamp()}.log",
         encoding="utf-8",
         enqueue=True,
         backtrace=True,
