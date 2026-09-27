@@ -17,6 +17,7 @@ from src.teleport_math import *
 from wizwalker import XYZ, Orient, Keycode, MemoryReadError, Client, Rectangle, HookAlreadyActivated, HookNotActive
 from wizwalker.file_readers.wad import Wad
 from wizwalker.memory import DynamicClientObject
+from wizwalker.memory.memory_objects.enums import WindowFlags
 from wizwalker.extensions.scripting import teleport_to_friend_from_list
 from src.sprinty_client import SprintyClient
 from src.utils import *
@@ -1097,6 +1098,162 @@ class Quester():
 
     async def auto_collect_rewrite(self, client: Client):
         return await collect_one(self, client)
+
+    async def _rotating_realm_menu(self, client: Client) -> None:
+        realm_tab = ['WorldView', 'DeckConfiguration', 'SettingPage', 'TabWindow', 'RealmsButton']
+        realm_panel = ['WorldView', 'DeckConfiguration', 'SettingPage', 'RealmOptions', 'wndRealmPanel']
+        if await is_visible_by_path(client, realm_panel):
+            return
+        for _ in range(3):
+            if await is_visible_by_path(client, realm_tab):
+                break
+            await client.send_key(Keycode.ESC, .1)
+            await asyncio.sleep(.25)
+        else:
+            raise RuntimeError('Realm 设置菜单未打开')
+        await click_window_by_path(client, realm_tab)
+        for _ in range(10):
+            if await is_visible_by_path(client, realm_panel):
+                return
+            await asyncio.sleep(.2)
+        raise RuntimeError('Realm 选项页面未打开')
+
+    async def _rotating_realm_choices(self, client: Client):
+        options = ['WorldView', 'DeckConfiguration', 'SettingPage', 'RealmOptions']
+        panel_path = options + ['wndRealmPanel']
+        right_path = options + ['btnRealmRight']
+        for _ in range(4):
+            panel = await get_window_from_path(client.root_window, panel_path)
+            if panel and await panel.is_visible():
+                buttons = {}
+                for window in await panel.children():
+                    name = await window.name()
+                    if re.fullmatch(r'btnRealm\d+', name) and await window.is_visible():
+                        buttons[name] = window
+                selected = [name for name, window in buttons.items() if await window.maybe_checked()]
+                available = {name for name, window in buttons.items()
+                             if WindowFlags.disabled not in await window.flags()}
+                if len(selected) == 1 and available - set(selected):
+                    current = selected[0]
+                    preferred = ['btnRealm1', 'btnRealm0']
+                    return current, list(dict.fromkeys(
+                        name for name in preferred + sorted(available) if name in available and name != current
+                    ))
+            right = await get_window_from_path(client.root_window, right_path)
+            if not right or not await right.is_visible() or WindowFlags.disabled in await right.flags():
+                break
+            await click_window_by_path(client, right_path)
+            await asyncio.sleep(.25)
+        raise RuntimeError('Realm 页面无法确认当前 Realm 或可用备用 Realm')
+
+    async def _rotating_zone_id(self, client: Client):
+        zone = await client.client_object.client_zone()
+        return await zone.zone_id() if zone else None
+
+    async def _perform_rotating_realm_change(self, client: Client) -> None:
+        options = ['WorldView', 'DeckConfiguration', 'SettingPage', 'RealmOptions']
+        try:
+            await self._rotating_realm_menu(client)
+            current, choices = await self._rotating_realm_choices(client)
+            if current == 'btnRealm1':
+                logger.info('自动任务：当前已处于首选 Realm，改用备用 Realm。')
+            destination = None
+            for name in choices:
+                await click_window_by_path(client, options + ['wndRealmPanel', name])
+                go = await get_window_from_path(client.root_window, options + ['btnGoToRealm'])
+                if go and await go.is_visible() and WindowFlags.disabled not in await go.flags():
+                    destination = name
+                    break
+            if destination is None:
+                raise RuntimeError('没有可切换的 Realm')
+            before_zone = await client.zone_name()
+            before_id = await self._rotating_zone_id(client)
+            logger.info('自动任务：正在切换 Realm。')
+            await click_window_by_path(client, options + ['btnGoToRealm'])
+            loading_seen = False
+            deadline = time.monotonic() + 15.0
+            while time.monotonic() < deadline:
+                if not client.questing_status:
+                    raise RuntimeError('自动任务已停止')
+                loading_seen = loading_seen or await client.is_loading()
+                zone_id = await self._rotating_zone_id(client)
+                if loading_seen or before_id is not None and zone_id is not None and zone_id != before_id:
+                    break
+                await asyncio.sleep(.2)
+            else:
+                raise RuntimeError('Realm Change 未开始')
+            stable_since = None
+            deadline = time.monotonic() + 60.0
+            while time.monotonic() < deadline:
+                if not client.questing_status:
+                    raise RuntimeError('自动任务已停止')
+                if (await client.zone_name() == before_zone and not await client.is_loading()
+                        and await is_free_leader_questing(client)):
+                    stable_since = stable_since or time.monotonic()
+                    if time.monotonic() - stable_since >= 1.5:
+                        break
+                else:
+                    stable_since = None
+                await asyncio.sleep(.2)
+            else:
+                raise RuntimeError('Realm Change 后客户端未稳定')
+            # Selection is checked only after the transfer has completed; a
+            # selected button immediately after clicking it is not proof.
+            await self._rotating_realm_menu(client)
+            confirmed, _ = await self._rotating_realm_choices(client)
+            if confirmed != destination or confirmed == current:
+                raise RuntimeError('Realm 页面未确认切换到不同 Realm')
+            if not loading_seen and await self._rotating_zone_id(client) == before_id:
+                raise RuntimeError('未观察到 Loading 或区域实例变化')
+        finally:
+            if await is_visible_by_path(client, close_spellbook_path):
+                await click_window_by_path(client, close_spellbook_path)
+
+    async def change_realm_for_rotating(self, client: Client) -> bool:
+        if (not client.questing_status or getattr(client, 'quest_party_probe_pending', False)
+                or not await is_free_leader_questing(client)):
+            return False
+        if not claim_quest_recovery(client, 'rotating_realm'):
+            return False
+        logger.info('自动任务：旋转旋转本轮未找到，准备通过切换 Realm 推进任务。')
+        try:
+            before = await self._dungeon_quest_snapshot(client)
+            await self._perform_rotating_realm_change(client)
+            logger.info('自动任务：Realm 切换完成，重新检查旋转旋转任务进度。')
+            after = before
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline and client.questing_status:
+                after = await self._dungeon_quest_snapshot(client)
+                if after != before:
+                    break
+                await asyncio.sleep(.25)
+            if before == after:
+                logger.warning('自动任务：Realm 已切换，但旋转旋转任务进度尚未变化。')
+            hitters = list(getattr(client, 'quest_party_hitters', []))
+            if hitters:
+                logger.info('自动任务：任务客户端 Realm 已切换，正在同步打手客户端。')
+                pending = {id(hitter) for hitter in hitters}
+                client.quest_party_realm_unsynced = set(pending)
+                sync = {'pending': pending, 'done': set(), 'failed': {}}
+                client.quest_rotating_realm_sync = sync
+                deadline = time.monotonic() + 45.0
+                while time.monotonic() < deadline and client.questing_status:
+                    if sync['failed'] or sync['done'] == pending:
+                        break
+                    await asyncio.sleep(.25)
+                if sync['done'] != pending:
+                    raise RuntimeError(f"打手 Realm 同步未完成：{sync['failed'] or '等待超时'}")
+                logger.info('自动任务：Realm 与打手同步完成，继续自动任务。')
+            else:
+                logger.info('自动任务：Realm 切换完成，继续自动任务。')
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(f'自动任务：旋转旋转 Realm 切换失败：{exc}')
+        finally:
+            client.quest_rotating_realm_sync = None
+            release_quest_recovery(client, 'rotating_realm')
+        return True
 
     async def dungeon_recall(self, p: Client) -> Optional[bool]:
         original_zone = await p.zone_name()

@@ -286,6 +286,21 @@ class CollectSearch:
         if self.catalog is not None:
             self.names = await self.catalog.get()
         key = (self.zone, self.quest_id, self.goal.key, self.goal.total)
+        rotating_key = (key, self.goal.current)
+        rotating_goal = self.goal.target.strip() == '旋转旋转'
+        attempt = getattr(self.client, 'quest_rotating_realm_attempted', None)
+        if rotating_goal and isinstance(attempt, dict) and attempt.get('key') == rotating_key:
+            # A Realm change is the action for this objective. Do not restart
+            # the ordinary region search on the next quest-worker iteration.
+            if attempt['count'] < 2 and time.monotonic() >= attempt['retry_at']:
+                if await self.quester.change_realm_for_rotating(self.client):
+                    attempt['count'] += 1
+                    attempt['retry_at'] = time.monotonic() + 30
+                    if attempt['count'] == 2 and await self.same_goal():
+                        logger.warning('自动任务：旋转旋转 Realm 切换已达到两次上限，等待任务状态变化。')
+                else:
+                    attempt['retry_at'] = time.monotonic() + 5
+            return False
         previous = getattr(self.client, '_deimos_collect_search', None)
         self.state = previous if isinstance(previous, SearchState) and previous.key == key else SearchState(key)
         self.client._deimos_collect_search = self.state
@@ -316,13 +331,20 @@ class CollectSearch:
                 return True
         if await self.active() and await self.same_goal() and await is_free(self.client):
             await self.client.teleport(origin)
-        if self.catalog is not None and time.monotonic() - self.state.last_warning >= 30:
+        if not rotating_goal and self.catalog is not None and time.monotonic() - self.state.last_warning >= 30:
             try:
                 path = await asyncio.to_thread(self.catalog.report_unresolved, self.zone, self.goal,
                                                list(self.observed_names.values()), self.last_popup)
                 logger.debug(f'采集未匹配记录已保存：{path}')
             except OSError as exc:
                 logger.debug(f'采集未匹配记录无法保存：{exc}')
+        if rotating_goal and len(self.state.route) >= 14 and await self.active() and await self.same_goal():
+            attempt = {'key': rotating_key, 'count': 0, 'retry_at': time.monotonic() + 5}
+            self.client.quest_rotating_realm_attempted = attempt
+            if await self.quester.change_realm_for_rotating(self.client):
+                attempt['count'] = 1
+                attempt['retry_at'] = time.monotonic() + 30
+            return False
         self.warn(f'本轮未找到可确认的采集物：{self.goal.target}；'
                   f'已搜索 {len(self.state.route)} 个分区，将等待刷新后重试。')
         await asyncio.sleep(2)

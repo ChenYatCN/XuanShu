@@ -154,6 +154,37 @@ class CollectWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.client.teleport.await_count, 1)
         self.client.send_key.assert_not_awaited()
 
+    async def test_rotating_goal_changes_realm_only_after_full_fourteen_region_round(self):
+        self.text = '收集 旋转旋转 地点：测试区 (0 of 1)'
+        self.quester.get_zone_chunks.return_value = [XYZ(i * 100, 0, 600) for i in range(14)]
+        self.quester.change_realm_for_rotating = AsyncMock(return_value=True)
+        self.engine.scan = AsyncMock(return_value=False)
+        self.assertFalse(await self.engine.run())
+        self.assertEqual(self.engine.scan.await_count, 15)  # loaded area + 14 regions
+        self.assertEqual(self.client.teleport.await_count, 15)  # 14 regions + return
+        self.quester.change_realm_for_rotating.assert_awaited_once_with(self.client)
+        next_round = CollectSearch(self.quester, self.client)
+        next_round.scan = AsyncMock(return_value=False)
+        self.assertFalse(await next_round.run())
+        next_round.scan.assert_not_awaited()
+
+    async def test_rotating_goal_does_not_change_realm_before_fourteen_regions(self):
+        self.text = '收集 旋转旋转 地点：测试区 (0 of 1)'
+        self.quester.get_zone_chunks.return_value = [XYZ(i * 100, 0, 600) for i in range(13)]
+        self.quester.change_realm_for_rotating = AsyncMock(return_value=True)
+        self.engine.scan = AsyncMock(return_value=False)
+        self.assertFalse(await self.engine.run())
+        self.quester.change_realm_for_rotating.assert_not_awaited()
+        self.assertIsNone(getattr(self.client, 'quest_rotating_realm_attempted', None))
+
+    async def test_ordinary_collect_keeps_refresh_retry_without_realm_change(self):
+        self.quester.get_zone_chunks.return_value = [XYZ(i * 100, 0, 600) for i in range(14)]
+        self.quester.change_realm_for_rotating = AsyncMock(return_value=True)
+        self.engine.scan = AsyncMock(return_value=False)
+        self.assertFalse(await self.engine.run())
+        self.quester.change_realm_for_rotating.assert_not_awaited()
+        self.assertIsNone(getattr(self.client, 'quest_rotating_realm_attempted', None))
+
     async def test_missing_name_falls_back_to_translated_internal_name(self):
         self.client.cache_handler.get_langcode_name.side_effect = ValueError('no translation for code')
         self.client.get_base_entity_list.return_value = [self.entity()]

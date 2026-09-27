@@ -1023,6 +1023,8 @@ async def main():
             client.questing_status = active and id(client) in participant_ids
             if client.questing_status and not was_questing:
                 client._xuanshu_mainline_id = None
+                client.quest_rotating_realm_attempted = None
+                client.quest_party_realm_unsynced = set()
             client.quest_party_hitters = []
             client.quest_party_quest_worker_zone = None
             client.quest_party_group_dungeon_zone = None
@@ -1034,6 +1036,8 @@ async def main():
             client.quest_party_probe_pending = False
             if not active:
                 client.quest_recovery_owner = None
+                client.quest_rotating_realm_sync = None
+                client.quest_party_realm_unsynced = set()
                 client.quest_party_observed_zone = None
                 client.quest_party_status_session = None
                 client.quest_party_quest_worker_restart_requested = False
@@ -1985,7 +1989,44 @@ async def main():
                     elif quester_zone_stable_since is None:
                         quester_zone_stable_since = now
 
-                    if getattr(quester, "quest_recovery_owner", None) == "nightmare_krok":
+                    recovery_owner = getattr(quester, "quest_recovery_owner", None)
+                    if recovery_owner == "rotating_realm":
+                        sync = getattr(quester, "quest_rotating_realm_sync", None)
+                        if (isinstance(sync, dict)
+                                and id(hitter) in sync["pending"]
+                                and id(hitter) not in sync["done"]
+                                and id(hitter) not in sync["failed"]):
+                            update_party_status(hitter, quester, "正在同步 Realm")
+                            try:
+                                friend_icon = resolve_quester_friend_icon(quester, quest_friend_icons)
+                                await close_stale_friend_ui(hitter)
+                                async with hitter.mouse_handler:
+                                    await asyncio.wait_for(
+                                        teleport_to_quester_from_friend_list(
+                                            hitter, quester.wizard_name, friend_icon
+                                        ),
+                                        timeout=15.0,
+                                    )
+                                deadline = loop.time() + 20.0
+                                while loop.time() < deadline:
+                                    if await is_friend_teleport_error(hitter):
+                                        raise RuntimeError("好友传送被游戏拒绝")
+                                    if (not await hitter.is_loading()
+                                            and await hitter.zone_name() == quester_zone
+                                            and await hitter_is_in_quester_area()):
+                                        sync["done"].add(id(hitter))
+                                        quester.quest_party_realm_unsynced.discard(id(hitter))
+                                        break
+                                    await asyncio.sleep(.25)
+                                else:
+                                    raise TimeoutError("未确认打手与任务客户端位于同一 Realm")
+                            except asyncio.CancelledError:
+                                raise
+                            except Exception as exc:
+                                sync["failed"][id(hitter)] = str(exc)
+                                logger.warning(f"自动任务：打手 {hitter.title} Realm 同步失败：{exc}")
+                        continue
+                    if recovery_owner == "nightmare_krok":
                         update_party_status(hitter, quester, "等待 NightmareKrok 恢复")
                         continue
 
@@ -2065,11 +2106,14 @@ async def main():
                         # list so equal zone paths from separate instances are
                         # not mistaken for the same area.
                         same_live_area = (
-                            (not probe_pending and not group_dungeon_ready)
+                            (not probe_pending and not group_dungeon_ready
+                             and id(hitter) not in getattr(quester, "quest_party_realm_unsynced", set()))
                             or await hitter_is_in_quester_area()
                         )
 
                     if same_live_area:
+                        if id(hitter) in getattr(quester, "quest_party_realm_unsynced", set()):
+                            quester.quest_party_realm_unsynced.discard(id(hitter))
                         if probe_pending:
                             await complete_zone_probe(False)
                         blocked_instance_zone = None
@@ -2216,6 +2260,9 @@ async def main():
 
                         if group_dungeon_ready and not await hitter_is_in_quester_area():
                             raise RuntimeError("好友传送后未确认与任务客户端处于同一副本")
+                        if (id(hitter) in getattr(quester, "quest_party_realm_unsynced", set())
+                                and not await hitter_is_in_quester_area()):
+                            raise RuntimeError("好友传送后未确认与任务客户端处于同一 Realm")
 
                         if probe_pending:
                             await complete_zone_probe(False)
@@ -2457,7 +2504,7 @@ async def main():
                         ):
                             recovery_candidate = False
                         if recovery_candidate and any(
-                            getattr(p, "quest_recovery_owner", None) == "nightmare_krok"
+                            getattr(p, "quest_recovery_owner", None) in ("nightmare_krok", "rotating_realm")
                             for p in walker.clients
                         ):
                             recovery_candidate = False
@@ -2486,7 +2533,7 @@ async def main():
                                 if isinstance(getattr(client, "quest_recovery_owner", None), str):
                                     continue
                                 if any(
-                                    getattr(p, "quest_recovery_owner", None) == "nightmare_krok"
+                                    getattr(p, "quest_recovery_owner", None) in ("nightmare_krok", "rotating_realm")
                                     for p in walker.clients
                                 ):
                                     continue
@@ -2631,7 +2678,7 @@ async def main():
                 not quest_party_enabled
                 or quester.in_solo_zone
                 or getattr(quester, "quest_party_probe_pending", False)
-                or getattr(quester, "quest_recovery_owner", None) == "nightmare_krok"
+                or getattr(quester, "quest_recovery_owner", None) in ("nightmare_krok", "rotating_realm")
             ):
                 quester.quest_party_battle_started_at = None
                 return
@@ -3176,6 +3223,9 @@ async def main():
         client.quest_dungeon_recovery = None
         client.quest_nightmare_recovery = None
         client.quest_recovery_owner = None
+        client.quest_rotating_realm_attempted = None
+        client.quest_rotating_realm_sync = None
+        client.quest_party_realm_unsynced = set()
         client.quest_party_hitters = []
         client.quest_party_status_session = None
         client.quest_party_quest_worker_task = None
