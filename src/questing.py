@@ -26,8 +26,25 @@ from src.script_popups import close_automation_popup
 from thefuzz import fuzz
 
 
+def claim_quest_recovery(client: Client, owner: str) -> bool:
+    """One quest recovery may control a client at a time on the asyncio loop."""
+    if isinstance(getattr(client, "quest_recovery_owner", None), str):
+        return False
+    client.quest_recovery_owner = owner
+    return True
+
+
+def release_quest_recovery(client: Client, owner: str) -> None:
+    if getattr(client, "quest_recovery_owner", None) == owner:
+        client.quest_recovery_owner = None
+
+
 class Quester():
     DUNGEON_NO_PROGRESS_SECONDS = 180.0
+    TRIGGER_NEAR_DISTANCE = 350.0
+    TRIGGER_AWAY_DISTANCE = 900.0
+    TRIGGER_MAX_ATTEMPTS = 2
+    TRIGGER_STABLE_OBSERVATIONS = 3
 
     def __init__(self, client: Client, clients: list[Client], leader_pid: int):
         self.client = client
@@ -38,6 +55,7 @@ class Quester():
         self.d_location = None
         self._krok_exit_watch = {}
         self._npc_retry_exhausted = {}
+        self._trigger_reentry = {}
 
     async def _confirm_dungeon_entry(self, client: Client, previous_zone: str) -> None:
         """Arm recovery only after an entry prompt caused a real zone change."""
@@ -63,6 +81,7 @@ class Quester():
 
     async def _dungeon_recovery_blocked(self, client: Client) -> bool:
         if (not client.questing_status
+                or isinstance(getattr(client, "quest_recovery_owner", None), str)
                 or getattr(client, "quest_party_probe_pending", False)
                 or getattr(client, "quest_party_battle_rescue_active", False)
                 or getattr(client, "quest_party_quest_worker_restart_requested", False)
@@ -158,6 +177,8 @@ class Quester():
             state.update(snapshot=current_snapshot, since=now if current_snapshot else None,
                          attempted=False, waiting_logged=False)
             return False
+        if not claim_quest_recovery(client, "dungeon_quest"):
+            return False
         state["active"] = True
         logger.info("自动任务：地牢内连续 3 分钟无任务进展，尝试重新选择当前任务。")
         try:
@@ -171,7 +192,142 @@ class Quester():
         finally:
             state.update(since=time.monotonic(), active=False, attempted=True,
                          waiting_logged=False)
-            state["snapshot"] = await self._dungeon_quest_snapshot(client)
+            try:
+                state["snapshot"] = await self._dungeon_quest_snapshot(client)
+            finally:
+                release_quest_recovery(client, "dungeon_quest")
+
+    async def _trigger_reentry_blocked(self, client: Client, owner: str = None) -> bool:
+        current_owner = getattr(client, "quest_recovery_owner", None)
+        if (not client.questing_status
+                or isinstance(current_owner, str) and current_owner != owner
+                or getattr(client, "quest_party_probe_pending", False)
+                or getattr(client, "quest_party_battle_rescue_active", False)
+                or getattr(client, "quest_party_quest_worker_restart_requested", False)
+                or getattr(client, "post_combat_movement_active", False)
+                or getattr(client, "mainline_chain_retry_active", False)
+                or self._krok_exit_watch.get(id(client))
+                or isinstance(getattr(client, "quest_dungeon_recovery", None), dict)
+                and client.quest_dungeon_recovery.get("active")):
+            return True
+        if not await is_free_leader_questing(client):
+            return True
+        return (await is_spiral_door_open(client)
+                or await is_visible_by_path(client, npc_range_path)
+                or await is_visible_by_path(client, exit_dungeon_path)
+                or await is_visible_by_path(client, dungeon_warning_path)
+                or await is_visible_by_path(client, decline_quest_path)
+                or await is_visible_by_path(client, cancel_multiple_quest_menu_path)
+                or await is_visible_by_path(client, missing_area_path)
+                or await is_visible_by_path(client, all_quests_sort_button_path))
+
+    async def _maybe_reenter_quest_trigger(self, client: Client, target: XYZ) -> bool:
+        """Re-enter a missed Talk/Use trigger after repeated near-point observations."""
+        key_id = id(client)
+        if await self._trigger_reentry_blocked(client):
+            state = self._trigger_reentry.get(key_id)
+            if state is not None:
+                state["seen"] = 0
+            return False
+        snapshot = await self._dungeon_quest_snapshot(client)
+        if snapshot is None or not (
+            quest_has_action(snapshot[2], "talk") or quest_has_action(snapshot[2], "use")
+        ):
+            self._trigger_reentry.pop(key_id, None)
+            return False
+        if (not all(math.isfinite(value) for value in (target.x, target.y, target.z))
+                or calc_Distance(target, XYZ(0.0, 0.0, 0.0)) <= 1.0):
+            self._trigger_reentry.pop(key_id, None)
+            return False
+        zone = await client.zone_name()
+        position = await client.body.position()
+        key = (zone, snapshot, round(target.x), round(target.y), round(target.z))
+        state = self._trigger_reentry.get(key_id)
+        if state is None or state["key"] != key:
+            state = {"key": key, "seen": 0, "attempts": 0}
+            self._trigger_reentry[key_id] = state
+        if (calc_Distance(position, target) > self.TRIGGER_NEAR_DISTANCE
+                or abs(position.z - target.z) > 150.0):
+            state["seen"] = 0
+            return False
+        if state["attempts"] >= self.TRIGGER_MAX_ATTEMPTS:
+            return False
+        state["seen"] += 1
+        if state["seen"] < self.TRIGGER_STABLE_OBSERVATIONS:
+            return False
+        # Re-read the task after the safety checks, before taking control.
+        if (await self._trigger_reentry_blocked(client)
+                or await client.zone_name() != zone
+                or await self._dungeon_quest_snapshot(client) != snapshot
+                or calc_Distance(await client.quest_position.position(), target) > 50.0):
+            state["seen"] = 0
+            return False
+        if not claim_quest_recovery(client, "trigger_reentry"):
+            return False
+        attempt = state["attempts"]
+        state["attempts"] += 1
+        state["seen"] = 0
+        logger.info(
+            "自动任务：已到达任务点但交互未触发，尝试重新进入任务触发范围。"
+            if attempt == 0 else
+            "自动任务：普通重新进场无效，尝试第二级任务点刷新。"
+        )
+        try:
+            await self._reenter_quest_trigger(client, zone, target, snapshot, attempt)
+        except Exception as exc:
+            logger.warning(f"Client {client.title} - trigger re-entry failed: {exc}")
+        finally:
+            try:
+                dungeon = getattr(client, "quest_dungeon_recovery", None)
+                if isinstance(dungeon, dict) and dungeon.get("zone") == zone:
+                    dungeon.update(snapshot=await self._dungeon_quest_snapshot(client),
+                                   since=time.monotonic(), waiting_logged=False)
+            finally:
+                release_quest_recovery(client, "trigger_reentry")
+        return True
+
+    async def _reenter_quest_trigger(
+        self, client: Client, zone: str, target: XYZ, snapshot, attempt: int
+    ) -> None:
+        position = await client.body.position()
+        dx, dy = position.x - target.x, position.y - target.y
+        length = math.hypot(dx, dy)
+        if length < 20.0:
+            yaw = await client.body.yaw()
+            dx, dy = math.cos(yaw), math.sin(yaw)
+            length = 1.0
+        dx, dy = dx / length, dy / length
+        if attempt:
+            dx, dy = -dy, dx
+        away_x = target.x + dx * self.TRIGGER_AWAY_DISTANCE
+        away_y = target.y + dy * self.TRIGGER_AWAY_DISTANCE
+        await client.goto(away_x, away_y)
+        if (await client.zone_name() != zone
+                or await self._dungeon_quest_snapshot(client) != snapshot
+                or await self._trigger_reentry_blocked(client, "trigger_reentry")):
+            return
+        away = await client.body.position()
+        if math.hypot(away.x - target.x, away.y - target.y) < 750.0:
+            # A wall or another obstacle prevented a real exit from range.
+            await client.goto(target.x, target.y)
+            return
+        await asyncio.sleep(0.5)
+        if (await client.zone_name() != zone
+                or await self._dungeon_quest_snapshot(client) != snapshot
+                or await self._trigger_reentry_blocked(client, "trigger_reentry")):
+            return
+        await client.goto(target.x, target.y)
+        await asyncio.sleep(0.5)
+        if await client.zone_name() != zone or not client.questing_status:
+            return
+        if await self._dungeon_quest_snapshot(client) != snapshot:
+            self._trigger_reentry.pop(id(client), None)
+            logger.info("自动任务：任务交互已重新触发，继续任务流程。")
+        elif await self.quest_interaction_ready(client, target):
+            # The normal NPC handler owns the visible interaction from here.
+            # Do not start another re-entry for the same unchanged quest.
+            self._trigger_reentry[id(client)]["attempts"] = self.TRIGGER_MAX_ATTEMPTS
+            logger.info("自动任务：任务交互已重新触发，继续任务流程。")
 
     async def read_quest_txt(self, client: Client) -> str:
         try:
@@ -882,6 +1038,16 @@ class Quester():
     async def handle_npc_talking_quests(
         self, talking_client: Client, present_clients: list[Client]
     ) -> bool:
+        if not claim_quest_recovery(talking_client, "npc_dialogue"):
+            return False
+        try:
+            return await self._handle_npc_talking_quests(talking_client, present_clients)
+        finally:
+            release_quest_recovery(talking_client, "npc_dialogue")
+
+    async def _handle_npc_talking_quests(
+        self, talking_client: Client, present_clients: list[Client]
+    ) -> bool:
         """Wait for NPC dialogue and confirm the tracked quest actually advances."""
 
         async def read_quest_state():
@@ -1314,43 +1480,48 @@ class Quester():
         if not objective or state['end_sent'] or state['attempts'] < 3 or time.monotonic() - state['since'] < 10:
             return
 
+        if not claim_quest_recovery(client, "special_zone"):
+            return
         state['end_sent'] = True
-        if special_exit:
-            logger.info(f'Client {client.title}: 连续任务传送至少 3 次且 10 秒无进展，执行区域脱困。')
-            await client.teleport(special_targets[zone])
-            if zone.endswith('CL_Z10i3_Kingdom_Of_The_Crabs'):
-                try:
-                    async with asyncio.timeout(10):
-                        while not await is_visible_by_path(client, npc_range_path):
-                            if await client.is_loading() or await client.zone_name() != zone:
-                                return
-                            await asyncio.sleep(.25)
-                        await client.send_key(Keycode.X, .1)
-                        while await get_quest_name(leader_client or client) == objective:
-                            if await client.is_loading() or not await is_free(client):
-                                return
-                            await asyncio.sleep(.25)
-                except TimeoutError:
-                    pass
-            return
-        if crystal_exit:
-            logger.info(f'Client {client.title}: 水晶塔连续任务传送受阻，执行脱困传送。')
-            await client.teleport(XYZ(34.461, 1382.432, 0.123))
-            return
-        if floating_exit:
-            logger.info(f'Client {client.title}: 漂浮大陆连续任务传送受阻，执行出口脱困传送。')
-            await client.teleport(XYZ(6592.342, -6749.908, -250.054))
-            return
-        logger.debug(f"Client {client.title}: 克洛克传送室连续任务传送受阻，按 END 返回主城。")
-        await client.send_key(Keycode.END, 0.1)
         try:
-            async with asyncio.timeout(15):
-                while await client.is_loading() or await client.zone_name() == zone:
-                    await asyncio.sleep(.1)
-        except TimeoutError:
-            logger.warning(f"Client {client.title}: END 回城尚未完成，本次受阻不重复按 END。")
-            return
-        self._krok_exit_watch.pop(key, None)
+            if special_exit:
+                logger.info(f'Client {client.title}: 连续任务传送至少 3 次且 10 秒无进展，执行区域脱困。')
+                await client.teleport(special_targets[zone])
+                if zone.endswith('CL_Z10i3_Kingdom_Of_The_Crabs'):
+                    try:
+                        async with asyncio.timeout(10):
+                            while not await is_visible_by_path(client, npc_range_path):
+                                if await client.is_loading() or await client.zone_name() != zone:
+                                    return
+                                await asyncio.sleep(.25)
+                            await client.send_key(Keycode.X, .1)
+                            while await get_quest_name(leader_client or client) == objective:
+                                if await client.is_loading() or not await is_free(client):
+                                    return
+                                await asyncio.sleep(.25)
+                    except TimeoutError:
+                        pass
+                return
+            if crystal_exit:
+                logger.info(f'Client {client.title}: 水晶塔连续任务传送受阻，执行脱困传送。')
+                await client.teleport(XYZ(34.461, 1382.432, 0.123))
+                return
+            if floating_exit:
+                logger.info(f'Client {client.title}: 漂浮大陆连续任务传送受阻，执行出口脱困传送。')
+                await client.teleport(XYZ(6592.342, -6749.908, -250.054))
+                return
+            logger.debug(f"Client {client.title}: 克洛克传送室连续任务传送受阻，按 END 返回主城。")
+            await client.send_key(Keycode.END, 0.1)
+            try:
+                async with asyncio.timeout(15):
+                    while await client.is_loading() or await client.zone_name() == zone:
+                        await asyncio.sleep(.1)
+            except TimeoutError:
+                logger.warning(f"Client {client.title}: END 回城尚未完成，本次受阻不重复按 END。")
+                return
+            self._krok_exit_watch.pop(key, None)
+        finally:
+            release_quest_recovery(client, "special_zone")
 
     async def teleport_to_quest(self, hitting_client: str, follower_clients: list[Client]):
         await gather_owned(*[self.leader_wait_for_free(p) for p in self.clients])
@@ -1550,25 +1721,6 @@ class Quester():
 
         await asyncio.sleep(0.7)
 
-    async def handle_repeated_normal_quest_failures(self, last_leader_pid, last_leader_zone: str, iterations_since_last_quest_change: int):
-        # In its current form, this attempts to correct for situations where you are standing too close to an NPC or sigil, and need to move away then return to get the popup to talk / enter
-        # if after a certain number of loops we've failed to move on from our quest, something is wrong, and we try to correct for this in case this is the cause
-
-        # this could be expanded to matching entity name to mob name for situations like the Labyrinth where the game tells you to defeat an enemy but gives you an inaccurate location
-
-        # logger.info('ITERATIONS: ' + str(iterations_since_last_quest_change))
-        if last_leader_pid == self.current_leader_client.process_id and last_leader_zone == await self.current_leader_client.zone_name():
-            # more serious than 5 - the issue may be that the XYZ is just incorrect
-            # we should scan for entities, teleport to the one that is closest to the given XYZ
-            # if that fails, try the next one
-            # if iterations_since_last_quest_change == ?:
-
-            # first check - most likely scenario (and easiest to solve) is that we just need to move away and back towards the NPC or sigil
-            if iterations_since_last_quest_change >= 5:
-                location = await self.current_leader_client.body.position()
-                await gather_owned(*[p.teleport(XYZ(location.x + 500, location.y, location.z - 1500)) for p in self.clients])
-                await asyncio.sleep(2.0)
-
     async def hardcoded_collect(self, incompatible_hardcoded_quests, truncated_quest_obj: str):
         entity_data = incompatible_hardcoded_quests.get(truncated_quest_obj[:-1])
         for c in self.clients:
@@ -1744,12 +1896,6 @@ class Quester():
 
             logger.info('Clients on same quest: ' + s)
 
-        # information needed for handle_repeated_normal_quest_failures()
-        iterations_since_last_quest_change = 0
-        leader_last_full_quest = await get_quest_name(self.current_leader_client)
-        last_leader_pid = self.current_leader_client.process_id
-        last_leader_zone = await self.current_leader_client.zone_name()
-
         # main loop
         while self.client.questing_status:
             await asyncio.sleep(.4)
@@ -1786,8 +1932,8 @@ class Quester():
 
                 # we are almost certainly not on a collect quest
                 if distance > 1:
-                    # attempt to fix cases where we loop through several times without completing a quest
-                    await self.handle_repeated_normal_quest_failures(last_leader_pid, last_leader_zone, iterations_since_last_quest_change)
+                    if await self._maybe_reenter_quest_trigger(self.current_leader_client, quest_xyz):
+                        continue
 
                     if await self._maybe_refresh_stalled_dungeon_quest(self.current_leader_client):
                         continue
@@ -1829,19 +1975,6 @@ class Quester():
 
                     else:
                         logger.debug('False collect quest detected.  Quest position: ' + str(distance))
-
-            # keep track of how many loops we've gone through without changing our quest
-            # if leader happened to change, reset the counter
-            leader_full_current_quest = await get_quest_name(self.current_leader_client)
-            # quest hasn't changed, new leader has not been assigned, and zone hasn't changed
-            # this means we have failed to complete the last single quest objective
-            if leader_full_current_quest == leader_last_full_quest and last_leader_pid == self.current_leader_client.process_id and last_leader_zone == await self.current_leader_client.zone_name():
-                iterations_since_last_quest_change += 1
-            else:
-                leader_last_full_quest = await get_quest_name(self.current_leader_client)
-                last_leader_pid = self.current_leader_client.process_id
-                last_leader_zone = await self.current_leader_client.zone_name()
-                iterations_since_last_quest_change = 0
 
     async def handle_pending_dungeon_confirmation(self) -> bool:
         """Confirm a dungeon transition modal even if it appeared late."""
@@ -2069,6 +2202,9 @@ class Quester():
             if distance > 1:
                 while self.client.entity_detect_combat_status:
                     await asyncio.sleep(.1)
+
+                if await self._maybe_reenter_quest_trigger(self.client, quest_xyz):
+                    return
 
                 if await self._maybe_refresh_stalled_dungeon_quest(self.client):
                     return

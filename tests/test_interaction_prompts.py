@@ -66,6 +66,11 @@ class VerifiedLanguageTests(unittest.TestCase):
     def test_quest_action_recognition(self):
         for text in ('Defeat Malorn in The Commons', '击败 马龙 地点：大基地', '击败并收集 齿轮'):
             self.assertTrue(quest_has_action(text, 'defeat'))
+        for text in ('Talk To Merle', '拜访 梅尔', 'WizardQuestGoals_TalkNPC'):
+            self.assertTrue(quest_has_action(text, 'talk'))
+        for text in ('Use the lever', '使用 拉杆', 'WizardQuestGoals_UseItem'):
+            self.assertTrue(quest_has_action(text, 'use'))
+        self.assertFalse(quest_has_action('Defeat Malorn', 'talk'))
         for text in ('Press Z to Photomance a Photo of Tower', '按下 Z 来拍照', '取得这个目标的照片：高塔'):
             self.assertTrue(quest_has_action(text, 'photomance'))
         self.assertFalse(quest_has_action('Collect a photo', 'photomance'))

@@ -64,7 +64,7 @@ from src.quest_party import (
     resolve_quester_friend_icon,
     stable_client_identity,
 )
-from src.questing import Quester
+from src.questing import Quester, claim_quest_recovery, release_quest_recovery
 from src.script_popups import close_automation_popup, run_with_script_popups
 from src.settings_manager import XuanShuSettings
 from src.sigil import Sigil
@@ -1032,6 +1032,7 @@ async def main():
             # movement, not only after the quester has changed zones once.
             client.quest_party_probe_pending = False
             if not active:
+                client.quest_recovery_owner = None
                 client.quest_party_observed_zone = None
                 client.quest_party_status_session = None
                 client.quest_party_quest_worker_restart_requested = False
@@ -2446,6 +2447,10 @@ async def main():
 
                         if recovery_candidate and not await is_free(client):
                             recovery_candidate = False
+                        if recovery_candidate and isinstance(
+                            getattr(client, "quest_recovery_owner", None), str
+                        ):
+                            recovery_candidate = False
 
                         # Let the confirmed-dungeon questbook fallback run once
                         # before the heavier stationary-task restart takes over.
@@ -2467,6 +2472,8 @@ async def main():
                                 if now - last_restart_at < 15.0:
                                     continue
                                 if questing_task is None or questing_task.done():
+                                    continue
+                                if isinstance(getattr(client, "quest_recovery_owner", None), str):
                                     continue
                                 logger.debug(
                                     f"Client {client.title} questing appears to have halted - restarting."
@@ -2639,11 +2646,15 @@ async def main():
                     or await hitter.in_battle()
                     or await hitter.is_loading()
                     or getattr(hitter, "quest_party_battle_rescue_active", False)
+                    or isinstance(getattr(hitter, "quest_recovery_owner", None), str)
                     or loop.time()
                     - getattr(hitter, "quest_party_battle_rescue_at", 0.0)
                     < 7.0
                     or await hitter.zone_name() != quester_zone
                 ):
+                    continue
+
+                if not claim_quest_recovery(hitter, "party_battle"):
                     continue
 
                 hitter.quest_party_battle_rescue_active = True
@@ -2734,6 +2745,7 @@ async def main():
                     )
                 finally:
                     hitter.quest_party_battle_rescue_active = False
+                    release_quest_recovery(hitter, "party_battle")
 
         async def detect_combat(p: Client):
             global original_client_locations
@@ -3146,6 +3158,7 @@ async def main():
         client.quest_party_group_dungeon_zone = None
         client.quest_party_confirmed_dungeon_transition = None
         client.quest_dungeon_recovery = None
+        client.quest_recovery_owner = None
         client.quest_party_hitters = []
         client.quest_party_status_session = None
         client.quest_party_quest_worker_task = None
