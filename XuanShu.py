@@ -370,6 +370,26 @@ def generate_timestamp() -> str:
     return time_stamp
 
 
+PRIVATE_LOGIN_SERVER = "102.134.49.191:12000"
+
+
+def account_uses_private_server(nickname: str) -> bool:
+    overrides = settings.get_setting("private_server_accounts") or {}
+    if nickname in overrides:
+        return bool(overrides[nickname])
+    return getattr(wizlaunch, "get_account_private", lambda _: False)(nickname)
+
+
+def set_account_private_server(nickname: str, private: bool, old_nickname: str = None):
+    if hasattr(wizlaunch, "set_account_private"):
+        wizlaunch.set_account_private(nickname, private)
+    overrides = dict(settings.get_setting("private_server_accounts") or {})
+    if old_nickname is not None and old_nickname != nickname:
+        overrides.pop(old_nickname, None)
+    overrides[nickname] = bool(private)
+    settings.set_setting("private_server_accounts", overrides)
+
+
 def build_account_list_payload() -> list[dict]:
     """Return account rows with validation and launch-mode metadata."""
     payload = []
@@ -379,15 +399,18 @@ def build_account_list_payload() -> list[dict]:
                 "nick": nickname,
                 "error": wizlaunch.validate_account(nickname),
                 "steam": wizlaunch.get_account_steam(nickname),
-                "private": getattr(wizlaunch, "get_account_private", lambda _: False)(nickname),
+                "private": account_uses_private_server(nickname),
             }
         )
     return payload
 
 
 def launch_account_instance(nickname: str, game_path: str):
-    if getattr(wizlaunch, "get_account_private", lambda _: False)(nickname):
-        logger.info("启动器：以私服模式启动客户端，服务器 102.134.49.191:12000")
+    if account_uses_private_server(nickname):
+        logger.info(f"启动器：以私服模式启动客户端，服务器 {PRIVATE_LOGIN_SERVER}")
+        return wizlaunch.launch_instance(
+            nickname, game_path, login_server=PRIVATE_LOGIN_SERVER
+        )
     return wizlaunch.launch_instance(nickname, game_path)
 
 
@@ -1037,6 +1060,7 @@ async def main():
             client.quest_party_group_dungeon_zone = None
             client.quest_party_confirmed_dungeon_transition = None
             client.quest_dungeon_recovery = None
+            client.quest_party_battle_sync_state = None
             # Recompute this state every time roles are applied.  In particular,
             # a newly started party must block the quest worker before its first
             # movement, not only after the quester has changed zones once.
@@ -1848,6 +1872,32 @@ async def main():
                     )
                 return False
 
+            async def hitter_near_quester(quester_zone: str) -> bool:
+                if (await hitter.is_loading()
+                        or await hitter.zone_name() != quester_zone):
+                    return False
+                in_same_area = await hitter_is_in_quester_area()
+                if await hitter.in_battle():
+                    return (getattr(hitter, "client_being_helped", None) is quester
+                            or in_same_area)
+                if not in_same_area:
+                    return False
+                return calc_Distance(
+                    await hitter.body.position(), await quester.body.position()
+                ) <= 900
+
+            async def attempt_battle_coordinate_sync(quester_zone: str) -> bool:
+                await asyncio.wait_for(
+                    hitter.teleport(await quester.body.position()), timeout=5.0
+                )
+                for _ in range(12):
+                    await asyncio.sleep(0.25)
+                    if not await quester.in_battle():
+                        return False
+                    if await hitter_near_quester(quester_zone):
+                        return True
+                return False
+
             async def friend_ui_is_open(client: Client) -> bool:
                 try:
                     for name in ("NewFriendsListWindow", "wndCharacter"):
@@ -1949,6 +1999,9 @@ async def main():
                         failure_count = 0
                         next_retry_at = 0.0
                         continue
+                    quester_in_battle = await quester.in_battle()
+                    if not quester_in_battle:
+                        hitter.quest_party_battle_sync_state = None
                     if await quester.is_loading():
                         quester_zone_stable_since = None
                         objective_stable_since = None
@@ -2036,6 +2089,15 @@ async def main():
                     if recovery_owner == "nightmare_krok":
                         update_party_status(hitter, quester, "等待 NightmareKrok 恢复")
                         continue
+                    dungeon_state = getattr(quester, "quest_dungeon_recovery", None)
+                    dungeon_battle_pending = quester_in_battle and (
+                        group_dungeon_ready or isinstance(dungeon_state, dict)
+                        and dungeon_state.get("zone") == quester_zone
+                    )
+                    if (dungeon_battle_pending
+                            and isinstance(getattr(hitter, "quest_recovery_owner", None), str)):
+                        update_party_status(hitter, quester, "等待打手恢复完成")
+                        continue
 
                     if (
                         await hitter.is_loading()
@@ -2046,7 +2108,7 @@ async def main():
                         update_party_status(hitter, quester, "等待战斗或加载")
                         continue
 
-                    if use_potions and await is_free(hitter):
+                    if use_potions and not dungeon_battle_pending and await is_free(hitter):
                         await auto_potions(hitter, buy=False)
                         if (
                             buy_potions
@@ -2105,6 +2167,55 @@ async def main():
                         update_party_status(hitter, quester, "等待单人区域探测")
                         continue
 
+                    dungeon_state = getattr(quester, "quest_dungeon_recovery", None)
+                    in_confirmed_dungeon = group_dungeon_ready or (
+                        isinstance(dungeon_state, dict)
+                        and dungeon_state.get("zone") == quester_zone
+                    )
+                    battle_sync_state = getattr(
+                        hitter, "quest_party_battle_sync_state", None
+                    )
+                    if (in_confirmed_dungeon and quester_in_battle
+                            and battle_sync_state is None):
+                        if hitter_zone != quester_zone:
+                            # A coordinate cannot move a client between zones.
+                            hitter.quest_party_battle_sync_state = "failed"
+                            logger.info("自动任务：打手坐标同步无效，继续使用任务传送。")
+                        elif await hitter_near_quester(quester_zone):
+                            hitter.quest_party_battle_sync_state = "success"
+                        elif claim_quest_recovery(hitter, "party_battle_sync"):
+                            hitter.quest_party_battle_sync_state = "trying"
+                            logger.info("自动任务：任务客户端已进入战斗，尝试同步打手坐标。")
+                            update_party_status(hitter, quester, "正在同步战斗坐标")
+                            try:
+                                if await attempt_battle_coordinate_sync(quester_zone):
+                                    hitter.quest_party_battle_sync_state = "success"
+                                    logger.info("自动任务：打手坐标同步成功。")
+                                else:
+                                    hitter.quest_party_battle_sync_state = (
+                                        "failed" if await quester.in_battle() else None
+                                    )
+                            except asyncio.CancelledError:
+                                hitter.quest_party_battle_sync_state = "failed"
+                                raise
+                            except Exception as exc:
+                                hitter.quest_party_battle_sync_state = "failed"
+                                logger.debug(f"打手 {hitter.title} 战斗坐标同步失败：{exc}")
+                            finally:
+                                release_quest_recovery(hitter, "party_battle_sync")
+                            if hitter.quest_party_battle_sync_state == "failed":
+                                logger.info("自动任务：打手坐标同步无效，继续使用任务传送。")
+                            if hitter.quest_party_battle_sync_state == "success":
+                                continue
+
+                    battle_sync_failed = (
+                        in_confirmed_dungeon and quester_in_battle
+                        and hitter.quest_party_battle_sync_state == "failed"
+                    )
+                    if battle_sync_failed and await hitter_near_quester(quester_zone):
+                        update_party_status(hitter, quester, "已归队")
+                        continue
+
                     same_live_area = False
                     if hitter_zone == quester_zone:
                         # The normal path already treats an identical zone as
@@ -2118,7 +2229,7 @@ async def main():
                             or await hitter_is_in_quester_area()
                         )
 
-                    if same_live_area:
+                    if same_live_area and not battle_sync_failed:
                         if id(hitter) in getattr(quester, "quest_party_realm_unsynced", set()):
                             quester.quest_party_realm_unsynced.discard(id(hitter))
                         if probe_pending:
@@ -2182,8 +2293,8 @@ async def main():
                     if (
                         quester_zone_stable_since is None
                         or now - quester_zone_stable_since < 1.5
-                        or not (objective_ready or fallback_ready)
-                        or not await is_free(quester)
+                        or not (battle_sync_failed or objective_ready or fallback_ready)
+                        or (not battle_sync_failed and not await is_free(quester))
                     ):
                         update_party_status(
                             hitter,
@@ -2233,7 +2344,7 @@ async def main():
                                 timeout=15.0,
                             )
                         same_zone_probe = bool(
-                            (probe_pending or group_dungeon_ready)
+                            (probe_pending or group_dungeon_ready or battle_sync_failed)
                             and hitter_zone_before_probe == quester_zone
                         )
                         # Original leader mode waited long enough for the game's
@@ -2265,8 +2376,10 @@ async def main():
                             else:
                                 raise RuntimeError("好友传送未到达任务客户端所在区域")
 
-                        if group_dungeon_ready and not await hitter_is_in_quester_area():
+                        if (group_dungeon_ready or battle_sync_failed) and not await hitter_is_in_quester_area():
                             raise RuntimeError("好友传送后未确认与任务客户端处于同一副本")
+                        if battle_sync_failed and not await hitter_near_quester(quester_zone):
+                            raise RuntimeError("任务传送后打手仍未靠近任务客户端战斗")
                         if (id(hitter) in getattr(quester, "quest_party_realm_unsynced", set())
                                 and not await hitter_is_in_quester_area()):
                             raise RuntimeError("好友传送后未确认与任务客户端处于同一 Realm")
@@ -2278,7 +2391,7 @@ async def main():
                     except asyncio.CancelledError:
                         raise
                     except FriendBusyOrInstanceClosed as exc:
-                        if group_dungeon_ready:
+                        if group_dungeon_ready or battle_sync_failed:
                             await wait_before_friend_retry(exc)
                             continue
                         await close_stale_friend_ui(hitter)
@@ -2296,7 +2409,7 @@ async def main():
                                 await click_window_by_path(
                                     hitter, friend_is_busy_and_dungeon_reset_path
                                 )
-                            if group_dungeon_ready:
+                            if group_dungeon_ready or battle_sync_failed:
                                 await wait_before_friend_retry(exc)
                                 continue
                             blocked_instance_zone = quester_zone
@@ -2692,6 +2805,8 @@ async def main():
 
             if not await quester.in_battle():
                 quester.quest_party_battle_started_at = None
+                for hitter in getattr(quester, "quest_party_hitters", []):
+                    hitter.quest_party_battle_sync_state = None
                 return
 
             loop = asyncio.get_running_loop()
@@ -2710,6 +2825,12 @@ async def main():
                 if assigned_quester is quester
             ]
             quester_zone = await quester.zone_name()
+            dungeon_state = getattr(quester, "quest_dungeon_recovery", None)
+            in_confirmed_dungeon = bool(quester_zone) and (
+                getattr(quester, "quest_party_group_dungeon_zone", None) == quester_zone
+                or isinstance(dungeon_state, dict)
+                and dungeon_state.get("zone") == quester_zone
+            )
             for hitter in assigned_hitters:
                 if (
                     hitter not in walker.clients
@@ -2721,6 +2842,9 @@ async def main():
                     - getattr(hitter, "quest_party_battle_rescue_at", 0.0)
                     < 7.0
                     or await hitter.zone_name() != quester_zone
+                    or (in_confirmed_dungeon
+                        and getattr(hitter, "quest_party_battle_sync_state", None)
+                        != "success")
                 ):
                     continue
 
@@ -2937,6 +3061,21 @@ async def main():
                                                 and not c.invincible_combat_timer
                                                 and c.just_entered_combat is None
                                             ):
+                                                if (quest_party_enabled
+                                                        and client_is_hitter_client
+                                                        and p in party.questers
+                                                        and await p.in_battle()
+                                                        and getattr(c, "quest_party_battle_sync_state", None)
+                                                        != "success"):
+                                                    p_zone = await p.zone_name()
+                                                    dungeon_state = getattr(
+                                                        p, "quest_dungeon_recovery", None
+                                                    )
+                                                    if p_zone and (getattr(p, "quest_party_group_dungeon_zone", None)
+                                                            == p_zone
+                                                            or isinstance(dungeon_state, dict)
+                                                            and dungeon_state.get("zone") == p_zone):
+                                                        continue
                                                 # player_distance = calc_Distance(await c.body.position(), await p.body.position())
                                                 # print('player distance between [', c.title, '] and [', p.title, '] is: ', player_distance)
 
@@ -3240,6 +3379,7 @@ async def main():
         client.quest_party_battle_started_at = None
         client.quest_party_battle_rescue_active = False
         client.quest_party_battle_rescue_at = 0.0
+        client.quest_party_battle_sync_state = None
         client.post_combat_movement_active = False
         client.post_combat_movement_at = 0.0
         client.wizard_name = None
@@ -3362,10 +3502,8 @@ async def main():
             released_handles.add(new_handle)
             _send_hooked_clients_update()
 
-        if getattr(wizlaunch, "get_account_private", lambda _: False)(nickname):
-            logger.info("启动器：以私服模式启动客户端，服务器 102.134.49.191:12000")
         new_handle = await launch_for_recovery(
-            wizlaunch.launch_instance, nickname, game_path, release_cancelled_launch
+            launch_account_instance, nickname, game_path, release_cancelled_launch
         )
         launched_account_map[new_handle] = nickname
         released_handles.discard(new_handle)
@@ -5435,14 +5573,11 @@ async def main():
                                 if steam_mode:
                                     wizlaunch.create_steam_account(nickname)
                                 else:
-                                    if private_mode and not hasattr(wizlaunch, "set_account_private"):
-                                        raise RuntimeError("当前 wizlaunch 扩展尚不支持私服模式，请重新构建")
                                     await asyncio.to_thread(
                                         wizlaunch.prompt_save_account, nickname
                                     )
                                     wizlaunch.set_account_steam(nickname, False)
-                                    if private_mode:
-                                        wizlaunch.set_account_private(nickname, True)
+                                set_account_private_server(nickname, private_mode)
                                 logger.info(f"Account '{nickname}' saved.")
                             except (RuntimeError, AttributeError) as e:
                                 logger.info(f"Account save cancelled or failed: {e}")
@@ -5456,16 +5591,20 @@ async def main():
                         case xuanshu_gui.GUICommandType.UpdateAccount:
                             nickname, new_nickname, steam_mode = com.data[:3]
                             private_mode = (bool(com.data[3]) if len(com.data) > 3 else
-                                            getattr(wizlaunch, "get_account_private", lambda _: False)(nickname))
+                                            account_uses_private_server(nickname))
                             try:
                                 if steam_mode and private_mode:
                                     raise RuntimeError("Steam 与私服模式不能同时启用")
-                                if private_mode and not hasattr(wizlaunch, "get_account_private"):
-                                    raise RuntimeError("当前 wizlaunch 扩展尚不支持私服模式，请重新构建")
-                                if hasattr(wizlaunch, "get_account_private"):
-                                    wizlaunch.update_account(nickname, new_nickname, bool(steam_mode), private_mode)
+                                if hasattr(wizlaunch, "update_account"):
+                                    if hasattr(wizlaunch, "get_account_private"):
+                                        wizlaunch.update_account(nickname, new_nickname, bool(steam_mode), private_mode)
+                                    else:
+                                        wizlaunch.update_account(nickname, new_nickname, bool(steam_mode))
                                 else:
-                                    wizlaunch.update_account(nickname, new_nickname, bool(steam_mode))
+                                    if (new_nickname != nickname or
+                                            bool(wizlaunch.get_account_steam(nickname)) != bool(steam_mode)):
+                                        raise RuntimeError("当前 wizlaunch 扩展不支持修改账号名称或 Steam 模式")
+                                set_account_private_server(new_nickname, private_mode, nickname)
                                 if new_nickname != nickname:
                                     for handle, account_name in list(launched_account_map.items()):
                                         if account_name == nickname:
@@ -5473,7 +5612,8 @@ async def main():
                                     for client in walker.clients:
                                         if getattr(client, "account_nick", None) == nickname:
                                             client.account_nick = new_nickname
-                                if not steam_mode and not wizlaunch.has_account_credential(new_nickname):
+                                if (not steam_mode and hasattr(wizlaunch, "has_account_credential")
+                                        and not wizlaunch.has_account_credential(new_nickname)):
                                     try:
                                         await asyncio.to_thread(
                                             wizlaunch.prompt_save_account, new_nickname
@@ -5520,6 +5660,9 @@ async def main():
 
                         case xuanshu_gui.GUICommandType.DeleteAccount:
                             wizlaunch.delete_account(com.data)
+                            private_overrides = dict(settings.get_setting("private_server_accounts") or {})
+                            if private_overrides.pop(com.data, None) is not None:
+                                settings.set_setting("private_server_accounts", private_overrides)
                             logger.info(f"Account '{com.data}' removed.")
                             gui_send_queue.put(
                                 xuanshu_gui.GUICommand(

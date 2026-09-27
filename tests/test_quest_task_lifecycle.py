@@ -17,8 +17,8 @@ class QuestTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_stop_clears_run_state_and_restart_reassigns_current_clients(self):
-        quester = SimpleNamespace()
-        hitter = SimpleNamespace()
+        quester = SimpleNamespace(questing_status=False)
+        hitter = SimpleNamespace(questing_status=False)
         clients = [quester, hitter]
         assignments = [(hitter, quester)]
         def current_quest_party(members=None):
@@ -43,6 +43,7 @@ class QuestTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             client.quest_party_battle_started_at = 10.0
             client.quest_party_battle_rescue_active = True
             client.quest_party_battle_rescue_at = 20.0
+            client.quest_party_battle_sync_state = 'failed'
             client.quest_party_solo_gear_active = True
             client.in_solo_zone = True
             client.quest_party_probe_pending = True
@@ -61,6 +62,7 @@ class QuestTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(client.quest_party_quest_worker_restart_requested)
             self.assertFalse(client.quest_party_probe_pending)
             self.assertFalse(client.quest_party_battle_rescue_active)
+            self.assertIsNone(client.quest_party_battle_sync_state)
             self.assertFalse(client.in_solo_zone)
 
         assignments.clear()

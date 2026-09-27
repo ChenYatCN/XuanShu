@@ -59,6 +59,7 @@ DEFAULT_SETTINGS = {
     "client_resizing": True,
     # [launcher]
     "remember_chosen_clients": False,
+    "private_server_accounts": {},
     # Only contacts the official game patch service when explicitly enabled.
     "verify_patch_files": False,
 }
