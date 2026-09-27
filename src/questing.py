@@ -24,6 +24,7 @@ from src.utils import *
 from src.paths import *
 from src.collecting import collect_one
 from src.script_popups import close_automation_popup
+from src.window_text import read_control_text
 from thefuzz import fuzz
 
 
@@ -42,6 +43,9 @@ def release_quest_recovery(client: Client, owner: str) -> None:
 
 class Quester():
     DUNGEON_NO_PROGRESS_SECONDS = 180.0
+    MAINLINE_FINDER_STABLE_READS = 3
+    MAINLINE_FINDER_RETRY_SECONDS = 60.0
+    MAINLINE_FINDER_MAX_PAGES = 32
     NIGHTMARE_ZONE = "Empyrea/Interiors/EM_Z15_NightmareKrok"
     # Stay below the existing 120-second stationary-task watchdog.
     NIGHTMARE_NO_PROGRESS_SECONDS = 60.0
@@ -75,6 +79,8 @@ class Quester():
         self._krok_exit_watch = {}
         self._npc_retry_exhausted = {}
         self._trigger_reentry = {}
+        self._mainline_finder_observations = {}
+        self._mainline_finder_retry_at = {}
 
     async def _confirm_dungeon_entry(self, client: Client, previous_zone: str) -> None:
         """Arm recovery only after an entry prompt caused a real zone change."""
@@ -1526,6 +1532,390 @@ class Quester():
         )
         return False
 
+    async def _mainline_identity(self, client: Client):
+        """Return a tracked quest only when its ID and quest data are readable."""
+        from src.mainline_progress import match_quest, quest_rows
+
+        rows = quest_rows()
+        if not rows:
+            return None
+        try:
+            quest_id = await client.quest_id()
+            if quest_id == 0:
+                return 0, '', '', None, None
+            if not isinstance(quest_id, int) or quest_id < 0:
+                return None
+            quest = (await (await client.quest_manager()).quest_data()).get(quest_id)
+            if quest is None:
+                return None
+            code = await quest.name_lang_key() or ''
+            mainline = await quest.mainline()
+            title = ''
+            if code and code != 'Quest Finder':
+                try:
+                    title = await client.cache_handler.get_langcode_name(code) or ''
+                except Exception:
+                    pass
+            row = match_quest(rows, quest_id, code, title)
+            return quest_id, code, title, row, mainline
+        except Exception as exc:
+            logger.debug('{} 主线身份暂不可读：{}', client.title, exc)
+            return None
+
+    async def _mainline_finder_blocked(self, client: Client) -> bool:
+        if (not getattr(client, 'questing_status', False)
+                or isinstance(getattr(client, 'quest_recovery_owner', None), str)
+                or getattr(client, 'mainline_chain_retry_active', False)
+                or getattr(client, 'quest_party_probe_pending', False)
+                or getattr(client, 'quest_party_battle_rescue_active', False)
+                or getattr(client, 'quest_party_quest_worker_restart_requested', False)
+                or getattr(client, 'post_combat_movement_active', False)
+                or self._krok_exit_watch.get(id(client))
+                or isinstance(getattr(client, 'quest_dungeon_recovery', None), dict)
+                and client.quest_dungeon_recovery.get('active')):
+            return True
+        if (await client.is_loading() or await client.in_battle()
+                or getattr(client, 'entity_detect_combat_status', False)
+                or not await is_free_leader_questing(client)):
+            return True
+        return (await is_spiral_door_open(client)
+                or await is_visible_by_path(client, npc_range_path)
+                or await is_visible_by_path(client, decline_quest_path)
+                or await is_visible_by_path(client, cancel_multiple_quest_menu_path)
+                or await is_visible_by_path(client, quest_buttons_parent_path)
+                or await is_visible_by_path(client, exit_dungeon_path)
+                or await is_visible_by_path(client, dungeon_warning_path))
+
+    async def _maybe_recover_mainline(self, client: Client) -> bool:
+        """Pause a confirmed side quest, then run one bounded Quest Finder pass."""
+        identity = await self._mainline_identity(client)
+        key = id(client)
+        if identity is None:
+            observed = self._mainline_finder_observations.get(key)
+            if observed is not None:
+                observed['count'] = 0
+                observed['since'] = time.monotonic()
+                return True
+            return False
+        if identity[3] is not None or (identity[0] != 0
+                and identity[4] is not False and identity[1] != 'Quest Finder'):
+            self._mainline_finder_observations.pop(key, None)
+            self._mainline_finder_retry_at.pop(key, None)
+            client.mainline_finder_offer_guard = False
+            return False
+
+        # An index miss is not proof when the game's own flag says mainline.
+        # Stability must also hold across the same zone, not a transition.
+        try:
+            zone = await client.zone_name()
+        except Exception:
+            zone = None
+        if not zone:
+            return True
+        snapshot = (*identity[:3], zone)
+        now = time.monotonic()
+        observed = self._mainline_finder_observations.get(key)
+        if observed is None or observed['snapshot'] != snapshot:
+            observed = {'snapshot': snapshot, 'count': 0, 'since': now}
+            self._mainline_finder_observations[key] = observed
+        if await self._mainline_finder_blocked(client):
+            observed['count'] = 0
+            observed['since'] = now
+            return True
+        observed['count'] += 1
+        stable_seconds = 3.0 if identity[0] == 0 else 0.8
+        if (observed['count'] < self.MAINLINE_FINDER_STABLE_READS
+                or now - observed['since'] < stable_seconds):
+            return True
+        if now < self._mainline_finder_retry_at.get(key, 0):
+            return True
+        if not claim_quest_recovery(client, 'mainline_finder'):
+            return True
+
+        logger.info('自动任务：当前追踪任务不属于主线，开始寻找主线任务。')
+        recovered = False
+        try:
+            recovered = await self._run_mainline_finder(client)
+            if recovered:
+                self._mainline_finder_observations.pop(key, None)
+                self._mainline_finder_retry_at.pop(key, None)
+                logger.info('自动任务：已重新接取主线任务，恢复正常自动任务。')
+            else:
+                self._mainline_finder_retry_at[key] = time.monotonic() + self.MAINLINE_FINDER_RETRY_SECONDS
+                logger.warning('自动任务：本轮未能找到可确认的主线任务，退出主线恢复流程。')
+                logger.info('自动任务：暂停非主线传送，60 秒后重试；手动切回主线可立即恢复。')
+        except Exception as exc:
+            self._mainline_finder_retry_at[key] = time.monotonic() + self.MAINLINE_FINDER_RETRY_SECONDS
+            logger.warning('自动任务：主线找回失败，暂停非主线传送：{}', exc)
+            logger.info('自动任务：60 秒后重试；手动切回主线可立即恢复。')
+        finally:
+            # A dialogue can outlive the recovery coroutine.  Keep the normal
+            # dialogue worker from accepting that leftover offer on its next tick.
+            client.mainline_finder_offer_guard = not recovered
+            try:
+                try:
+                    if await is_visible_by_path(client, cancel_multiple_quest_menu_path):
+                        await close_npc_quest_menu(client)
+                except Exception as exc:
+                    logger.debug('主线找回清理 NPC 菜单失败：{}', exc)
+            finally:
+                release_quest_recovery(client, 'mainline_finder')
+        return True
+
+    @staticmethod
+    async def _visible_window_nodes(window, path):
+        """Inspect only a known UI subtree; never infer a click from pixels."""
+        pending = [(window, tuple(path))]
+        result = []
+        while pending:
+            if len(result) + len(pending) > 300:
+                raise RuntimeError('UI 子控件过多，无法安全定位')
+            current, current_path = pending.pop(0)
+            if not await current.is_visible():
+                continue
+            result.append((current, current_path))
+            for child in await current.children():
+                pending.append((child, (*current_path, await child.name())))
+        return result
+
+    @staticmethod
+    async def _window_text(window) -> str:
+        try:
+            return plain_text(await read_control_text(window))
+        except Exception:
+            try:
+                return plain_text(await window.maybe_text())
+            except Exception:
+                return ''
+
+    async def _questbook_page(self, client: Client):
+        menu = await get_window_from_path(client.root_window, quest_buttons_parent_path)
+        if not menu or not await menu.is_visible():
+            raise RuntimeError('Q 任务菜单未显示')
+        nodes = await self._visible_window_nodes(menu, quest_buttons_parent_path)
+        cards = [(window, path) for window, path in nodes
+                 if re.fullmatch(r'wndQuestInfo\d+', path[-1])]
+        if not cards:
+            raise RuntimeError('当前任务页没有可读取的任务卡片')
+
+        signature = []
+        finder = []
+        for card, card_path in cards:
+            descendants = [(window, path) for window, path in nodes
+                           if path[:len(card_path)] == card_path]
+            texts = [(await self._window_text(window), window, path)
+                     for window, path in descendants]
+            signature.append(tuple(text for text, _, _ in texts if text))
+            if any(text.casefold() in ('任务搜寻', 'quest finder')
+                   for text, _, _ in texts):
+                target = next(((window, path) for _, window, path in texts
+                               if path[-1] == 'txtGoal'), (card, card_path))
+                finder.append(target)
+        if len(finder) > 1:
+            raise RuntimeError('当前页出现多个“任务搜寻”卡片')
+
+        candidates = [(window, path) for window, path in nodes
+                      if re.search(r'right|next|forward', path[-1], re.I)
+                      and not any(path[:len(card_path)] == card_path
+                                  for _, card_path in cards)]
+        if len(candidates) > 1:
+            # Widget-relative geometry only disambiguates named candidates;
+            # it never substitutes a fixed screen position for a UI identity.
+            try:
+                card_x = max((await card.scale_to_client()).center()[0]
+                             for card, _ in cards)
+                candidates = [(window, path) for window, path in candidates
+                              if (await window.scale_to_client()).center()[0] > card_x]
+            except Exception:
+                pass
+        next_page = candidates[0] if len(candidates) == 1 else None
+        if next_page is None and not finder:
+            direct = [path[-1] for _, path in nodes
+                      if len(path) == len(quest_buttons_parent_path) + 1]
+            logger.debug('任务菜单可见一级控件：{}', direct)
+        return tuple(signature), finder[0] if finder else None, next_page
+
+    @staticmethod
+    async def _click_ui_window(client: Client, window) -> None:
+        async with client.mouse_handler:
+            await client.mouse_handler.click_window(window)
+
+    async def _select_quest_finder(self, client: Client) -> bool:
+        opened = False
+        try:
+            await client.send_key(Keycode.Q)
+            opened = True
+            deadline = time.monotonic() + 4.0
+            while time.monotonic() < deadline:
+                if await is_visible_by_path(client, quest_buttons_parent_path):
+                    break
+                await asyncio.sleep(0.1)
+            else:
+                raise RuntimeError('按 Q 后任务菜单未稳定打开')
+
+            logger.info('自动任务：正在任务菜单中寻找“任务搜寻”。')
+            seen = set()
+            for _ in range(self.MAINLINE_FINDER_MAX_PAGES):
+                signature, finder, next_page = await self._questbook_page(client)
+                if signature in seen:
+                    raise RuntimeError('任务页已循环回到检查过的页面')
+                seen.add(signature)
+                if finder:
+                    logger.debug('任务搜寻 UI 路径：{}', list(finder[1]))
+                    await self._click_ui_window(client, finder[0])
+                    logger.info('自动任务：已找到“任务搜寻”，开始寻找可接主线。')
+                    break
+                if next_page is None:
+                    raise RuntimeError('无法唯一识别右侧翻页控件')
+                logger.debug('任务右翻页 UI 路径：{}', list(next_page[1]))
+                await self._click_ui_window(client, next_page[0])
+                refresh_deadline = time.monotonic() + 2.5
+                while time.monotonic() < refresh_deadline:
+                    await asyncio.sleep(0.1)
+                    changed, _, _ = await self._questbook_page(client)
+                    if changed != signature:
+                        break
+                else:
+                    raise RuntimeError('点击右翻页后任务页未刷新')
+            else:
+                raise RuntimeError('任务页翻页达到保护上限')
+
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                identity = await self._mainline_identity(client)
+                if identity and identity[1] == 'Quest Finder':
+                    return True
+                await asyncio.sleep(0.1)
+            raise RuntimeError('点击“任务搜寻”后未确认追踪任务切换')
+        finally:
+            if opened and await is_visible_by_path(client, quest_buttons_parent_path):
+                await client.send_key(Keycode.Q)
+
+    async def _mainline_offer_candidate(self, client: Client):
+        """Accept only a titled offer linked to one verified mainline Quest ID."""
+        from src.mainline_progress import match_quest, quest_rows
+
+        path = ['WorldView', 'wndDialogMain']
+        dialog = await get_window_from_path(client.root_window, path)
+        if not dialog or not await dialog.is_visible():
+            return None
+        rows = quest_rows()
+        nodes = await self._visible_window_nodes(dialog, path)
+        offered = []
+        for window, node_path in nodes:
+            name = node_path[-1].casefold()
+            if not ('title' in name or 'quest' in name and 'name' in name):
+                continue
+            title = await self._window_text(window)
+            row = match_quest(rows, None, '', title) if title else None
+            if row is not None:
+                offered.append((row, title))
+        if len(offered) != 1:
+            return None
+
+        row, title = offered[0]
+        candidates = []
+        quests = await (await client.quest_manager()).quest_data()
+        for quest_id, quest in quests.items():
+            try:
+                if not await quest.mainline():
+                    continue
+                code = await quest.name_lang_key() or ''
+                resolved = await client.cache_handler.get_langcode_name(code) if code else ''
+                if match_quest(rows, quest_id, code, resolved or '') == row:
+                    candidates.append(quest_id)
+            except Exception:
+                continue
+        if len(candidates) != 1:
+            logger.debug('主线邀请“{}”无法唯一映射 Quest ID，拒绝自动接取。', title)
+            return None
+        return candidates[0], row
+
+    async def _run_mainline_finder(self, client: Client) -> bool:
+        from src.mainline_progress import log_mainline_progress
+
+        identity = await self._mainline_identity(client)
+        if identity is None:
+            return False
+        if identity[1] != 'Quest Finder' and not await self._select_quest_finder(client):
+            return False
+
+        expected_quest_id = None
+        accepted_at = None
+        interaction_attempts = 0
+        dialogue_since = None
+        deadline = time.monotonic() + 90.0
+        while time.monotonic() < deadline and getattr(client, 'questing_status', False):
+            identity = await self._mainline_identity(client)
+            if identity and identity[3] is not None and identity[4] is not False:
+                if expected_quest_id is None or identity[0] == expected_quest_id:
+                    client._xuanshu_mainline_id = None
+                    await log_mainline_progress(client)
+                    return True
+                return False
+            if identity and identity[1] != 'Quest Finder':
+                return False
+            if await client.in_battle():
+                return False
+            if await client.is_loading():
+                await asyncio.sleep(0.2)
+                continue
+            if await is_visible_by_path(client, decline_quest_path):
+                if accepted_at is not None:
+                    if time.monotonic() - accepted_at > 5.0:
+                        return False
+                    await asyncio.sleep(0.2)
+                    continue
+                candidate = await self._mainline_offer_candidate(client)
+                if candidate is None:
+                    logger.warning('自动任务：无法在接取前确认邀请属于主线，拒绝接取。')
+                    await client.send_key(Keycode.ESC, 0.1)
+                    return False
+                expected_quest_id = candidate[0]
+                await click_window_by_path(client, advance_dialog_path)
+                accepted_at = time.monotonic()
+                await asyncio.sleep(0.4)
+                continue
+            if await is_visible_by_path(client, cancel_multiple_quest_menu_path):
+                await close_npc_quest_menu(client)
+                return False
+            if await is_visible_by_path(client, advance_dialog_path):
+                # Without offer identity, this right button could itself
+                # accept a side quest.  Do not advance an unknown dialogue.
+                if accepted_at is not None:
+                    await asyncio.sleep(0.2)
+                    continue
+                if dialogue_since is None:
+                    dialogue_since = time.monotonic()
+                elif time.monotonic() - dialogue_since >= 5.0:
+                    logger.warning('自动任务：任务对话未提供可确认的邀请，拒绝盲目推进。')
+                    await client.send_key(Keycode.ESC, 0.1)
+                    return False
+                await asyncio.sleep(0.2)
+                continue
+            dialogue_since = None
+            if not await is_free_leader_questing(client):
+                await asyncio.sleep(0.2)
+                continue
+
+            target = await client.quest_position.position()
+            if not all(math.isfinite(value) for value in (target.x, target.y, target.z)):
+                return False
+            if calc_Distance(target, XYZ(0.0, 0.0, 0.0)) <= 1.0:
+                return False
+            if (await is_visible_by_path(client, npc_range_path)
+                    and calc_Distance(target, await client.body.position()) < 750.0
+                    and interaction_kind(await self.read_popup(client)) == 'talk'):
+                if interaction_attempts >= 2:
+                    return False
+                interaction_attempts += 1
+                await client.send_key(Keycode.X, 0.1)
+                await asyncio.sleep(1.0)
+            else:
+                await asyncio.wait_for(self.teleport_to_quest_target(client, target), timeout=25.0)
+                await asyncio.sleep(0.3)
+        return False
+
     async def _mainline_turn_in_snapshot(self, client: Client, quest_id):
         """Keep the quest and NPC identity from before the first X press."""
         if not isinstance(quest_id, int) or quest_id <= 0:
@@ -2236,6 +2626,9 @@ class Quester():
             # if there were previously clients on the same quest check for quest objective change on all clients
             follower_clients, client_quests = await self.determine_new_leader_and_followers(client_quests, questing_clients, follower_clients)
 
+            if await self._maybe_recover_mainline(self.current_leader_client):
+                continue
+
             # handle circumstances where any follower client is not in the same zone as the leader client
             # keep in mind, the previous leader client may now be a follower client since we have just called determine_new_leader_and_followers()
             await self.handle_zone_correction(maybe_solo_zone, questing_friend_tp, gear_switching_in_solo_zones)
@@ -2496,6 +2889,8 @@ class Quester():
         # newly entered zone with friend teleport.  Do not start the next quest
         # movement until that probe decides whether the zone is solo-only.
         if await self._quest_party_probe_blocks_movement():
+            return
+        if await self._maybe_recover_mainline(self.client):
             return
         if await is_free(self.client):
             await log_mainline_progress(self.client)

@@ -1661,12 +1661,28 @@ async def main():
             try:
                 while True:
                     if not freecam_status:
+                        finding_mainline = getattr(client, "quest_recovery_owner", None) == "mainline_finder"
+                        if finding_mainline:
+                            # This worker must not race the recovery worker on
+                            # a quest offer whose decline button appears late.
+                            await asyncio.sleep(0.1)
+                            continue
+                        if (getattr(client, "mainline_finder_offer_guard", False)
+                                and not getattr(client, "questing_status", False)
+                                and not await is_visible_by_path(client, decline_quest_path)):
+                            client.mainline_finder_offer_guard = False
                         if await close_npc_quest_menu(client):
                             continue
                         if await is_visible_by_path(client, advance_dialog_path):
                             has_decline_button = await is_visible_by_path(
                                 client, decline_quest_path
                             )
+                            if has_decline_button and getattr(
+                                client, "mainline_finder_offer_guard", False
+                            ):
+                                await client.send_key(key=Keycode.ESC)
+                                await asyncio.sleep(0.25)
+                                continue
                             if has_decline_button and (
                                 getattr(client, "mainline_chain_retry_active", False)
                                 or not getattr(
@@ -2088,6 +2104,9 @@ async def main():
                         continue
                     if recovery_owner == "nightmare_krok":
                         update_party_status(hitter, quester, "等待 NightmareKrok 恢复")
+                        continue
+                    if recovery_owner == "mainline_finder":
+                        update_party_status(hitter, quester, "等待主线任务找回")
                         continue
                     dungeon_state = getattr(quester, "quest_dungeon_recovery", None)
                     dungeon_battle_pending = quester_in_battle and (
@@ -2624,7 +2643,7 @@ async def main():
                         ):
                             recovery_candidate = False
                         if recovery_candidate and any(
-                            getattr(p, "quest_recovery_owner", None) in ("nightmare_krok", "rotating_realm")
+                            getattr(p, "quest_recovery_owner", None) in ("nightmare_krok", "rotating_realm", "mainline_finder")
                             for p in walker.clients
                         ):
                             recovery_candidate = False
@@ -2653,7 +2672,7 @@ async def main():
                                 if isinstance(getattr(client, "quest_recovery_owner", None), str):
                                     continue
                                 if any(
-                                    getattr(p, "quest_recovery_owner", None) in ("nightmare_krok", "rotating_realm")
+                                    getattr(p, "quest_recovery_owner", None) in ("nightmare_krok", "rotating_realm", "mainline_finder")
                                     for p in walker.clients
                                 ):
                                     continue
@@ -2798,7 +2817,7 @@ async def main():
                 not quest_party_enabled
                 or quester.in_solo_zone
                 or getattr(quester, "quest_party_probe_pending", False)
-                or getattr(quester, "quest_recovery_owner", None) in ("nightmare_krok", "rotating_realm")
+                or getattr(quester, "quest_recovery_owner", None) in ("nightmare_krok", "rotating_realm", "mainline_finder")
             ):
                 quester.quest_party_battle_started_at = None
                 return
