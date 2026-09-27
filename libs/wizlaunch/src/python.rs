@@ -30,13 +30,14 @@ fn create_steam_account(nickname: String) -> PyResult<()> {
     if nickname.trim().is_empty() || metadata::account_exists(&nickname)? || credential_store::has_credential(&nickname) {
         return Err(VaultError::MetadataIo("Account nickname is empty or already exists".into()).into());
     }
-    metadata::rename_and_set_steam(&nickname, &nickname, true)?;
+    metadata::rename_and_set_modes(&nickname, &nickname, true, false)?;
     Ok(())
 }
 
 /// Move the existing Windows credential with the nickname; never expose it to Python.
 #[pyfunction]
-fn update_account(old: String, new: String, steam: bool) -> PyResult<()> {
+#[pyo3(signature = (old, new, steam, private=None))]
+fn update_account(old: String, new: String, steam: bool, private: Option<bool>) -> PyResult<()> {
     if new.trim().is_empty() || new != new.trim() {
         return Err(VaultError::MetadataIo("Account nickname cannot be empty or padded".into()).into());
     }
@@ -46,13 +47,17 @@ fn update_account(old: String, new: String, steam: bool) -> PyResult<()> {
     if old != new && (metadata::account_exists(&new)? || credential_store::has_credential(&new)) {
         return Err(VaultError::MetadataIo(format!("Account '{new}' already exists")).into());
     }
+    let private = private.unwrap_or(metadata::get_private(&old)?);
+    if steam && private {
+        return Err(VaultError::MetadataIo("Steam and private-server modes cannot be combined".into()).into());
+    }
     let previous = metadata::load()?;
     let had_credential = credential_store::has_credential(&old);
     if old != new && had_credential {
         let (username, password) = credential_store::read_credential(&old)?;
         credential_store::write_credential(&new, &username, &password)?;
     }
-    if let Err(error) = metadata::rename_and_set_steam(&old, &new, steam) {
+    if let Err(error) = metadata::rename_and_set_modes(&old, &new, steam, private) {
         if old != new && had_credential {
             let _ = credential_store::delete_credential(&new);
         }
@@ -98,6 +103,9 @@ fn has_account_credential(nickname: String) -> PyResult<bool> {
 /// before Steam support lack a Steam-mode flag and must be updated.
 #[pyfunction]
 fn validate_account(nickname: String) -> PyResult<Option<String>> {
+    if metadata::get_private(&nickname)? && metadata::get_steam(&nickname)? == Some(true) {
+        return Ok(Some("Steam and private-server modes cannot be combined. Edit this account.".into()));
+    }
     match metadata::get_steam(&nickname)? {
         Some(false) if !credential_store::has_credential(&nickname) => Ok(Some(
             "Normal login credentials are missing. Update account credentials.".to_string(),
@@ -121,6 +129,17 @@ fn get_account_steam(nickname: String) -> PyResult<Option<bool>> {
 #[pyfunction]
 fn set_account_steam(nickname: String, steam: bool) -> PyResult<()> {
     metadata::set_steam(&nickname, steam)?;
+    Ok(())
+}
+
+#[pyfunction]
+fn get_account_private(nickname: String) -> PyResult<bool> {
+    Ok(metadata::get_private(&nickname)?)
+}
+
+#[pyfunction]
+fn set_account_private(nickname: String, private: bool) -> PyResult<()> {
+    metadata::set_private(&nickname, private)?;
     Ok(())
 }
 
@@ -186,6 +205,16 @@ fn get_nickname_by_gid(gid: u64) -> PyResult<Option<String>> {
 
 // ── Launch + login ─────────────────────────────────────────────────
 
+fn account_launch_options(nickname: &str, login_server: &str) -> Result<(bool, String), VaultError> {
+    let steam = metadata::get_steam(nickname)?.unwrap_or(false);
+    let private = metadata::get_private(nickname)?;
+    if steam && private {
+        return Err(VaultError::MetadataIo("Steam and private-server modes cannot be combined".into()));
+    }
+    let server = if private { launcher::PRIVATE_LOGIN_SERVER } else { login_server };
+    Ok((steam, server.to_string()))
+}
+
 #[pyfunction]
 #[pyo3(signature = (nickname, game_path, login_server=None, timeout_secs=30))]
 fn launch_instance(
@@ -196,8 +225,8 @@ fn launch_instance(
     timeout_secs: u64,
 ) -> PyResult<isize> {
     let login_server = login_server.unwrap_or_else(|| "login.us.wizard101.com:12000".to_string());
-    // Steam mode is a per-account setting; unconfigured accounts launch normally.
-    let steam = metadata::get_steam(&nickname)?.unwrap_or(false);
+    // The existing -L pair is replaced for private accounts, never duplicated.
+    let (steam, account_server) = account_launch_options(&nickname, &login_server)?;
     py.allow_threads(|| {
         if steam {
             steam::ensure_steam_ready(steam::STEAM_LOGIN_TIMEOUT_SECS)?;
@@ -207,7 +236,7 @@ fn launch_instance(
         let before: std::collections::HashSet<isize> =
             launcher::get_wizard_handles().into_iter().collect();
 
-        launcher::launch_game(&game_path, &login_server, steam)?;
+        launcher::launch_game(&game_path, &account_server, steam)?;
 
         let handle = launcher::wait_for_new_handle(&before, timeout_secs)?;
 
@@ -236,10 +265,13 @@ fn launch_instances(
     timeout_secs: u64,
 ) -> PyResult<HashMap<String, isize>> {
     let login_server = login_server.unwrap_or_else(|| "login.us.wizard101.com:12000".to_string());
-    // Resolve per-account Steam mode up front so we can prepare Steam once.
+    // Resolve account modes and the single -L server up front.
     let mut steam_flags: Vec<bool> = Vec::with_capacity(nicknames.len());
+    let mut servers: Vec<String> = Vec::with_capacity(nicknames.len());
     for nickname in &nicknames {
-        steam_flags.push(metadata::get_steam(nickname)?.unwrap_or(false));
+        let (steam, server) = account_launch_options(nickname, &login_server)?;
+        steam_flags.push(steam);
+        servers.push(server);
     }
     let steam_by_nick: HashMap<String, bool> = nicknames.iter().cloned()
         .zip(steam_flags.iter().copied()).collect();
@@ -255,8 +287,8 @@ fn launch_instances(
 
         // Launch simultaneously: spawn EVERY client up front — regardless of Steam
         // mode — so they all load in parallel (the slow part). Each account's Steam
-        // flag only affects the `-ST` spawn argument, which is known per-account, so
-        // there's no reason to serialize the modes. We record each spawned PID and,
+        // mode and single `-L` server are known per account, so there's no reason
+        // to serialize the launches. We record each spawned PID and,
         // once its window appears, pair it back to the exact account by that PID (the
         // client doesn't re-exec, so the window's owning process is the one we
         // spawned). That keeps account↔window pairing exact even when a batch mixes
@@ -267,8 +299,8 @@ fn launch_instances(
         // any mixed batch into back-to-back launches.)
         let mut pid_to_nick: HashMap<u32, String> = HashMap::new();
         let mut spawn_order: Vec<String> = Vec::with_capacity(nicknames.len());
-        for (nickname, &steam) in nicknames.iter().zip(steam_flags.iter()) {
-            match launcher::launch_game(&game_path, &login_server, steam) {
+        for (index, nickname) in nicknames.iter().enumerate() {
+            match launcher::launch_game(&game_path, &servers[index], steam_flags[index]) {
                 Ok(pid) => {
                     pid_to_nick.insert(pid, nickname.clone());
                     spawn_order.push(nickname.clone());
@@ -371,6 +403,8 @@ pub fn wizlaunch(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(validate_account, m)?)?;
     m.add_function(wrap_pyfunction!(get_account_steam, m)?)?;
     m.add_function(wrap_pyfunction!(set_account_steam, m)?)?;
+    m.add_function(wrap_pyfunction!(get_account_private, m)?)?;
+    m.add_function(wrap_pyfunction!(set_account_private, m)?)?;
     m.add_function(wrap_pyfunction!(get_window_config, m)?)?;
     m.add_function(wrap_pyfunction!(set_window_config, m)?)?;
     m.add_function(wrap_pyfunction!(clear_window_config, m)?)?;

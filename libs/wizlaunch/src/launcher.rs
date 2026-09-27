@@ -11,6 +11,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 const WIZARD_CLASS: &str = "Wizard Graphical Client";
+pub const PRIVATE_LOGIN_SERVER: &str = "102.134.49.191:12000";
 
 /// Convert an isize handle to HWND (0.58 uses *mut c_void).
 fn hwnd_from_isize(h: isize) -> HWND {
@@ -59,6 +60,11 @@ fn normalize_path(path: &str) -> PathBuf {
 /// the resulting game window — callers can match a new window back to the exact
 /// spawn via [`get_window_pid`].
 pub fn launch_game(game_path: &str, login_server: &str, steam: bool) -> Result<u32, VaultError> {
+    if steam && login_server == PRIVATE_LOGIN_SERVER {
+        return Err(VaultError::LaunchFailed(
+            "Steam login with this private server has not been verified; disable Steam mode".into(),
+        ));
+    }
     let bin_dir = normalize_path(game_path).join("Bin");
     let exe = bin_dir.join("WizardGraphicalClient.exe");
 

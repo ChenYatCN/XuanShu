@@ -113,7 +113,7 @@ def build_launcher_tab(ctx):
     launcher_layout.addLayout(columns_layout, 1)
 
     # --- Account dialog and helpers ---
-    def _show_account_dialog(nickname: str = None, steam: bool = False):
+    def _show_account_dialog(nickname: str = None, steam: bool = False, private: bool = False):
         """Add or edit an account without handling a password in Qt."""
         editing = nickname is not None
         dlg = QDialog(ctx.window)
@@ -135,6 +135,21 @@ def build_launcher_tab(ctx):
         steam_cb.setChecked(bool(steam))
         dlg_layout.addWidget(steam_cb)
 
+        private_cb = QCheckBox(tl('private_mode'))
+        private_cb.setToolTip(tl('private_mode_tooltip'))
+        private_cb.setChecked(bool(private))
+        dlg_layout.addWidget(private_cb)
+
+        def _keep_modes_exclusive(checked: bool, other: QCheckBox):
+            if checked and other.isChecked():
+                other.setChecked(False)
+                validation_label.setText(tl('steam_private_conflict'))
+
+        steam_cb.toggled.connect(lambda checked: _keep_modes_exclusive(checked, private_cb))
+        private_cb.toggled.connect(lambda checked: _keep_modes_exclusive(checked, steam_cb))
+        if steam_cb.isChecked() and private_cb.isChecked():
+            validation_label.setText(tl('steam_private_conflict'))
+
         if editing:
             credentials_btn = QPushButton(tl('update_account_credentials'))
             credentials_btn.setStyleSheet(ctx.btn_style)
@@ -152,7 +167,11 @@ def build_launcher_tab(ctx):
 
         def _on_save():
             steam_value = steam_cb.isChecked()
+            private_value = private_cb.isChecked()
             nick = nick_input.text().strip()
+            if steam_value and private_value:
+                validation_label.setText(tl('steam_private_conflict'))
+                return
             if not nick:
                 validation_label.setText(tl('nickname_required'))
                 return
@@ -163,14 +182,14 @@ def build_launcher_tab(ctx):
                 send_queue.put(
                     GUICommand(
                         GUICommandType.UpdateAccount,
-                        (nickname, nick, steam_value),
+                        (nickname, nick, steam_value, private_value),
                     )
                 )
                 dlg.accept()
                 return
 
             send_queue.put(
-                GUICommand(GUICommandType.SaveAccount, (nick, steam_value))
+                GUICommand(GUICommandType.SaveAccount, (nick, steam_value, private_value))
             )
             dlg.accept()
 
@@ -191,6 +210,7 @@ def build_launcher_tab(ctx):
         disabled: bool = False,
         error: str = None,
         steam: bool = None,
+        private: bool = False,
     ):
         row = QWidget(account_list)
         row.setStyleSheet("background: transparent;")
@@ -218,7 +238,7 @@ def build_launcher_tab(ctx):
             lbl.setToolTip(tl('already_active'))
 
         def _edit_this():
-            _show_account_dialog(nickname=nickname, steam=bool(steam))
+            _show_account_dialog(nickname=nickname, steam=bool(steam), private=bool(private))
 
         if error:
             warning_btn = launcher_small_icon_btn(
@@ -264,8 +284,10 @@ def build_launcher_tab(ctx):
                 nick = entry.get('nick')
                 error = entry.get('error')
                 steam = entry.get('steam')
+                private = entry.get('private', False)
             else:
                 nick, error, steam = entry, None, None
+                private = False
             if not nick:
                 continue
             item = QListWidgetItem()
@@ -275,6 +297,7 @@ def build_launcher_tab(ctx):
                 disabled=(nick in managed and not remember),
                 error=error,
                 steam=steam,
+                private=private,
             )
             account_list.addItem(item)
             account_list.setItemWidget(item, row_widget)

@@ -90,8 +90,8 @@ class GUICommandType(Enum):
 
     # Launcher
     LaunchInstance = auto()
-    SaveAccount = auto()       # GUI -> Backend: data = (nickname, steam: bool)
-    UpdateAccount = auto()     # GUI -> Backend: data = (old_nickname, new_nickname, steam: bool)
+    SaveAccount = auto()       # GUI -> Backend: data = (nickname, steam: bool, private: bool)
+    UpdateAccount = auto()     # GUI -> Backend: data = (old_nickname, new_nickname, steam: bool, private: bool)
     UpdateAccountCredentials = auto()  # GUI -> Backend: data = nickname
     DeleteAccount = auto()
     LoadAccounts = auto()

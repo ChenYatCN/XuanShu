@@ -33,6 +33,9 @@ pub struct AccountMetadata {
     /// Steam support and is considered unconfigured (see `validate_account`).
     #[serde(default)]
     pub steam_map: HashMap<String, bool>,
+    /// Per-account private-server flag. Missing entries use the official server.
+    #[serde(default)]
+    pub private_map: HashMap<String, bool>,
     /// Per-account window placement / resolution config.
     #[serde(default)]
     pub window_map: HashMap<String, WindowConfig>,
@@ -45,6 +48,7 @@ impl Default for AccountMetadata {
             nicknames_order: Vec::new(),
             gid_map: HashMap::new(),
             steam_map: HashMap::new(),
+            private_map: HashMap::new(),
             window_map: HashMap::new(),
         }
     }
@@ -85,12 +89,13 @@ pub fn ensure_nickname(nickname: &str) -> Result<(), VaultError> {
     Ok(())
 }
 
-/// Remove a nickname from the order list, GID map, and Steam map.
+/// Remove a nickname and its saved account settings.
 pub fn remove_nickname(nickname: &str) -> Result<(), VaultError> {
     let mut meta = load()?;
     meta.nicknames_order.retain(|n| n != nickname);
     meta.gid_map.remove(nickname);
     meta.steam_map.remove(nickname);
+    meta.private_map.remove(nickname);
     meta.window_map.remove(nickname);
     save(&meta)?;
     Ok(())
@@ -121,15 +126,20 @@ pub fn account_exists(nickname: &str) -> Result<bool, VaultError> {
     let meta = load()?;
     Ok(meta.nicknames_order.iter().any(|n| n == nickname)
         || meta.steam_map.contains_key(nickname)
+        || meta.private_map.contains_key(nickname)
         || meta.gid_map.contains_key(nickname)
         || meta.window_map.contains_key(nickname))
 }
 
-pub fn rename_and_set_steam(old: &str, new: &str, steam: bool) -> Result<(), VaultError> {
+pub fn rename_and_set_modes(old: &str, new: &str, steam: bool, private: bool) -> Result<(), VaultError> {
+    if steam && private {
+        return Err(VaultError::MetadataIo("Steam and private-server modes cannot be combined".into()));
+    }
     let mut meta = load()?;
     if old != new {
         if meta.nicknames_order.iter().any(|n| n == new)
             || meta.steam_map.contains_key(new)
+            || meta.private_map.contains_key(new)
             || meta.gid_map.contains_key(new)
             || meta.window_map.contains_key(new)
         {
@@ -147,10 +157,12 @@ pub fn rename_and_set_steam(old: &str, new: &str, steam: bool) -> Result<(), Vau
             meta.window_map.insert(new.to_string(), cfg);
         }
         meta.steam_map.remove(old);
+        meta.private_map.remove(old);
     } else if !meta.nicknames_order.iter().any(|n| n == new) {
         meta.nicknames_order.push(new.to_string());
     }
     meta.steam_map.insert(new.to_string(), steam);
+    meta.private_map.insert(new.to_string(), private);
     save(&meta)
 }
 
@@ -179,6 +191,9 @@ pub fn get_nickname_by_gid(gid: u64) -> Result<Option<String>, VaultError> {
 /// Set whether an account launches in Steam mode.
 pub fn set_steam(nickname: &str, steam: bool) -> Result<(), VaultError> {
     let mut meta = load()?;
+    if steam && meta.private_map.get(nickname).copied().unwrap_or(false) {
+        return Err(VaultError::MetadataIo("Steam and private-server modes cannot be combined".into()));
+    }
     meta.steam_map.insert(nickname.to_string(), steam);
     save(&meta)?;
     Ok(())
@@ -189,6 +204,20 @@ pub fn set_steam(nickname: &str, steam: bool) -> Result<(), VaultError> {
 pub fn get_steam(nickname: &str) -> Result<Option<bool>, VaultError> {
     let meta = load()?;
     Ok(meta.steam_map.get(nickname).copied())
+}
+
+pub fn set_private(nickname: &str, private: bool) -> Result<(), VaultError> {
+    let mut meta = load()?;
+    if private && meta.steam_map.get(nickname).copied().unwrap_or(false) {
+        return Err(VaultError::MetadataIo("Steam and private-server modes cannot be combined".into()));
+    }
+    meta.private_map.insert(nickname.to_string(), private);
+    save(&meta)
+}
+
+pub fn get_private(nickname: &str) -> Result<bool, VaultError> {
+    let meta = load()?;
+    Ok(meta.private_map.get(nickname).copied().unwrap_or(false))
 }
 
 /// Set an account's window placement / resolution config.

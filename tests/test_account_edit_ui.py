@@ -64,7 +64,59 @@ class AccountEditUITests(unittest.TestCase):
             GUICommandType.UpdateAccountCredentials, GUICommandType.UpdateAccount,
         ])
         self.assertEqual(commands[0].data, 'Old')
-        self.assertEqual(commands[1].data, ('Old', 'New', False))
+        self.assertEqual(commands[1].data, ('Old', 'New', False, False))
+
+    def test_private_mode_can_be_edited_and_has_server_tooltip(self):
+        def interact():
+            dialog = self.app.activeModalWidget()
+            checks = {check.text(): check for check in dialog.findChildren(QCheckBox)}
+            self.assertIn('private_mode', checks)
+            self.assertEqual(checks['private_mode'].toolTip(), 'private_mode_tooltip')
+            checks['private_mode'].setChecked(True)
+            self.assertFalse(checks['steam_mode'].isChecked())
+            next(button for button in dialog.findChildren(QPushButton)
+                 if button.text() == 'save_account').click()
+
+        QTimer.singleShot(0, interact)
+        self.edit_button().click()
+        command = self.ctx.send_queue.put.call_args.args[0]
+        self.assertEqual(command.com_type, GUICommandType.UpdateAccount)
+        self.assertEqual(command.data, ('Old', 'Old', False, True))
+
+    def test_steam_and_private_modes_are_mutually_exclusive(self):
+        def interact():
+            dialog = self.app.activeModalWidget()
+            checks = {check.text(): check for check in dialog.findChildren(QCheckBox)}
+            checks['steam_mode'].setChecked(True)
+            checks['private_mode'].setChecked(True)
+            self.assertFalse(checks['steam_mode'].isChecked())
+            self.assertTrue(checks['private_mode'].isChecked())
+            next(button for button in dialog.findChildren(QPushButton)
+                 if button.text() == 'save_account').click()
+
+        QTimer.singleShot(0, interact)
+        self.edit_button().click()
+        command = self.ctx.send_queue.put.call_args.args[0]
+        self.assertEqual(command.data, ('Old', 'Old', False, True))
+
+    def test_existing_private_account_can_turn_mode_off(self):
+        self.ctx.exports['launcher']['populate_account_list']([
+            {'nick': 'Old', 'steam': False, 'private': True, 'error': None},
+        ])
+        self.ctx.send_queue.reset_mock()
+
+        def interact():
+            dialog = self.app.activeModalWidget()
+            checks = {check.text(): check for check in dialog.findChildren(QCheckBox)}
+            self.assertTrue(checks['private_mode'].isChecked())
+            checks['private_mode'].setChecked(False)
+            next(button for button in dialog.findChildren(QPushButton)
+                 if button.text() == 'save_account').click()
+
+        QTimer.singleShot(0, interact)
+        self.edit_button().click()
+        command = self.ctx.send_queue.put.call_args.args[0]
+        self.assertEqual(command.data, ('Old', 'Old', False, False))
 
     def test_steam_hides_credentials_and_cancel_does_not_save(self):
         def interact():

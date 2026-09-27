@@ -371,7 +371,7 @@ def generate_timestamp() -> str:
 
 
 def build_account_list_payload() -> list[dict]:
-    """Return account rows with validation and Steam-mode metadata."""
+    """Return account rows with validation and launch-mode metadata."""
     payload = []
     for nickname in wizlaunch.list_accounts():
         payload.append(
@@ -379,9 +379,16 @@ def build_account_list_payload() -> list[dict]:
                 "nick": nickname,
                 "error": wizlaunch.validate_account(nickname),
                 "steam": wizlaunch.get_account_steam(nickname),
+                "private": getattr(wizlaunch, "get_account_private", lambda _: False)(nickname),
             }
         )
     return payload
+
+
+def launch_account_instance(nickname: str, game_path: str):
+    if getattr(wizlaunch, "get_account_private", lambda _: False)(nickname):
+        logger.info("启动器：以私服模式启动客户端，服务器 102.134.49.191:12000")
+    return wizlaunch.launch_instance(nickname, game_path)
 
 
 def _compact_coordinate(value) -> str:
@@ -3355,6 +3362,8 @@ async def main():
             released_handles.add(new_handle)
             _send_hooked_clients_update()
 
+        if getattr(wizlaunch, "get_account_private", lambda _: False)(nickname):
+            logger.info("启动器：以私服模式启动客户端，服务器 102.134.49.191:12000")
         new_handle = await launch_for_recovery(
             wizlaunch.launch_instance, nickname, game_path, release_cancelled_launch
         )
@@ -5413,20 +5422,27 @@ async def main():
 
                         case xuanshu_gui.GUICommandType.SaveAccount:
                             if isinstance(com.data, (tuple, list)):
-                                nickname, steam_mode = com.data
+                                nickname, steam_mode = com.data[:2]
+                                private_mode = bool(com.data[2]) if len(com.data) > 2 else False
                             else:
                                 # Backward compatibility with older launcher UIs.
-                                nickname, steam_mode = com.data, False
+                                nickname, steam_mode, private_mode = com.data, False, False
                             try:
+                                if steam_mode and private_mode:
+                                    raise RuntimeError("Steam 与私服模式不能同时启用")
                                 if wizlaunch.has_account(nickname):
                                     raise RuntimeError(f"Account '{nickname}' already exists")
                                 if steam_mode:
                                     wizlaunch.create_steam_account(nickname)
                                 else:
+                                    if private_mode and not hasattr(wizlaunch, "set_account_private"):
+                                        raise RuntimeError("当前 wizlaunch 扩展尚不支持私服模式，请重新构建")
                                     await asyncio.to_thread(
                                         wizlaunch.prompt_save_account, nickname
                                     )
                                     wizlaunch.set_account_steam(nickname, False)
+                                    if private_mode:
+                                        wizlaunch.set_account_private(nickname, True)
                                 logger.info(f"Account '{nickname}' saved.")
                             except (RuntimeError, AttributeError) as e:
                                 logger.info(f"Account save cancelled or failed: {e}")
@@ -5438,9 +5454,18 @@ async def main():
                             )
 
                         case xuanshu_gui.GUICommandType.UpdateAccount:
-                            nickname, new_nickname, steam_mode = com.data
+                            nickname, new_nickname, steam_mode = com.data[:3]
+                            private_mode = (bool(com.data[3]) if len(com.data) > 3 else
+                                            getattr(wizlaunch, "get_account_private", lambda _: False)(nickname))
                             try:
-                                wizlaunch.update_account(nickname, new_nickname, bool(steam_mode))
+                                if steam_mode and private_mode:
+                                    raise RuntimeError("Steam 与私服模式不能同时启用")
+                                if private_mode and not hasattr(wizlaunch, "get_account_private"):
+                                    raise RuntimeError("当前 wizlaunch 扩展尚不支持私服模式，请重新构建")
+                                if hasattr(wizlaunch, "get_account_private"):
+                                    wizlaunch.update_account(nickname, new_nickname, bool(steam_mode), private_mode)
+                                else:
+                                    wizlaunch.update_account(nickname, new_nickname, bool(steam_mode))
                                 if new_nickname != nickname:
                                     for handle, account_name in list(launched_account_map.items()):
                                         if account_name == nickname:
@@ -5554,7 +5579,7 @@ async def main():
                                 # the auto-hook loop consumes this mapping in order.
                                 for nickname in nicknames:
                                     handle = await asyncio.to_thread(
-                                        wizlaunch.launch_instance, nickname, game_path
+                                        launch_account_instance, nickname, game_path
                                     )
                                     launched_account_map[handle] = nickname
                                     logger.info(f"Launched and logged in '{nickname}'.")
@@ -5725,7 +5750,7 @@ async def main():
                                 game_path = str(utils.get_wiz_install())
                                 await asyncio.sleep(1)
                                 new_handle = await asyncio.to_thread(
-                                    wizlaunch.launch_instance, nickname, game_path
+                                    launch_account_instance, nickname, game_path
                                 )
                                 launched_account_map[new_handle] = nickname
                                 logger.info(f"Relaunched and logged in '{nickname}'.")
