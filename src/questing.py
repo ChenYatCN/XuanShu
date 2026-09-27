@@ -41,6 +41,24 @@ def release_quest_recovery(client: Client, owner: str) -> None:
 
 class Quester():
     DUNGEON_NO_PROGRESS_SECONDS = 180.0
+    NIGHTMARE_ZONE = "Empyrea/Interiors/EM_Z15_NightmareKrok"
+    # Stay below the existing 120-second stationary-task watchdog.
+    NIGHTMARE_NO_PROGRESS_SECONDS = 60.0
+    NIGHTMARE_POINTS = (
+        XYZ(762.465, 4769.614, 152.062),
+        XYZ(-1471.999, 3207.999, 87.999),
+        XYZ(-1637.558, 1386.909, 120.300),
+        XYZ(-117.739, -198.734, 84.204),
+        XYZ(1545.715, 1442.725, 88.246),
+        XYZ(1890.277, 2671.811, 165.886),
+        XYZ(-180.542, 4028.970, 83.271),
+        XYZ(-912.558, 2125.669, 82.704),
+        XYZ(-633.743, 1097.940, 79.690),
+        XYZ(359.133, 1289.478, 79.696),
+        XYZ(595.140, 3042.207, 79.694),
+        XYZ(134.281, 2532.948, 79.698),
+    )
+    NIGHTMARE_EXIT = XYZ(16.766, 6608.310, 618.730)
     TRIGGER_NEAR_DISTANCE = 350.0
     TRIGGER_AWAY_DISTANCE = 900.0
     TRIGGER_MAX_ATTEMPTS = 2
@@ -196,6 +214,145 @@ class Quester():
                 state["snapshot"] = await self._dungeon_quest_snapshot(client)
             finally:
                 release_quest_recovery(client, "dungeon_quest")
+
+    async def _nightmare_can_act(self, client: Client) -> bool:
+        return (client.questing_status
+                and await client.zone_name() == self.NIGHTMARE_ZONE
+                and not await client.is_loading()
+                and not await client.in_battle()
+                and not client.entity_detect_combat_status)
+
+    async def _run_nightmare_recovery(self, client: Client) -> bool:
+        for index, point in enumerate(self.NIGHTMARE_POINTS, 1):
+            logger.info(f"NightmareKrok Recovery：{index}/12")
+            for attempt in range(2):
+                if not await self._nightmare_can_act(client):
+                    logger.warning("自动任务：NightmareKrok 交互中断，客户端状态或区域已变化。")
+                    return False
+                try:
+                    await asyncio.wait_for(client.teleport(point), timeout=8.0)
+                    await asyncio.sleep(0.4)
+                    if not await self._nightmare_can_act(client):
+                        raise RuntimeError("区域或客户端状态已变化")
+                    if calc_Distance(await client.body.position(), point) > 350:
+                        raise RuntimeError("未到达交互坐标")
+                    await asyncio.wait_for(client.send_key(Keycode.X, 0.1), timeout=3.0)
+                except Exception as exc:
+                    if attempt == 1:
+                        logger.warning(f"自动任务：NightmareKrok 第 {index}/12 点交互失败：{exc}")
+                        return False
+                    continue
+
+                # A successful X is never pressed again just because the quest
+                # objective changes or the interaction takes time to settle.
+                deadline = time.monotonic() + 30.0
+                stable_since = None
+                while time.monotonic() < deadline:
+                    if not await self._nightmare_can_act(client):
+                        logger.warning(f"自动任务：NightmareKrok 第 {index}/12 点状态变化，停止恢复。")
+                        return False
+                    if await is_free_leader_questing(client):
+                        if stable_since is None:
+                            stable_since = time.monotonic()
+                        elif time.monotonic() - stable_since >= 1.5:
+                            break
+                    else:
+                        stable_since = None
+                    await asyncio.sleep(0.2)
+                else:
+                    logger.warning(f"自动任务：NightmareKrok 第 {index}/12 点交互等待超时。")
+                    return False
+                break
+
+        logger.info("自动任务：NightmareKrok 交互完成，前往区域切换点。")
+        if not await self._nightmare_can_act(client):
+            return False
+        try:
+            await asyncio.wait_for(client.teleport(self.NIGHTMARE_EXIT), timeout=8.0)
+        except Exception:
+            if (await client.zone_name() == self.NIGHTMARE_ZONE
+                    and not await client.is_loading()
+                    and calc_Distance(await client.body.position(), self.NIGHTMARE_EXIT) > 350):
+                raise
+        logger.info("自动任务：NightmareKrok 正在等待区域切换。")
+        deadline = time.monotonic() + 25.0
+        while time.monotonic() < deadline:
+            if not client.questing_status:
+                return False
+            if (await client.zone_name() != self.NIGHTMARE_ZONE
+                    or await client.is_loading()):
+                break
+            await asyncio.sleep(0.2)
+        else:
+            logger.warning("自动任务：NightmareKrok 最终传送后区域切换未开始，停止本次恢复。")
+            return False
+
+        stable_since = None
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
+            if not client.questing_status:
+                return False
+            zone = await client.zone_name()
+            if (zone and zone != self.NIGHTMARE_ZONE
+                    and not await client.is_loading()
+                    and await is_free_leader_questing(client)):
+                if stable_since is None:
+                    stable_since = time.monotonic()
+                elif time.monotonic() - stable_since >= 1.5:
+                    if getattr(client, "quest_party_hitters", []):
+                        client.quest_party_quest_worker_zone = zone
+                        client.quest_party_probe_pending = True
+                    await self._dungeon_quest_snapshot(client)
+                    try:
+                        await asyncio.wait_for(client.quest_position.position(), timeout=5.0)
+                    except Exception as exc:
+                        logger.warning(f"自动任务：NightmareKrok 新区域任务目标暂不可读：{exc}")
+                        return False
+                    logger.info("自动任务：NightmareKrok 区域切换完成，继续任务传送。")
+                    return True
+            else:
+                stable_since = None
+            await asyncio.sleep(0.2)
+        logger.warning("自动任务：NightmareKrok 新区域未稳定，停止本次恢复。")
+        return False
+
+    async def _maybe_recover_nightmare(self, client: Client) -> bool:
+        if await client.zone_name() != self.NIGHTMARE_ZONE:
+            client.quest_nightmare_recovery = None
+            return False
+        snapshot = await self._dungeon_quest_snapshot(client)
+        if snapshot is None:
+            client.quest_nightmare_recovery = None
+            return False
+        state = getattr(client, "quest_nightmare_recovery", None)
+        now = time.monotonic()
+        if state is None or state["snapshot"] != snapshot:
+            client.quest_nightmare_recovery = {
+                "snapshot": snapshot, "since": now, "attempted": False
+            }
+            return False
+        if (state["attempted"] or now - state["since"] < self.NIGHTMARE_NO_PROGRESS_SECONDS
+                or await self._trigger_reentry_blocked(client)):
+            return False
+        if not claim_quest_recovery(client, "nightmare_krok"):
+            return False
+        state["attempted"] = True
+        logger.info("自动任务：NightmareKrok 任务无进展，开始特殊交互恢复。")
+        try:
+            completed = await self._run_nightmare_recovery(client)
+            if completed or await client.zone_name() != self.NIGHTMARE_ZONE:
+                client.quest_nightmare_recovery = None
+        except Exception as exc:
+            logger.warning(f"自动任务：NightmareKrok 特殊恢复失败：{exc}")
+        finally:
+            try:
+                dungeon = getattr(client, "quest_dungeon_recovery", None)
+                if isinstance(dungeon, dict):
+                    dungeon.update(snapshot=await self._dungeon_quest_snapshot(client),
+                                   since=time.monotonic(), waiting_logged=False)
+            finally:
+                release_quest_recovery(client, "nightmare_krok")
+        return True
 
     async def _trigger_reentry_blocked(self, client: Client, owner: str = None) -> bool:
         current_owner = getattr(client, "quest_recovery_owner", None)
@@ -1928,11 +2085,14 @@ class Quester():
 
             if await is_free_leader_questing(self.current_leader_client):
                 quest_xyz = await self.current_leader_client.quest_position.position()
+                if await self._maybe_recover_nightmare(self.current_leader_client):
+                    continue
                 distance = calc_Distance(quest_xyz, XYZ(0.0, 0.0, 0.0))
 
                 # we are almost certainly not on a collect quest
                 if distance > 1:
-                    if await self._maybe_reenter_quest_trigger(self.current_leader_client, quest_xyz):
+                    if (await self.current_leader_client.zone_name() != self.NIGHTMARE_ZONE
+                            and await self._maybe_reenter_quest_trigger(self.current_leader_client, quest_xyz)):
                         continue
 
                     if await self._maybe_refresh_stalled_dungeon_quest(self.current_leader_client):
@@ -2191,6 +2351,8 @@ class Quester():
                     return
 
             quest_xyz = await self.client.quest_position.position()
+            if await self._maybe_recover_nightmare(self.client):
+                return
 
             if self.client.auto_pet_status and not auto_pet_disabled:
                 # client has leveled up
@@ -2203,7 +2365,8 @@ class Quester():
                 while self.client.entity_detect_combat_status:
                     await asyncio.sleep(.1)
 
-                if await self._maybe_reenter_quest_trigger(self.client, quest_xyz):
+                if (await self.client.zone_name() != self.NIGHTMARE_ZONE
+                        and await self._maybe_reenter_quest_trigger(self.client, quest_xyz)):
                     return
 
                 if await self._maybe_refresh_stalled_dungeon_quest(self.client):

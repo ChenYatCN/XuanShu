@@ -1985,6 +1985,10 @@ async def main():
                     elif quester_zone_stable_since is None:
                         quester_zone_stable_since = now
 
+                    if getattr(quester, "quest_recovery_owner", None) == "nightmare_krok":
+                        update_party_status(hitter, quester, "等待 NightmareKrok 恢复")
+                        continue
+
                     if (
                         await hitter.is_loading()
                         or await hitter.in_battle()
@@ -2452,6 +2456,11 @@ async def main():
                             getattr(client, "quest_recovery_owner", None), str
                         ):
                             recovery_candidate = False
+                        if recovery_candidate and any(
+                            getattr(p, "quest_recovery_owner", None) == "nightmare_krok"
+                            for p in walker.clients
+                        ):
+                            recovery_candidate = False
 
                         # Let the confirmed-dungeon questbook fallback run once
                         # before the heavier stationary-task restart takes over.
@@ -2475,6 +2484,11 @@ async def main():
                                 if questing_task is None or questing_task.done():
                                     continue
                                 if isinstance(getattr(client, "quest_recovery_owner", None), str):
+                                    continue
+                                if any(
+                                    getattr(p, "quest_recovery_owner", None) == "nightmare_krok"
+                                    for p in walker.clients
+                                ):
                                     continue
                                 logger.debug(
                                     f"Client {client.title} questing appears to have halted - restarting."
@@ -2617,6 +2631,7 @@ async def main():
                 not quest_party_enabled
                 or quester.in_solo_zone
                 or getattr(quester, "quest_party_probe_pending", False)
+                or getattr(quester, "quest_recovery_owner", None) == "nightmare_krok"
             ):
                 quester.quest_party_battle_started_at = None
                 return
@@ -3159,6 +3174,7 @@ async def main():
         client.quest_party_group_dungeon_zone = None
         client.quest_party_confirmed_dungeon_transition = None
         client.quest_dungeon_recovery = None
+        client.quest_nightmare_recovery = None
         client.quest_recovery_owner = None
         client.quest_party_hitters = []
         client.quest_party_status_session = None
