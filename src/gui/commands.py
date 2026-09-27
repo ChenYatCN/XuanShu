@@ -88,6 +88,9 @@ class GUICommandType(Enum):
     StopEntityStream = auto()    # GUI -> Backend, data = None
     UpdateEntityListData = auto() # Backend -> GUI, data = list of entity dicts
 
+    ConfigureChatTranslation = auto()  # GUI -> Backend: enabled, selected_title, auto_reply
+    ChatTranslationEvent = auto()      # Backend -> GUI: message, reply or hook status
+
     # Launcher
     LaunchInstance = auto()
     SaveAccount = auto()       # GUI -> Backend: data = (nickname, steam: bool, private: bool)

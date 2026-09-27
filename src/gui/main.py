@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
 )
 from src.branding import DISPLAY_NAME, REPOSITORY_URL, UPSTREAM_URL
 from src.gui.actions import ActionRegistry
+from src.gui.chat_translation_dialog import ChatTranslationDialog
 from src.gui.commands import GUICommand, GUICommandType, GUIKeys, _format_binding
 from src.gui.helpers import (
     build_shared_svgs,
@@ -529,7 +530,22 @@ def manage_gui(
     paths_btn.clicked.connect(copy_callback(send_queue, GUIKeys.copy_ui_tree))
     ctx.tracked_icon_buttons.append((paths_btn, _window_svg, 16))
 
-    footer_vbox.addLayout(_footer_row(client_label, entities_btn, paths_btn))
+    _translation_icon_path = resource_path(
+        "assets/icon/game-icon-pack-v1.4-svg-zh/无间距/11-符号/字母ABC.svg"
+    )
+    with open(_translation_icon_path, encoding="utf-8") as icon_file:
+        _translation_svg = icon_file.read().replace("currentColor", _stroke_color)
+    translation_dialog = ChatTranslationDialog(send_queue)
+    translation_btn = QPushButton()
+    translation_btn.setIcon(_titlebar_svg_icon(_translation_svg, 16))
+    translation_btn.setFixedSize(20, 20)
+    translation_btn.setStyleSheet(icon_btn_style)
+    translation_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    translation_btn.setToolTip("聊天翻译")
+    translation_btn.clicked.connect(translation_dialog.open_or_raise)
+    ctx.tracked_icon_buttons.append((translation_btn, _translation_svg, 16))
+
+    footer_vbox.addLayout(_footer_row(client_label, entities_btn, paths_btn, translation_btn))
 
     zone_label = QLabel(tl("zone") + ": ")
     widget_tags["Zone"] = zone_label
@@ -822,6 +838,10 @@ def manage_gui(
                         else:
                             entity_popup_ref[0] = None
 
+                    case GUICommandType.ChatTranslationEvent:
+                        if translation_dialog.isVisible():
+                            translation_dialog.handle_event(com.data)
+
                     case GUICommandType.UpdateHighlightBox:
                         if com.data is not None:
                             if highlight_overlay[0] is None:
@@ -863,6 +883,10 @@ def manage_gui(
                         _rebuild_hooked_clients_list()
                         _update_mc = hotkeys_exports.get("update_multi_client_state")
                         hooked_count = len(_last_hooked_data.get("hooked", []))
+                        translation_dialog.set_available_clients([
+                            info.get("title", "")
+                            for info in _last_hooked_data.get("hooked", [])
+                        ])
                         hotkeys_exports.get(
                             "set_available_clients", lambda value: None
                         )(

@@ -38,6 +38,7 @@ from src.bot_targeting import (
 )
 from src.branding import runtime_data_dir
 from src.client_resizing import ClientResizingManager
+from src.chat_translation import ChatTranslationMonitor
 from src.combat_targeting import TargetingSprintyCombat
 from src.command_parser import execute_flythrough, parse_command
 from src.config_combat import (
@@ -693,6 +694,11 @@ async def tool_finish():
 @logger.catch()
 async def main():
     paused_task_names = None
+    chat_monitor = ChatTranslationMonitor(
+        lambda event: gui_send_queue.put(
+            xuanshu_gui.GUICommand(xuanshu_gui.GUICommandType.ChatTranslationEvent, event)
+        )
+    )
     global tool_status
     global original_client_locations
     global listener
@@ -5195,6 +5201,18 @@ async def main():
                                 entity_stream_task.cancel()
                                 entity_stream_task = None
 
+                        case xuanshu_gui.GUICommandType.ConfigureChatTranslation:
+                            options = com.data or {}
+                            chat_monitor.configure(
+                                options.get("enabled", False),
+                                options.get("selected_title"),
+                                options.get("auto_reply", False),
+                            )
+                            if not chat_monitor.enabled:
+                                await chat_monitor.stop()
+                            else:
+                                await chat_monitor.sync(walker.clients)
+
                         case xuanshu_gui.GUICommandType.StartIbaoGroup:
                             try:
                                 selected = resolve_bot_clients(
@@ -5771,6 +5789,9 @@ async def main():
                             handle = com.data
                             for c in walker.clients[:]:
                                 if c.window_handle == handle:
+                                    await chat_monitor.sync(
+                                        [item for item in walker.clients if item is not c]
+                                    )
                                     await client_resizing_manager.teardown_client(
                                         handle
                                     )
@@ -6129,6 +6150,7 @@ async def main():
                 )
                 last_hotkey_status_snapshot = snapshot
 
+            await chat_monitor.sync(walker.clients)
             await asyncio.sleep(0.1)
 
         else:
@@ -6576,6 +6598,7 @@ async def main():
                 task.cancel()
         bot_tasks.clear()
 
+        await chat_monitor.stop()
         await ibao_groups.stop()
         await hotkey_groups.stop()
         await tool_finish()

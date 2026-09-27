@@ -157,6 +157,10 @@ for icon_name in (
     if not icon_path.is_file():
         raise FileNotFoundError(icon_path)
     datas.append((str(icon_path), str(icon_path.parent.relative_to(ROOT))))
+translation_icon = ROOT / "assets/icon/game-icon-pack-v1.4-svg-zh/无间距/11-符号/字母ABC.svg"
+if not translation_icon.is_file():
+    raise FileNotFoundError(translation_icon)
+datas.append((str(translation_icon), str(translation_icon.parent.relative_to(ROOT))))
 updater_exe = ROOT / "libs/updater/target/release/deimos-updater.exe"
 if updater_exe.is_file():
     datas.append((str(updater_exe), "."))
