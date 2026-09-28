@@ -3,7 +3,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import queue
 import unittest
+from types import SimpleNamespace
 
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication
 
 from src.gui.chat_translation_dialog import ChatTranslationDialog
@@ -14,10 +17,15 @@ class ChatTranslationUITests(unittest.TestCase):
     def test_window_is_independent_and_defaults_to_safe_receive_only(self):
         app = QApplication.instance() or QApplication([])
         sent = queue.Queue()
-        dialog = ChatTranslationDialog(sent)
+        ctx = SimpleNamespace(bg_color='#171721', alt_bg='#202030',
+                              text_color='#eeeeff', stroke_color='#78ddee',
+                              icon_btn_style='QPushButton { border: none; }',
+                              titlebar_svg_icon=lambda _svg, _size: QIcon())
+        dialog = ChatTranslationDialog(sent, ctx)
         dialog.set_available_clients(["p1", "p2"])
         self.assertIsNone(dialog.parentWidget())
         self.assertTrue(dialog.isWindow())
+        self.assertTrue(dialog.windowFlags() & Qt.WindowType.FramelessWindowHint)
         self.assertFalse(dialog.auto_reply.isChecked())
         dialog.open_or_raise()
         command = sent.get_nowait()
@@ -32,7 +40,8 @@ class ChatTranslationUITests(unittest.TestCase):
         dialog.auto_reply.setChecked(True)
         dialog.set_available_clients(["p1"])
         self.assertFalse(dialog.auto_reply.isChecked())
-        dialog.close()
+        dialog.close_button.click()
+        self.assertFalse(dialog.isVisible())
         self.assertFalse(dialog.auto_reply.isChecked())
         commands = []
         while not sent.empty():

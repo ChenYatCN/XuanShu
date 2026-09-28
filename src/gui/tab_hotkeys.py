@@ -539,7 +539,7 @@ def build_hotkeys_tab(ctx):
             cat_label = QLabel(category, _p)
 
             name_group = QWidget(_p)
-            name_group.setMaximumWidth(_name_max)
+            name_group.setFixedWidth(_name_max)
             name_row = QHBoxLayout(name_group)
             name_row.setContentsMargins(0, 0, 0, 0)
             name_row.setSpacing(2)
@@ -558,7 +558,7 @@ def build_hotkeys_tab(ctx):
                 )
             row.addWidget(name_group)
         else:
-            name_label.setMaximumWidth(_name_max)
+            name_label.setFixedWidth(_name_max)
             name_label.setToolTip(display_name)
             name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             name_label.setSizePolicy(
@@ -580,6 +580,8 @@ def build_hotkeys_tab(ctx):
 
         if is_toggle:
             toggle_names[action_id] = display_name
+        show_status = is_toggle and action_id != 'toggle_freecam'
+        if show_status:
             badges_host = QWidget(_p)
             badges_host.setFixedSize(142, 20)
             badges_layout = QHBoxLayout(badges_host)
@@ -610,10 +612,8 @@ def build_hotkeys_tab(ctx):
         edit_btn.setToolTip(tl("bind_hotkey"))
         edit_btn.clicked.connect(_make_edit_handler(action_id))
         ctx.tracked_svg_labels.append([edit_btn, _pencil_svg, 14, "icon"])
-        if not is_toggle:
-            row.addStretch()
         row.addWidget(edit_btn)
-        if is_toggle:
+        if show_status:
             row.addWidget(badges_host)
 
         if removable:

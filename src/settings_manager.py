@@ -36,6 +36,7 @@ DEFAULT_SETTINGS = {
     "gear_switching_in_solo_zones": False,
     "hitter_client": None,
     "quest_party_enabled": False,
+    "mainline_finder_enabled": False,
     "questing_clients": [],
     "questing_hitter_clients": [],
     "quest_hitter_assignment_mode": "auto",

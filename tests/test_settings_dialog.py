@@ -7,7 +7,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtGui import QIcon
-from PyQt6.QtWidgets import QApplication, QDialog, QWidget
+from PyQt6.QtWidgets import QApplication, QCheckBox, QDialog, QWidget
 
 from src.gui.settings_dialog import show_settings_dialog
 from src.settings_manager import DEFAULT_SETTINGS, DEFAULT_THEME
@@ -61,7 +61,15 @@ class SettingsDialogTests(unittest.TestCase):
             gui_font="Segoe UI",
             gui_font_size=9,
         )
-        with patch.object(QDialog, "exec", return_value=0):
+        def inspect_dialog(dialog):
+            checkbox = next(
+                box for box in dialog.findChildren(QCheckBox)
+                if box.text() == "setting_mainline_finder_enabled"
+            )
+            self.assertFalse(checkbox.isChecked())
+            return 0
+
+        with patch.object(QDialog, "exec", inspect_dialog):
             show_settings_dialog(ctx)
 
 

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from src.automation_ownership import automation_owner
+from src.paths import missing_area_path, missing_area_retry_path
 from src.script_popups import close_script_popup, popup_kind, run_with_script_popups
 
 
@@ -79,6 +80,40 @@ class ScriptPopupTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await close_script_popup(self.client))
         self.client.mouse_handler.click_window.assert_awaited_once_with(self.reject)
 
+    async def test_photomancy_discards_only_with_both_photo_buttons(self):
+        self.window.is_visible.return_value = False
+        def button(label):
+            return SimpleNamespace(value=label, is_visible=AsyncMock(return_value=True),
+                maybe_read_type_name=AsyncMock(return_value='ControlButton'))
+        discard, keep = button('丢弃照片'), button('保留照片')
+        visible = [discard]
+        async def find(predicate):
+            return [window for window in visible if await predicate(window)]
+        self.client.root_window.get_windows_with_predicate = AsyncMock(side_effect=find)
+        self.assertFalse(await close_script_popup(self.client))
+        self.client.mouse_handler.click_window.assert_not_awaited()
+
+        visible.append(keep)
+        self.client._xuanshu_photo_scan_at = 0
+        self.assertTrue(await close_script_popup(self.client))
+        self.client.mouse_handler.click_window.assert_awaited_once_with(discard)
+
+    async def test_photomancy_does_not_click_after_buttons_change(self):
+        self.window.is_visible.return_value = False
+        def button(label):
+            return SimpleNamespace(value=label, is_visible=AsyncMock(return_value=True),
+                maybe_read_type_name=AsyncMock(return_value='ControlButton'))
+        discard, keep = button('Trash Picture'), button('Keep Picture')
+        visible = [discard, keep]
+        async def find(predicate):
+            return [window for window in visible if await predicate(window)]
+        async def replace():
+            visible.clear()
+        self.client.root_window.get_windows_with_predicate = AsyncMock(side_effect=find)
+        self.client.mouse_handler.__aenter__.side_effect = replace
+        self.assertFalse(await close_script_popup(self.client))
+        self.client.mouse_handler.click_window.assert_not_awaited()
+
     async def test_matching_text_without_correct_ui_path_is_not_clicked(self):
         self.resolve_path.side_effect = None
         self.resolve_path.return_value = False
@@ -137,6 +172,120 @@ class ScriptPopupTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await asyncio.wait_for(close_task, 1))
         self.client.mouse_handler.click_window.assert_awaited_once_with(self.confirm)
 
+    async def test_missing_area_retry_is_automation_only_and_never_closes(self):
+        modal = SimpleNamespace(is_visible=AsyncMock(return_value=True))
+        retry = SimpleNamespace(is_visible=AsyncMock(return_value=True))
+        self.title.value = 'Wait'
+        self.caption.value = 'Area files are loading'
+        self.resolve_path.side_effect = lambda _root, path: (
+            modal if path == missing_area_path else
+            retry if path == missing_area_retry_path else False
+        )
+        self.assertFalse(await close_script_popup(self.client))
+        self.client.mouse_handler.click_window.assert_not_awaited()
+
+        self.client._xuanshu_zone_retry_users = 1
+        async def dismiss(_):
+            modal.is_visible.return_value = False
+        self.client.mouse_handler.click_window.side_effect = dismiss
+        with patch('src.script_popups._MISSING_AREA_STABLE_SECONDS', 0), patch(
+            'src.script_popups.asyncio.sleep', new=AsyncMock()
+        ):
+            self.assertTrue(await close_script_popup(self.client))
+        self.client.mouse_handler.click_window.assert_awaited_once_with(retry)
+        self.assertIsNot(retry, self.reject)
+
+    async def test_missing_area_retry_is_throttled_limited_and_resets_after_stability(self):
+        modal = SimpleNamespace(is_visible=AsyncMock(return_value=True))
+        retry = SimpleNamespace(is_visible=AsyncMock(return_value=True))
+        self.client._xuanshu_zone_retry_users = 1
+        self.resolve_path.side_effect = lambda _root, path: (
+            modal if path == missing_area_path else
+            retry if path == missing_area_retry_path else False
+        )
+        clicked = asyncio.Event()
+        async def note_click(_):
+            clicked.set()
+        self.client.mouse_handler.click_window.side_effect = note_click
+        with patch('src.script_popups._MISSING_AREA_RETRY_INTERVAL', .05), patch(
+            'src.script_popups._MISSING_AREA_STABLE_SECONDS', 0
+        ), patch('src.script_popups.logger.warning') as warning:
+            first = asyncio.create_task(close_script_popup(self.client))
+            second = asyncio.create_task(close_script_popup(self.client))
+            await clicked.wait()
+            await asyncio.sleep(.01)
+            self.assertEqual(self.client.mouse_handler.click_window.await_count, 1)
+            await asyncio.gather(first, second)
+            self.assertEqual(self.client.mouse_handler.click_window.await_count, 5)
+            warning.assert_called_once()
+
+            modal.is_visible.return_value = False
+            await close_script_popup(self.client)
+            self.assertIsNone(self.client._xuanshu_missing_area_retry)
+
+    async def test_missing_area_clients_keep_independent_retry_limits(self):
+        modals = [SimpleNamespace(is_visible=AsyncMock(return_value=True)) for _ in range(2)]
+        retries = [SimpleNamespace(is_visible=AsyncMock(return_value=True)) for _ in range(2)]
+        self.client._xuanshu_zone_retry_users = 1
+        other = SimpleNamespace(title='p2', is_loading=AsyncMock(return_value=False),
+            root_window=SimpleNamespace(), mouse_handler=AsyncMock(),
+            _xuanshu_zone_retry_users=1)
+        def resolve(root, path):
+            index = 0 if root is self.client.root_window else 1
+            return modals[index] if path == missing_area_path else (
+                retries[index] if path == missing_area_retry_path else False
+            )
+        self.resolve_path.side_effect = resolve
+        async def dismiss_first(_):
+            modals[0].is_visible.return_value = False
+        async def dismiss_other(_):
+            modals[1].is_visible.return_value = False
+        self.client.mouse_handler.click_window.side_effect = dismiss_first
+        other.mouse_handler.click_window.side_effect = dismiss_other
+        with patch('src.script_popups._MISSING_AREA_STABLE_SECONDS', 0), patch(
+            'src.script_popups.asyncio.sleep', new=AsyncMock()
+        ):
+            await close_script_popup(self.client)
+            await close_script_popup(other)
+        self.client.mouse_handler.click_window.assert_awaited_once_with(retries[0])
+        other.mouse_handler.click_window.assert_awaited_once_with(retries[1])
+        self.assertIsNone(self.client._xuanshu_missing_area_retry)
+        self.assertIsNone(other._xuanshu_missing_area_retry)
+
+    async def test_retry_holds_client_input_owner_until_loading_settles(self):
+        modal = SimpleNamespace(is_visible=AsyncMock(return_value=True))
+        retry = SimpleNamespace(is_visible=AsyncMock(return_value=True))
+        self.resolve_path.side_effect = lambda _root, path: (
+            modal if path == missing_area_path else
+            retry if path == missing_area_retry_path else False
+        )
+        self.client._xuanshu_zone_retry_users = 1
+        clicked, resume, acquired = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        real_sleep = asyncio.sleep
+        async def begin_loading(_):
+            modal.is_visible.return_value = False
+            self.client.is_loading.return_value = True
+            clicked.set()
+        async def wait_for_game(_):
+            await resume.wait()
+        async def next_input():
+            async with automation_owner(self.client, 'script-vm'):
+                acquired.set()
+        self.client.mouse_handler.click_window.side_effect = begin_loading
+        with patch('src.script_popups._MISSING_AREA_STABLE_SECONDS', 0), patch(
+            'src.script_popups.asyncio.sleep', side_effect=wait_for_game
+        ):
+            recovery = asyncio.create_task(close_script_popup(self.client))
+            await clicked.wait()
+            next_command = asyncio.create_task(next_input())
+            await real_sleep(0)
+            self.assertFalse(acquired.is_set())
+            self.client.is_loading.return_value = False
+            resume.set()
+            await recovery
+            await next_command
+        self.assertTrue(acquired.is_set())
+
     def test_verified_bilingual_text_and_unrelated_report(self):
         self.assertEqual(popup_kind('你已经被举报！', ''), 'reported')
         self.assertEqual(popup_kind('', '是否接受<br>某人 等级 100<br>成为你的好友？'), 'friend_request')
@@ -178,6 +327,15 @@ class QuestPopupIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ScriptPopupLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_zone_retry_is_enabled_only_for_guard_lifetime(self):
+        client = SimpleNamespace(title='p1')
+        async def script():
+            self.assertEqual(client._xuanshu_zone_retry_users, 1)
+            return 42
+        with patch('src.script_popups.watch_script_popups', new=AsyncMock()):
+            self.assertEqual(await run_with_script_popups(script, [client], zone_retry=True), 42)
+        self.assertEqual(client._xuanshu_zone_retry_users, 0)
+
     async def test_watchers_run_during_wait_and_stop_on_cancel(self):
         started, stopped = asyncio.Event(), asyncio.Event()
         first, other = SimpleNamespace(title='p1'), SimpleNamespace(title='p2')

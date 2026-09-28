@@ -438,6 +438,9 @@ def show_settings_dialog(ctx):
         "quest_party_enabled",
         "setting_quest_party_enabled",
     )
+    _add_checkbox(
+        questing_form, "mainline_finder_enabled", "setting_mainline_finder_enabled"
+    )
     quester_container, quester_checks = _add_client_multi_select(
         questing_form,
         "questing_clients",

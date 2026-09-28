@@ -178,6 +178,7 @@ questing_friend_tp = False
 gear_switching_in_solo_zones = False
 hitter_client = None
 quest_party_enabled = False
+mainline_finder_enabled = False
 questing_client_titles: list[str] = []
 questing_hitter_client_titles: list[str] = []
 quest_hitter_assignment_mode = "auto"
@@ -225,6 +226,9 @@ gear_switching_in_solo_zones = _json_settings.get(
 hitter_client = _json_settings.get("hitter_client", hitter_client)
 quest_party_enabled = bool(
     _json_settings.get("quest_party_enabled", quest_party_enabled)
+)
+mainline_finder_enabled = bool(
+    _json_settings.get("mainline_finder_enabled", mainline_finder_enabled)
 )
 questing_client_titles = list(
     _json_settings.get("questing_clients", questing_client_titles) or []
@@ -1057,6 +1061,9 @@ async def main():
         for client in (walker.clients if members is None else members):
             was_questing = client.questing_status
             client.questing_status = active and id(client) in participant_ids
+            client.mainline_finder_enabled = mainline_finder_enabled
+            if not mainline_finder_enabled:
+                client.mainline_finder_offer_guard = False
             if client.questing_status and not was_questing:
                 client._xuanshu_mainline_id = None
                 client.quest_rotating_realm_attempted = None
@@ -1667,10 +1674,10 @@ async def main():
             try:
                 while True:
                     if not freecam_status:
-                        finding_mainline = getattr(client, "quest_recovery_owner", None) == "mainline_finder"
-                        if finding_mainline:
-                            # This worker must not race the recovery worker on
-                            # a quest offer whose decline button appears late.
+                        recovery_owner = getattr(client, "quest_recovery_owner", None)
+                        if recovery_owner in ("mainline_finder", "private_wing"):
+                            # Do not send dialogue keys while another recovery
+                            # owns this client's task or zone transition.
                             await asyncio.sleep(0.1)
                             continue
                         if (getattr(client, "mainline_finder_offer_guard", False)
@@ -2113,6 +2120,9 @@ async def main():
                         continue
                     if recovery_owner == "mainline_finder":
                         update_party_status(hitter, quester, "等待主线任务找回")
+                        continue
+                    if recovery_owner == "private_wing":
+                        update_party_status(hitter, quester, "等待 PrivateWing 区域切换")
                         continue
                     dungeon_state = getattr(quester, "quest_dungeon_recovery", None)
                     dungeon_battle_pending = quester_in_battle and (
@@ -2571,12 +2581,15 @@ async def main():
                     if getattr(client, "quest_party_quest_worker_task", None) is worker:
                         client.quest_party_quest_worker_task = None
 
-        def quest_worker(client, run):
-            return (
-                run_client_worker(client, lambda: walker.clients, run)
-                if members is not None
-                else run()
-            )
+        async def quest_worker(client, run):
+            async def worker():
+                return await (
+                    run_client_worker(client, lambda: walker.clients, run)
+                    if members is not None
+                    else run()
+                )
+
+            return await run_with_script_popups(worker, [client], zone_retry=True)
 
         if quest_party_enabled:
             await gather_owned(
@@ -2649,7 +2662,7 @@ async def main():
                         ):
                             recovery_candidate = False
                         if recovery_candidate and any(
-                            getattr(p, "quest_recovery_owner", None) in ("nightmare_krok", "rotating_realm", "mainline_finder")
+                            getattr(p, "quest_recovery_owner", None) in ("nightmare_krok", "rotating_realm", "mainline_finder", "private_wing")
                             for p in walker.clients
                         ):
                             recovery_candidate = False
@@ -2678,7 +2691,7 @@ async def main():
                                 if isinstance(getattr(client, "quest_recovery_owner", None), str):
                                     continue
                                 if any(
-                                    getattr(p, "quest_recovery_owner", None) in ("nightmare_krok", "rotating_realm", "mainline_finder")
+                                    getattr(p, "quest_recovery_owner", None) in ("nightmare_krok", "rotating_realm", "mainline_finder", "private_wing")
                                     for p in walker.clients
                                 ):
                                     continue
@@ -5425,7 +5438,7 @@ async def main():
                             async def guarded_bot(
                                 run=run_bot, clients=tuple(selected_clients)
                             ):
-                                await run_with_script_popups(run, clients)
+                                await run_with_script_popups(run, clients, zone_retry=True)
 
                             new_task = asyncio.create_task(
                                 try_task_coro(guarded_bot, selected_clients, True)
@@ -5948,7 +5961,7 @@ async def main():
                             global speed_multiplier, use_potions, rpc_status, drop_status, anti_afk_status
                             global buy_potions, use_team_up, client_to_follow, client_to_boost
                             global questing_friend_tp, gear_switching_in_solo_zones, hitter_client
-                            global quest_party_enabled, questing_client_titles, questing_hitter_client_titles
+                            global quest_party_enabled, mainline_finder_enabled, questing_client_titles, questing_hitter_client_titles
                             global quest_hitter_assignment_mode, quest_hitter_assignments
                             global quest_friend_icons
                             global ignore_pet_level_up, only_play_dance_game
@@ -5986,6 +5999,12 @@ async def main():
                                     case "quest_party_enabled":
                                         quest_party_enabled = bool(value)
                                         quest_party_changed = True
+                                    case "mainline_finder_enabled":
+                                        mainline_finder_enabled = bool(value)
+                                        for client in walker.clients:
+                                            client.mainline_finder_enabled = mainline_finder_enabled
+                                            if not mainline_finder_enabled:
+                                                client.mainline_finder_offer_guard = False
                                     case "questing_clients":
                                         questing_client_titles = list(value or [])
                                         quest_party_changed = True

@@ -42,11 +42,17 @@ def release_quest_recovery(client: Client, owner: str) -> None:
 
 
 class Quester():
+    GUMMY_WORMS_PHOTO_ZONE = 'Karamelle/Interiors/KM_Z04_BonBon'
+    GUMMY_WORMS_PHOTO_POSITION = XYZ(1258.114, 2119.140, 2.000)
+    GUMMY_WORMS_PHOTO_ORIENTATION = Orient(0.000, 0.000, 1.590)
     DUNGEON_NO_PROGRESS_SECONDS = 180.0
     MAINLINE_FINDER_STABLE_READS = 3
     MAINLINE_FINDER_RETRY_SECONDS = 60.0
     MAINLINE_FINDER_MAX_PAGES = 32
     NIGHTMARE_ZONE = "Empyrea/Interiors/EM_Z15_NightmareKrok"
+    PRIVATE_WING_ZONE = "Empyrea/Interiors/EM_Z07_PrivateWing"
+    PRIVATE_WING_EXIT = XYZ(20.521, 11529.802, 2.052)
+    PRIVATE_WING_STABLE_SECONDS = 1.5
     # Stay below the existing 120-second stationary-task watchdog.
     NIGHTMARE_NO_PROGRESS_SECONDS = 60.0
     NIGHTMARE_POINTS = (
@@ -1569,6 +1575,7 @@ class Quester():
                 or getattr(client, 'quest_party_probe_pending', False)
                 or getattr(client, 'quest_party_battle_rescue_active', False)
                 or getattr(client, 'quest_party_quest_worker_restart_requested', False)
+                or getattr(client, 'entity_detect_combat_status', False)
                 or getattr(client, 'post_combat_movement_active', False)
                 or self._krok_exit_watch.get(id(client))
                 or isinstance(getattr(client, 'quest_dungeon_recovery', None), dict)
@@ -1588,6 +1595,11 @@ class Quester():
 
     async def _maybe_recover_mainline(self, client: Client) -> bool:
         """Pause a confirmed side quest, then run one bounded Quest Finder pass."""
+        if not getattr(client, 'mainline_finder_enabled', False):
+            self._mainline_finder_observations.pop(id(client), None)
+            self._mainline_finder_retry_at.pop(id(client), None)
+            client.mainline_finder_offer_guard = False
+            return False
         identity = await self._mainline_identity(client)
         key = id(client)
         if identity is None:
@@ -1651,7 +1663,9 @@ class Quester():
         finally:
             # A dialogue can outlive the recovery coroutine.  Keep the normal
             # dialogue worker from accepting that leftover offer on its next tick.
-            client.mainline_finder_offer_guard = not recovered
+            client.mainline_finder_offer_guard = (
+                not recovered and getattr(client, 'mainline_finder_enabled', False)
+            )
             try:
                 try:
                     if await is_visible_by_path(client, cancel_multiple_quest_menu_path):
@@ -2107,6 +2121,20 @@ class Quester():
     async def teleport_to_quest_target(self, client, xyz, leader_client=None):
         zone = await client.zone_name()
         key = id(client)
+        private_wing = zone == self.PRIVATE_WING_ZONE
+        if not private_wing and isinstance(getattr(client, '_xuanshu_private_wing_failed', None), dict):
+            client._xuanshu_private_wing_failed = None
+        if private_wing and (not getattr(client, 'questing_status', False)
+                or isinstance(getattr(client, 'quest_recovery_owner', None), str)
+                or getattr(client, 'mainline_chain_retry_active', False)
+                or getattr(client, 'quest_party_probe_pending', False)
+                or getattr(client, 'quest_party_battle_rescue_active', False)
+                or getattr(client, 'quest_party_quest_worker_restart_requested', False)
+                or getattr(client, 'post_combat_movement_active', False)
+                or isinstance(getattr(client, 'quest_dungeon_recovery', None), dict)
+                and client.quest_dungeon_recovery.get('active')):
+            self._krok_exit_watch.pop(key, None)
+            return
         floating_exit = zone == 'Celestia/CL_Z05_The_Floating_Land'
         crystal_exit = zone == 'DragonSpire/DS_A3_Kings/Interiors/DS_Crystal_T9'
         special_targets = {
@@ -2114,7 +2142,7 @@ class Quester():
             'Celestia/CL_Z09_Science_Center': XYZ(-1067.512, 343.759, -449.800),
             'Celestia/Interiors/CL_Z10i3_Kingdom_Of_The_Crabs': XYZ(3184.987, -9931.280, -1014.007),
         }
-        special_exit = zone in special_targets
+        special_exit = zone in special_targets or private_wing
         stuck = XYZ(6420.986, -6956.173, -399.699)
         if (zone != "Krokotopia/KT_WorldTeleporter" and not floating_exit and not crystal_exit and not special_exit
                 or floating_exit and calc_Distance(await client.body.position(), stuck) > 150):
@@ -2136,11 +2164,28 @@ class Quester():
         objective = await get_quest_name(leader_client or client)
         target = (xyz.x, xyz.y, xyz.z)
         before = await client.body.position()
+        progress = await self._dungeon_quest_snapshot(client) if private_wing else None
         state = self._krok_exit_watch.get(key)
-        if state is None or state.get('zone') != zone or state['objective'] != objective or state['target'] != target:
+        if (state is None or state.get('zone') != zone or state['objective'] != objective
+                or state['target'] != target
+                or private_wing and progress is not None and state.get('progress') is not None
+                and progress != state['progress']):
             state = dict(zone=zone, objective=objective, target=target, anchor=before,
-                         since=time.monotonic(), attempts=0, end_sent=False)
+                         since=time.monotonic(), attempts=0, end_sent=False, progress=progress)
             self._krok_exit_watch[key] = state
+        elif private_wing and progress is not None:
+            state['progress'] = progress
+        if private_wing:
+            failed = getattr(client, '_xuanshu_private_wing_failed', None)
+            if isinstance(failed, dict):
+                changed = (failed['zone'] != zone or failed['objective'] != objective
+                           or failed['target'] != target
+                           or progress is not None and failed['progress'] is not None
+                           and progress != failed['progress'])
+                if changed and objective:
+                    client._xuanshu_private_wing_failed = None
+                else:
+                    state['end_sent'] = True
 
         transition = [False]
         async def watch_transition():
@@ -2184,10 +2229,45 @@ class Quester():
         if not objective or state['end_sent'] or state['attempts'] < 3 or time.monotonic() - state['since'] < 10:
             return
 
-        if not claim_quest_recovery(client, "special_zone"):
+        recovery_owner = "private_wing" if private_wing else "special_zone"
+        if not claim_quest_recovery(client, recovery_owner):
             return
         state['end_sent'] = True
         try:
+            if private_wing:
+                logger.info('自动任务：PrivateWing 持续任务传送无进展，前往区域切换点。')
+                client._xuanshu_private_wing_failed = dict(
+                    zone=zone, objective=objective, target=target, progress=progress
+                )
+                try:
+                    async with asyncio.timeout(25.0):
+                        await client.teleport(self.PRIVATE_WING_EXIT)
+                        logger.info('自动任务：PrivateWing 正在等待区域切换。')
+                        await wait_for_zone_change(client, current_zone=zone)
+                        arrival_zone = await client.zone_name()
+                        if arrival_zone == zone:
+                            raise TimeoutError('区域未变化')
+                        stable_since = None
+                        while True:
+                            current_zone = await client.zone_name()
+                            if (current_zone == zone or current_zone != arrival_zone
+                                    or await client.is_loading()
+                                    or not await is_free_leader_questing(client)):
+                                stable_since = None
+                            elif stable_since is None:
+                                stable_since = time.monotonic()
+                            elif time.monotonic() - stable_since >= self.PRIVATE_WING_STABLE_SECONDS:
+                                await self._dungeon_quest_snapshot(client)
+                                await get_quest_name(client)
+                                await client.quest_position.position()
+                                self._krok_exit_watch.pop(key, None)
+                                client._xuanshu_private_wing_failed = None
+                                logger.info('自动任务：PrivateWing 区域切换完成，继续任务传送。')
+                                return
+                            await asyncio.sleep(.2)
+                except Exception as exc:
+                    logger.warning(f'自动任务：PrivateWing 区域切换未成功，退出本次特殊恢复。{exc}')
+                return
             if special_exit:
                 logger.info(f'Client {client.title}: 连续任务传送至少 3 次且 10 秒无进展，执行区域脱困。')
                 await client.teleport(special_targets[zone])
@@ -2225,7 +2305,7 @@ class Quester():
                 return
             self._krok_exit_watch.pop(key, None)
         finally:
-            release_quest_recovery(client, "special_zone")
+            release_quest_recovery(client, recovery_owner)
 
     async def teleport_to_quest(self, hitting_client: str, follower_clients: list[Client]):
         await gather_owned(*[self.leader_wait_for_free(p) for p in self.clients])
@@ -2325,6 +2405,23 @@ class Quester():
             else:
                 await gather_owned(*[self.teleport_to_quest_target(p, leader_client_objective_xyz, leader_client=self.current_leader_client) for p in self.clients])
 
+    async def take_photomancy_photo(self, client, objective):
+        target = plain_text(objective).casefold()
+        gummy_worms = '讨厌的虫子' in target or 'gummy worms' in target
+        if gummy_worms and await client.zone_name() == self.GUMMY_WORMS_PHOTO_ZONE:
+            await client.teleport(self.GUMMY_WORMS_PHOTO_POSITION)
+            await asyncio.sleep(.5)
+            if not quest_has_action(await get_quest_name(client), 'photomance'):
+                return
+            await client.send_key(Keycode.A, 0.05)
+            await client.body.write_orientation(self.GUMMY_WORMS_PHOTO_ORIENTATION)
+            camera = await client.game_client.selected_camera_controller()
+            if camera is not None:
+                await camera.update_orientation(self.GUMMY_WORMS_PHOTO_ORIENTATION)
+            await asyncio.sleep(.2)
+        await client.send_key(Keycode.Z, 0.1)
+        await client.send_key(Keycode.Z, 0.1)
+
     async def handle_normal_quests(self, follower_clients: list[Client], questing_friend_tp: bool):
         if await close_npc_quest_menu(self.current_leader_client):
             return
@@ -2413,15 +2510,7 @@ class Quester():
 
                 if quest_has_action(quest_objective, "photomance"):
                     # Photomancy quests (WC, KM, LM)
-                    await gather_owned(*[p.send_key(key=Keycode.Z, seconds=0.1) for p in self.clients])
-                    await gather_owned(*[p.send_key(key=Keycode.Z, seconds=0.1) for p in self.clients])
-
-            for c in self.clients:
-                if await is_visible_by_path(c, missing_area_path):
-                    # Handles when an area hasn't been downloaded yet
-                    while not await is_visible_by_path(c, missing_area_retry_path):
-                        await asyncio.sleep(0.1)
-                    await click_window_by_path(c, missing_area_retry_path, True)
+                    await gather_owned(*[self.take_photomancy_photo(p, quest_objective) for p in self.clients])
 
         await asyncio.sleep(0.7)
 
@@ -3027,14 +3116,7 @@ class Quester():
 
                 if quest_has_action(quest_objective, "photomance"):
                     # Photomancy quests (WC, KM, LM)
-                    await self.client.send_key(key=Keycode.Z, seconds=0.1)
-                    await self.client.send_key(key=Keycode.Z, seconds=0.1)
-
-                if await is_visible_by_path(self.client, missing_area_path):
-                    # Handles when an area hasn't been downloaded yet
-                    while not await is_visible_by_path(self.client, missing_area_retry_path):
-                        await asyncio.sleep(0.1)
-                    await click_window_by_path(self.client, missing_area_retry_path, True)
+                    await self.take_photomancy_photo(self.client, quest_objective)
 
             else:
                 dungeon_recovery = getattr(self.client, "quest_dungeon_recovery", None)

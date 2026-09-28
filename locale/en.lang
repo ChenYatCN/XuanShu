@@ -352,6 +352,7 @@ fish_start_hint=Restart the selected group to apply filter changes.
 
 # Auto quest party
 setting_quest_party_enabled=Enable Quest Party
+setting_mainline_finder_enabled=Recover Main Story Quests Automatically (enable for main story only)
 setting_questing_clients=Questing Clients
 setting_questing_hitter_clients=Hitter Clients
 setting_quest_party_no_clients=Hook clients first

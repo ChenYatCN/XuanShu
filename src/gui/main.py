@@ -535,7 +535,8 @@ def manage_gui(
     )
     with open(_translation_icon_path, encoding="utf-8") as icon_file:
         _translation_svg = icon_file.read().replace("currentColor", _stroke_color)
-    translation_dialog = ChatTranslationDialog(send_queue)
+    translation_dialog = ChatTranslationDialog(send_queue, ctx)
+    ctx.exports['chat_translation'] = {'retheme': translation_dialog.retheme}
     translation_btn = QPushButton()
     translation_btn.setIcon(_titlebar_svg_icon(_translation_svg, 16))
     translation_btn.setFixedSize(20, 20)

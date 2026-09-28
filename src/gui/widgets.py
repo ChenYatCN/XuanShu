@@ -43,6 +43,8 @@ from PyQt6.QtGui import (
     QPainter,
     QLinearGradient,
     QColor,
+    QIcon,
+    QPalette,
     QPen,
     QBrush,
     QFont,
@@ -1365,6 +1367,48 @@ class HighlightOverlay(QWidget):
         bx1, by1, bx2, by2 = self._box_rect
         painter.drawRect(bx1, by1, bx2 - bx1, by2 - by1)
         painter.end()
+
+
+class ThemedPlainTextEdit(QPlainTextEdit):
+    """Keep Qt's native edit menu, with icons colored for the current theme."""
+
+    def __init__(self, ctx):
+        super().__init__()
+        self._theme_ctx = ctx
+
+    def create_themed_context_menu(self):
+        menu = self.createStandardContextMenu()
+        accent = QColor(self._theme_ctx.stroke_color)
+        disabled = menu.palette().color(
+            QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text
+        )
+        icon_size = menu.style().pixelMetric(QStyle.PixelMetric.PM_SmallIconSize)
+        for action in menu.actions():
+            source_icon = action.icon()
+            if action.isSeparator() or source_icon.isNull():
+                continue
+            source = source_icon.pixmap(icon_size, icon_size, QIcon.Mode.Normal)
+            if source.isNull():
+                continue
+            themed_icon = QIcon()
+            for mode, color in (
+                (QIcon.Mode.Normal, accent),
+                (QIcon.Mode.Active, accent),
+                (QIcon.Mode.Disabled, disabled),
+            ):
+                tinted = source.copy()
+                painter = QPainter(tinted)
+                painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+                painter.fillRect(tinted.rect(), color)
+                painter.end()
+                themed_icon.addPixmap(tinted, mode)
+            action.setIcon(themed_icon)
+        return menu
+
+    def contextMenuEvent(self, event):
+        menu = self.create_themed_context_menu()
+        menu.exec(event.globalPos())
+        menu.deleteLater()
 
 
 class ConsoleTextEdit(QPlainTextEdit):

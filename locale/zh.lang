@@ -352,6 +352,7 @@ fish_start_hint=筛选条件修改后，重新启动所选组生效。
 
 # Auto quest party / 自动任务编队
 setting_quest_party_enabled=启用任务编队
+setting_mainline_finder_enabled=自动找回主线任务（仅需主线时开启）
 setting_questing_clients=做任务客户端
 setting_questing_hitter_clients=打手客户端
 setting_quest_party_no_clients=请先注入客户端

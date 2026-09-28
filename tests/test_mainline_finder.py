@@ -19,6 +19,7 @@ class MainlineFinderTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.client = SimpleNamespace(
             title='p1', questing_status=True, quest_recovery_owner=None,
+            mainline_finder_enabled=True,
             entity_detect_combat_status=False,
             is_loading=AsyncMock(return_value=False),
             in_battle=AsyncMock(return_value=False),
@@ -26,6 +27,16 @@ class MainlineFinderTests(unittest.IsolatedAsyncioTestCase):
             send_key=AsyncMock(), root_window=object(),
         )
         self.quester = Quester(self.client, [self.client], None)
+
+    async def test_disabled_does_not_read_or_interrupt_side_quest(self):
+        self.client.mainline_finder_enabled = False
+        self.client.mainline_finder_offer_guard = True
+        self.quester._mainline_identity = AsyncMock()
+        self.quester._run_mainline_finder = AsyncMock()
+        self.assertFalse(await self.quester._maybe_recover_mainline(self.client))
+        self.quester._mainline_identity.assert_not_awaited()
+        self.quester._run_mainline_finder.assert_not_awaited()
+        self.assertFalse(self.client.mainline_finder_offer_guard)
 
     async def test_normal_mainline_does_not_trigger(self):
         row = next(r for r in quest_rows() if r['english'] == 'Extra Life')
