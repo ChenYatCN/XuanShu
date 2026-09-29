@@ -45,6 +45,10 @@ class Quester():
     GUMMY_WORMS_PHOTO_ZONE = 'Karamelle/Interiors/KM_Z04_BonBon'
     GUMMY_WORMS_PHOTO_POSITION = XYZ(1258.114, 2119.140, 2.000)
     GUMMY_WORMS_PHOTO_ORIENTATION = Orient(0.000, 0.000, 1.590)
+    GIANT_VAT_PHOTO_POSITION = XYZ(48.393, 187.929, 2.000)
+    GIANT_VAT_PHOTO_ORIENTATIONS = (
+        Orient(0.000, 0.000, 3.855), Orient(0.000, 0.000, 3.146),
+    )
     DUNGEON_NO_PROGRESS_SECONDS = 180.0
     MAINLINE_FINDER_STABLE_READS = 3
     MAINLINE_FINDER_RETRY_SECONDS = 60.0
@@ -53,6 +57,8 @@ class Quester():
     PRIVATE_WING_ZONE = "Empyrea/Interiors/EM_Z07_PrivateWing"
     PRIVATE_WING_EXIT = XYZ(20.521, 11529.802, 2.052)
     PRIVATE_WING_STABLE_SECONDS = 1.5
+    GOBBLERTON_ZONE = "Karamelle/KM_Z10_Gobblerton"
+    GOBBLERTON_EXIT = XYZ(874.868, 5917.971, 800.977)
     # Stay below the existing 120-second stationary-task watchdog.
     NIGHTMARE_NO_PROGRESS_SECONDS = 60.0
     NIGHTMARE_POINTS = (
@@ -84,6 +90,7 @@ class Quester():
         self.d_location = None
         self._krok_exit_watch = {}
         self._npc_retry_exhausted = {}
+        self._npc_retry_debug_at = {}
         self._trigger_reentry = {}
         self._mainline_finder_observations = {}
         self._mainline_finder_retry_at = {}
@@ -137,7 +144,7 @@ class Quester():
             await client.send_key(Keycode.Q)
             opened = True
             deadline = time.monotonic() + 3.0
-            first_card = [*quest_two_button_path, "questInfoWindow", "wndQuestInfo", "txtGoal"]
+            first_card = [*quest_buttons_parent_path, "wndQuestInfo0", "questInfoWindow", "wndQuestInfo", "txtGoal"]
             while time.monotonic() < deadline:
                 if (await is_visible_by_path(client, all_quests_sort_button_path)
                         and await is_visible_by_path(client, first_card)):
@@ -580,8 +587,12 @@ class Quester():
         return Wad.from_game_data(path.replace("/", "-"))
 
     async def followers_in_correct_zone(self) -> bool:
+        if getattr(self.current_leader_client, "refilling_potions", False) is True:
+            return True
         zone = await self.current_leader_client.zone_name()
         for c in self.clients:
+            if getattr(c, "refilling_potions", False) is True or getattr(c, "questing_status", True) is False:
+                continue
             if await c.zone_name() != zone:
                 return False
         return True
@@ -602,7 +613,9 @@ class Quester():
     async def get_follower_clients(self) -> list[Client]:
         follower_clients = []
         for c in self.clients:
-            if c.process_id != self.current_leader_client.process_id:
+            if (c.process_id != self.current_leader_client.process_id
+                    and getattr(c, "refilling_potions", False) is not True
+                    and getattr(c, "questing_status", True) is not False):
                 follower_clients.append(c)
 
         return follower_clients
@@ -633,6 +646,8 @@ class Quester():
         if await self.followers_in_correct_zone():
             return
         for p in self.clients:
+            if getattr(p, "refilling_potions", False) is True or getattr(p, "questing_status", True) is False:
+                continue
             await p.send_key(Keycode.END)
             await p.send_key(Keycode.END)
             await asyncio.sleep(3)
@@ -643,12 +658,16 @@ class Quester():
         await asyncio.sleep(2)
 
     async def friend_teleport(self, maybe_solo_zone: bool):
+        if getattr(self.current_leader_client, "refilling_potions", False) is True:
+            return [], None
         clients_in_solo_zone = []
         solo_zone = None
         leader_in_solo_zone = False
         was_loading = False
 
         for c in self.clients:
+            if getattr(c, "refilling_potions", False) is True or getattr(c, "questing_status", True) is False:
+                continue
             if c.process_id != self.current_leader_pid:
                 c_zone = await c.zone_name()
                 leader_zone = await self.current_leader_client.zone_name()
@@ -769,35 +788,23 @@ class Quester():
         await gather_owned(*[self.collect_wisps(p) for p in self.clients])
         await gather_owned(*[self.guarantee_use_potion(p) for p in self.clients])
 
-        any_client_needs_potions = False
+        clients_needing_potions = []
         for p in self.clients:
-            # If we have less than 1 potion left, send all clients to get potions (even if some don't need it).  Only do this once per questing loop
             if await p.stats.potion_charge() < 1.0 and await p.stats.reference_level() >= 6:
-                any_client_needs_potions = True
+                clients_needing_potions.append(p)
 
-        if any_client_needs_potions:
-            original_zones = {}
-            # Try the mark twice.  If the first input is lost, the shared helper
-            # backs up for three seconds before trying PgDn again.
-            for p in self.clients:
-                original_zone = await p.zone_name()
-                if original_zone != 'WizardCity/WC_Hub':
-                    original_zones[p] = original_zone
-                    if not await ensure_teleport_mark(p):
-                        logger.warning(
-                            f'Client {p.title} - Continuing potion refill even '
-                            'though the return mark was not confirmed.'
-                        )
-
-            await gather_owned(*[refill_potions(c, mark=False, recall=False, original_zone=await c.zone_name()) for c in self.clients])
-            # Clients that started in the Commons do not need a recall.  All
-            # others use bounded retries instead of pressing PageUp forever.
-            await gather_owned(
-                *[
-                    self.gather_clients_from_potion_buy(c, original_zone)
-                    for c, original_zone in original_zones.items()
-                ]
-            )
+        if clients_needing_potions:
+            results = await gather_owned(*[refill_potions(c) for c in clients_needing_potions])
+            for client, result in zip(clients_needing_potions, results):
+                if result is False:
+                    client.questing_status = False
+            # Keep failed clients out of every subsequent legacy group action.
+            # Rebind the local roster; do not modify the shared application roster.
+            self.clients = [c for c in self.clients if getattr(c, "questing_status", True) is not False]
+            if getattr(self.current_leader_client, "questing_status", True) is False and self.clients:
+                self.current_leader_client = self.clients[0]
+            return all(result is not False for result in results)
+        return True
 
     async def collect_wisps(self, p: Client):
         if await is_free(p):
@@ -812,19 +819,6 @@ class Quester():
                     logger.debug(f'Client {p.title} - Using potion')
                     await click_window_by_path(p, potion_usage_path, True)
                     await asyncio.sleep(.6)
-
-    async def gather_clients_from_potion_buy(
-        self, p: Client, original_zone: str
-    ) -> bool:
-        recalled = await recall_to_teleport_mark(
-            p, expected_zone=original_zone, attempts=3
-        )
-        if not recalled:
-            logger.error(
-                f'Client {p.title} - Could not return to the pre-potion '
-                'location; auto questing will continue recovery from the Commons.'
-            )
-        return recalled
 
     # if followers in different zone, try X presses (for X zone changes that require delayed presses between clients)
     async def X_press_zone_recorrect(self):
@@ -1365,11 +1359,35 @@ class Quester():
         self, talking_client: Client, present_clients: list[Client]
     ) -> bool:
         if not claim_quest_recovery(talking_client, "npc_dialogue"):
+            self._log_npc_retry_wait(talking_client, f"recovery owned by {talking_client.quest_recovery_owner}")
             return False
         try:
-            return await self._handle_npc_talking_quests(talking_client, present_clients)
+            updated = await self._handle_npc_talking_quests(talking_client, present_clients)
+            if updated:
+                self._npc_retry_exhausted.pop(id(talking_client), None)
+                self._npc_retry_debug_at.pop(id(talking_client), None)
+        except asyncio.CancelledError:
+            self._npc_retry_exhausted.pop(id(talking_client), None)
+            self._npc_retry_debug_at.pop(id(talking_client), None)
+            raise
+        except Exception as exc:
+            self._npc_retry_exhausted.pop(id(talking_client), None)
+            self._log_npc_retry_wait(talking_client, f"NPC state unavailable: {exc}")
+            updated = False
         finally:
             release_quest_recovery(talking_client, "npc_dialogue")
+            talking_client.quest_dialogue_settle = {'snapshot': None, 'since': None}
+        if not updated:
+            # Run only after releasing our owner; otherwise recovery blocks itself.
+            await self._maybe_refresh_stalled_dungeon_quest(talking_client)
+        return updated
+
+    def _log_npc_retry_wait(self, client: Client, reason: str) -> None:
+        now = time.monotonic()
+        previous = self._npc_retry_debug_at.get(id(client))
+        if previous is None or previous[0] != reason or now >= previous[1]:
+            logger.debug(f"Client {client.title} - NPC interaction deferred: {reason}")
+            self._npc_retry_debug_at[id(client)] = (reason, now + 30.0)
 
     async def _handle_npc_talking_quests(
         self, talking_client: Client, present_clients: list[Client]
@@ -1395,11 +1413,13 @@ class Quester():
         def quest_state_changed(before, after) -> bool:
             before_text, before_xyz, before_id, before_goal = before
             after_text, after_xyz, after_id, after_goal = after
-            if before_id is not None and after_id is not None and before_id != after_id:
+            if not after_text or not isinstance(after_id, int) or after_id < 0:
+                return False
+            if before_id is not None and before_id != after_id:
                 return True
             if before_goal is not None and after_goal is not None and before_goal != after_goal:
                 return True
-            if after_text != before_text:
+            if before_text and after_text and after_text != before_text:
                 return True
             if before_xyz is not None and after_xyz is not None:
                 return calc_Distance(before_xyz, after_xyz) > 1.0
@@ -1407,11 +1427,25 @@ class Quester():
 
         initial_state = await read_quest_state()
         retry_key = id(talking_client)
+        if (not initial_state[0] or not isinstance(initial_state[2], int)
+                or initial_state[2] <= 0):
+            self._log_npc_retry_wait(talking_client, "quest snapshot unreadable")
+            return False
+        zone = await talking_client.zone_name()
+        if not talking_client.questing_status or not await is_free_leader_questing(talking_client):
+            # A new dialogue/transition ends the old failed interaction round.
+            self._npc_retry_exhausted.pop(retry_key, None)
+            self._log_npc_retry_wait(talking_client, "dialogue, combat or transition active")
+            return False
         exhausted_state = self._npc_retry_exhausted.get(retry_key)
         if exhausted_state is not None:
-            if not quest_state_changed(exhausted_state, initial_state):
+            unchanged = (zone == exhausted_state['zone']
+                         and not quest_state_changed(exhausted_state['snapshot'], initial_state))
+            if unchanged and time.monotonic() < exhausted_state['retry_at']:
+                self._log_npc_retry_wait(talking_client, "retry cooldown; waiting for quest progress")
                 return False
             self._npc_retry_exhausted.pop(retry_key, None)
+            self._npc_retry_debug_at.pop(retry_key, None)
         mainline_turn_in = await self._mainline_turn_in_snapshot(
             talking_client, initial_state[2]
         )
@@ -1424,6 +1458,7 @@ class Quester():
         # One normal interaction, followed by at most three position/view retries.
         for attempt in range(1, 5):
             if attempt == 1:
+                logger.debug(f"Client {talking_client.title} - Talking to NPC: sending X.")
                 await gather_owned(
                     *[p.send_key(Keycode.X, 0.1) for p in present_clients]
                 )
@@ -1530,11 +1565,13 @@ class Quester():
         if quest_state_changed(initial_state, final_state):
             await self._continue_mainline_chain(talking_client, mainline_turn_in)
             return True
-        self._npc_retry_exhausted[retry_key] = final_state
+        self._npc_retry_exhausted[retry_key] = {
+            'snapshot': final_state, 'zone': zone, 'retry_at': time.monotonic() + 30.0,
+        }
         logger.error(
             f"Client {talking_client.title} - NPC interaction made no quest progress "
-            "after 3 position/view retries; suppressing further X presses for "
-            "this unchanged quest state."
+            "after 3 position/view retries; releasing recovery and cooling down "
+            "for 30 seconds before another bounded attempt."
         )
         return False
 
@@ -1563,6 +1600,12 @@ class Quester():
                 except Exception:
                     pass
             row = match_quest(rows, quest_id, code, title)
+            diagnostic = (quest_id, code, title, bool(row), mainline)
+            if getattr(client, '_mainline_identity_debug', None) != diagnostic:
+                logger.debug('{} 主线匹配：Quest ID {}，Language Key {!r}，标题 {!r}，游戏标志 {} -> {}',
+                             client.title, quest_id, code, title, mainline,
+                             f"{row['world']} 第 {row['number']}" if row else '未匹配')
+                client._mainline_identity_debug = diagnostic
             return quest_id, code, title, row, mainline
         except Exception as exc:
             logger.debug('{} 主线身份暂不可读：{}', client.title, exc)
@@ -1586,12 +1629,33 @@ class Quester():
                 or not await is_free_leader_questing(client)):
             return True
         return (await is_spiral_door_open(client)
-                or await is_visible_by_path(client, npc_range_path)
                 or await is_visible_by_path(client, decline_quest_path)
                 or await is_visible_by_path(client, cancel_multiple_quest_menu_path)
                 or await is_visible_by_path(client, quest_buttons_parent_path)
                 or await is_visible_by_path(client, exit_dungeon_path)
                 or await is_visible_by_path(client, dungeon_warning_path))
+
+    async def _quest_dialogue_blocks_movement(self, client: Client) -> bool:
+        """Wait for a quiet, stable tracked quest after dialogue/transition."""
+        if not await is_free_leader_questing(client):
+            client.quest_dialogue_settle = {'snapshot': None, 'since': None}
+            return True
+        state = getattr(client, 'quest_dialogue_settle', None)
+        if not isinstance(state, dict):
+            return False
+        try:
+            snapshot = (await client.quest_id(), await client.goal_id(), await client.zone_name())
+        except Exception:
+            state.update(snapshot=None, since=None)
+            return True
+        now = time.monotonic()
+        if state['snapshot'] != snapshot or state['since'] is None:
+            state.update(snapshot=snapshot, since=now)
+            return True
+        if now - state['since'] < 3.0:
+            return True
+        client.quest_dialogue_settle = None
+        return False
 
     async def _maybe_recover_mainline(self, client: Client) -> bool:
         """Pause a confirmed side quest, then run one bounded Quest Finder pass."""
@@ -1600,6 +1664,24 @@ class Quester():
             self._mainline_finder_retry_at.pop(id(client), None)
             client.mainline_finder_offer_guard = False
             return False
+        # Instance objectives can legitimately be absent from the mainline index.
+        # Give the existing quest-card recovery the iteration before Finder can
+        # pause movement (including its stability/retry waiting iterations).
+        dungeon_state = getattr(client, 'quest_dungeon_recovery', None)
+        dungeon_zone = getattr(client, 'quest_party_group_dungeon_zone', None)
+        if isinstance(dungeon_state, dict) or isinstance(dungeon_zone, str):
+            zone = await client.zone_name()
+            if zone and (zone == dungeon_zone or isinstance(dungeon_state, dict)
+                         and zone == dungeon_state.get('zone')):
+                self._mainline_finder_observations.pop(id(client), None)
+                self._mainline_finder_retry_at.pop(id(client), None)
+                client.mainline_finder_offer_guard = False
+                if not isinstance(dungeon_state, dict):
+                    client.quest_dungeon_recovery = {
+                        'zone': zone, 'snapshot': None, 'since': None,
+                        'active': False, 'attempted': False, 'waiting_logged': False,
+                    }
+                return await self._maybe_refresh_stalled_dungeon_quest(client)
         identity = await self._mainline_identity(client)
         key = id(client)
         if identity is None:
@@ -1608,16 +1690,15 @@ class Quester():
                 observed['count'] = 0
                 observed['since'] = time.monotonic()
                 return True
-            return False
-        if identity[3] is not None or (identity[0] != 0
-                and identity[4] is not False and identity[1] != 'Quest Finder'):
+            return True
+        if identity[3] is not None:
             self._mainline_finder_observations.pop(key, None)
             self._mainline_finder_retry_at.pop(key, None)
             client.mainline_finder_offer_guard = False
             return False
 
-        # An index miss is not proof when the game's own flag says mainline.
-        # Stability must also hold across the same zone, not a transition.
+        # Mainline-only mode requires the configured index, not merely the
+        # game's broad mainline flag. Wait for stable reads before recovery.
         try:
             zone = await client.zone_name()
         except Exception:
@@ -1861,7 +1942,7 @@ class Quester():
         deadline = time.monotonic() + 90.0
         while time.monotonic() < deadline and getattr(client, 'questing_status', False):
             identity = await self._mainline_identity(client)
-            if identity and identity[3] is not None and identity[4] is not False:
+            if identity and identity[3] is not None:
                 if expected_quest_id is None or identity[0] == expected_quest_id:
                     client._xuanshu_mainline_id = None
                     await log_mainline_progress(client)
@@ -1935,8 +2016,8 @@ class Quester():
         if not isinstance(quest_id, int) or quest_id <= 0:
             return None
         try:
-            quest = (await (await client.quest_manager()).quest_data()).get(quest_id)
-            if quest is None or not await quest.mainline():
+            identity = await self._mainline_identity(client)
+            if identity is None or identity[0] != quest_id or identity[3] is None:
                 return None
             npc = plain_text(await get_popup_title(client)).casefold()
             if not npc or interaction_kind(await self.read_popup(client)) != "talk":
@@ -1950,21 +2031,20 @@ class Quester():
         """Retry a confirmed mainline handoff only while the same NPC is in reach."""
         if snapshot is None:
             return
-        _, zone, anchor, npc = snapshot
+        previous_id, zone, anchor, npc = snapshot
 
         async def current_quest():
             try:
                 quest_id = await client.quest_id()
                 if quest_id == 0:
                     return 0, None
-                quest = (await (await client.quest_manager()).quest_data()).get(quest_id)
-                return quest_id, await quest.mainline() if quest is not None else None
+                identity = await self._mainline_identity(client)
+                return quest_id, bool(identity and identity[3] is not None)
             except Exception:
                 return None, None
 
         async def ready_to_retry():
-            if not (getattr(client, "questing_status", False)
-                    and getattr(client, "auto_dialogue_running", False)):
+            if not getattr(client, "questing_status", False):
                 return False
             if (getattr(client, "quest_party_probe_pending", False)
                     or getattr(client, "quest_party_battle_rescue_active", False)
@@ -1985,28 +2065,29 @@ class Quester():
                 return False
             return plain_text(await get_popup_title(client)).casefold() == npc
 
-        # A nonzero active quest may be a side quest selected by the game.  It
-        # does not prove the next mainline is missing, so never press X for it.
+        # The game can select an unrelated nonzero quest during a handoff.
+        # Do not mistake it for the next mainline before dialogue settles.
         quest_id, _ = await current_quest()
-        if (quest_id != 0 or not getattr(client, "questing_status", False)
-                or not getattr(client, "auto_dialogue_running", False)):
+        if (quest_id is None or quest_id == previous_id
+                or not getattr(client, "questing_status", False)):
             return
+        logger.info('{} 当前主线已完成，等待下一主线。', client.title)
 
         # The quest ID can clear before the last dialogue/reward page appears.
         # Require three quiet seconds before treating the handoff as missing.
         quiet_since = None
+        quiet_quest = None
         deadline = time.monotonic() + 60.0
         while time.monotonic() < deadline:
             quest_id, _ = await current_quest()
-            if quest_id != 0 or not getattr(client, "questing_status", False):
-                return
-            if not getattr(client, "auto_dialogue_running", False):
+            if quest_id is None or not getattr(client, "questing_status", False):
                 return
             if await client.zone_name() != zone or await client.in_battle():
                 return
             if await is_free_leader_questing(client):
-                if quiet_since is None:
+                if quiet_since is None or quiet_quest != quest_id:
                     quiet_since = time.monotonic()
+                    quiet_quest = quest_id
                 elif time.monotonic() - quiet_since >= 3.0:
                     break
             else:
@@ -2015,20 +2096,19 @@ class Quester():
         else:
             return
 
-        quest_id, _ = await current_quest()
-        if quest_id != 0 or not await ready_to_retry():
+        quest_id, matched = await current_quest()
+        if matched or quest_id == previous_id or not await ready_to_retry():
             return
 
         client.mainline_chain_retry_active = True
         pressed = False
         try:
             for attempt in range(1, 3):
-                quest_id, _ = await current_quest()
-                if quest_id != 0 or not await ready_to_retry():
+                quest_id, matched = await current_quest()
+                if matched or quest_id is None or not await ready_to_retry():
                     return
                 logger.info(
-                    f"Client {client.title} - Mainline ended without a new tracked "
-                    f"quest; retrying the same NPC ({attempt}/2)."
+                    f"{client.title} 下一主线未出现，尝试重新与原 NPC 交互（{attempt}/2）。"
                 )
                 await client.send_key(Keycode.X, 0.15)
                 pressed = True
@@ -2039,15 +2119,17 @@ class Quester():
                     quest_id, mainline = await current_quest()
                     if quest_id is None:
                         return
-                    if quest_id != 0:
-                        if mainline:
+                    if mainline and await is_free_leader_questing(client):
+                        if quiet_since is None:
+                            quiet_since = time.monotonic()
+                        elif time.monotonic() - quiet_since >= 3.0:
                             logger.info(
-                                f"Client {client.title} - Mainline handoff confirmed "
-                                f"with Quest ID {quest_id}."
+                                f"{client.title} 已接取下一主线：Quest ID {quest_id}。"
                             )
-                        return
+                            return
+                        await asyncio.sleep(0.2)
+                        continue
                     if (not getattr(client, "questing_status", False)
-                            or not getattr(client, "auto_dialogue_running", False)
                             or await client.is_loading() or await client.in_battle()
                             or await client.zone_name() != zone):
                         return
@@ -2065,8 +2147,7 @@ class Quester():
                     await asyncio.sleep(0.2)
                 await asyncio.sleep(1.25)
             logger.warning(
-                f"Client {client.title} - Mainline handoff still unconfirmed "
-                "after two same-NPC retries; stopping this handoff."
+                f"{client.title} 原 NPC 续接未成功，准备使用任务搜寻恢复主线。"
             )
         finally:
             # The normal dialogue worker treats a left-hand decline button as
@@ -2119,12 +2200,21 @@ class Quester():
             await gather_owned(movement, watcher, return_exceptions=True)
 
     async def teleport_to_quest_target(self, client, xyz, leader_client=None):
+        if (getattr(client, "refilling_potions", False) is True
+                or getattr(client, 'quest_recovery_owner', None) == 'gobblerton'
+                or getattr(client, "questing_status", True) is False):
+            return
         zone = await client.zone_name()
         key = id(client)
         private_wing = zone == self.PRIVATE_WING_ZONE
+        gobblerton = zone == self.GOBBLERTON_ZONE
+        transition_exit = private_wing or gobblerton
+        failed_attr = '_xuanshu_gobblerton_failed' if gobblerton else '_xuanshu_private_wing_failed'
+        if not gobblerton and isinstance(getattr(client, '_xuanshu_gobblerton_failed', None), dict):
+            client._xuanshu_gobblerton_failed = None
         if not private_wing and isinstance(getattr(client, '_xuanshu_private_wing_failed', None), dict):
             client._xuanshu_private_wing_failed = None
-        if private_wing and (not getattr(client, 'questing_status', False)
+        if transition_exit and (not getattr(client, 'questing_status', False)
                 or isinstance(getattr(client, 'quest_recovery_owner', None), str)
                 or getattr(client, 'mainline_chain_retry_active', False)
                 or getattr(client, 'quest_party_probe_pending', False)
@@ -2142,7 +2232,7 @@ class Quester():
             'Celestia/CL_Z09_Science_Center': XYZ(-1067.512, 343.759, -449.800),
             'Celestia/Interiors/CL_Z10i3_Kingdom_Of_The_Crabs': XYZ(3184.987, -9931.280, -1014.007),
         }
-        special_exit = zone in special_targets or private_wing
+        special_exit = zone in special_targets or transition_exit
         stuck = XYZ(6420.986, -6956.173, -399.699)
         if (zone != "Krokotopia/KT_WorldTeleporter" and not floating_exit and not crystal_exit and not special_exit
                 or floating_exit and calc_Distance(await client.body.position(), stuck) > 150):
@@ -2162,28 +2252,30 @@ class Quester():
             return
 
         objective = await get_quest_name(leader_client or client)
+        if not objective:
+            return
         target = (xyz.x, xyz.y, xyz.z)
         before = await client.body.position()
-        progress = await self._dungeon_quest_snapshot(client) if private_wing else None
+        progress = await self._dungeon_quest_snapshot(client) if transition_exit else None
         state = self._krok_exit_watch.get(key)
         if (state is None or state.get('zone') != zone or state['objective'] != objective
                 or state['target'] != target
-                or private_wing and progress is not None and state.get('progress') is not None
+                or transition_exit and progress is not None and state.get('progress') is not None
                 and progress != state['progress']):
             state = dict(zone=zone, objective=objective, target=target, anchor=before,
                          since=time.monotonic(), attempts=0, end_sent=False, progress=progress)
             self._krok_exit_watch[key] = state
-        elif private_wing and progress is not None:
+        elif transition_exit and progress is not None:
             state['progress'] = progress
-        if private_wing:
-            failed = getattr(client, '_xuanshu_private_wing_failed', None)
+        if transition_exit:
+            failed = getattr(client, failed_attr, None)
             if isinstance(failed, dict):
                 changed = (failed['zone'] != zone or failed['objective'] != objective
                            or failed['target'] != target
                            or progress is not None and failed['progress'] is not None
                            and progress != failed['progress'])
                 if changed and objective:
-                    client._xuanshu_private_wing_failed = None
+                    setattr(client, failed_attr, None)
                 else:
                     state['end_sent'] = True
 
@@ -2211,8 +2303,16 @@ class Quester():
                 transition[0] = True
 
         if (transition[0] or await client.is_loading() or await client.zone_name() != zone
-                or await interaction_pending() or not await is_free(client)
-                or await get_quest_name(leader_client or client) != objective):
+                or await interaction_pending() or not await is_free(client)):
+            self._krok_exit_watch.pop(key, None)
+            return
+        current_objective = await get_quest_name(leader_client or client)
+        if not current_objective:
+            return
+        if current_objective != objective:
+            self._krok_exit_watch.pop(key, None)
+            return
+        if gobblerton and await self._dungeon_quest_snapshot(client) != progress:
             self._krok_exit_watch.pop(key, None)
             return
 
@@ -2220,8 +2320,9 @@ class Quester():
         if floating_exit and calc_Distance(after, stuck) > 150:
             self._krok_exit_watch.pop(key, None)
             return
-        # Both endpoints must stay within the same small area across attempts.
-        if max(calc_Distance(before, state['anchor']),
+        # Gobblerton tracks quest progress even when repeated TP moves the body.
+        # Other exits retain their existing stationary-position requirement.
+        if not gobblerton and max(calc_Distance(before, state['anchor']),
                calc_Distance(after, state['anchor'])) > 100:
             state.update(anchor=after, since=time.monotonic(), attempts=0)
             return
@@ -2229,26 +2330,29 @@ class Quester():
         if not objective or state['end_sent'] or state['attempts'] < 3 or time.monotonic() - state['since'] < 10:
             return
 
-        recovery_owner = "private_wing" if private_wing else "special_zone"
+        recovery_owner = "gobblerton" if gobblerton else "private_wing" if private_wing else "special_zone"
         if not claim_quest_recovery(client, recovery_owner):
             return
         state['end_sent'] = True
         try:
-            if private_wing:
-                logger.info('自动任务：PrivateWing 持续任务传送无进展，前往区域切换点。')
-                client._xuanshu_private_wing_failed = dict(
+            if transition_exit:
+                label = 'Gobblerton' if gobblerton else 'PrivateWing'
+                logger.info(f'自动任务：{label} 连续任务传送无进展，前往区域切换点。')
+                setattr(client, failed_attr, dict(
                     zone=zone, objective=objective, target=target, progress=progress
-                )
+                ))
                 try:
                     async with asyncio.timeout(25.0):
-                        await client.teleport(self.PRIVATE_WING_EXIT)
-                        logger.info('自动任务：PrivateWing 正在等待区域切换。')
+                        await client.teleport(self.GOBBLERTON_EXIT if gobblerton else self.PRIVATE_WING_EXIT)
+                        logger.info(f'自动任务：{label} 正在等待区域切换。')
                         await wait_for_zone_change(client, current_zone=zone)
                         arrival_zone = await client.zone_name()
                         if arrival_zone == zone:
                             raise TimeoutError('区域未变化')
                         stable_since = None
                         while True:
+                            if not client.questing_status:
+                                return
                             current_zone = await client.zone_name()
                             if (current_zone == zone or current_zone != arrival_zone
                                     or await client.is_loading()
@@ -2261,12 +2365,12 @@ class Quester():
                                 await get_quest_name(client)
                                 await client.quest_position.position()
                                 self._krok_exit_watch.pop(key, None)
-                                client._xuanshu_private_wing_failed = None
-                                logger.info('自动任务：PrivateWing 区域切换完成，继续任务传送。')
+                                setattr(client, failed_attr, None)
+                                logger.info(f'自动任务：{label} 区域切换完成，继续任务传送。')
                                 return
                             await asyncio.sleep(.2)
                 except Exception as exc:
-                    logger.warning(f'自动任务：PrivateWing 区域切换未成功，退出本次特殊恢复。{exc}')
+                    logger.warning(f'自动任务：{label} 区域切换未成功，退出本次特殊恢复。{exc}')
                 return
             if special_exit:
                 logger.info(f'Client {client.title}: 连续任务传送至少 3 次且 10 秒无进展，执行区域脱困。')
@@ -2279,7 +2383,10 @@ class Quester():
                                     return
                                 await asyncio.sleep(.25)
                             await client.send_key(Keycode.X, .1)
-                            while await get_quest_name(leader_client or client) == objective:
+                            while True:
+                                current_objective = await get_quest_name(leader_client or client)
+                                if current_objective and current_objective != objective:
+                                    break
                                 if await client.is_loading() or not await is_free(client):
                                     return
                                 await asyncio.sleep(.25)
@@ -2308,6 +2415,8 @@ class Quester():
             release_quest_recovery(client, recovery_owner)
 
     async def teleport_to_quest(self, hitting_client: str, follower_clients: list[Client]):
+        if await self._quest_dialogue_blocks_movement(self.current_leader_client):
+            return
         await gather_owned(*[self.leader_wait_for_free(p) for p in self.clients])
 
         if await is_free_leader_questing(self.current_leader_client):
@@ -2405,9 +2514,68 @@ class Quester():
             else:
                 await gather_owned(*[self.teleport_to_quest_target(p, leader_client_objective_xyz, leader_client=self.current_leader_client) for p in self.clients])
 
+    @staticmethod
+    def _is_giant_vat_photo_prompt(value):
+        return '巨美大桶' in plain_text(value) and quest_has_action(value, 'photomance')
+
+    async def _maybe_photo_giant_vat(self, client, prompt=None):
+        if prompt is None:
+            if not await is_visible_by_path(client, npc_range_path):
+                client._xuanshu_giant_vat_photo_attempt = None
+                return False
+            prompt = await self.read_popup(client)
+        if not self._is_giant_vat_photo_prompt(prompt):
+            client._xuanshu_giant_vat_photo_attempt = None
+            return False
+        await self.take_photomancy_photo(client, prompt)
+        return True
+
     async def take_photomancy_photo(self, client, objective):
         target = plain_text(objective).casefold()
         gummy_worms = '讨厌的虫子' in target or 'gummy worms' in target
+        if self._is_giant_vat_photo_prompt(objective):
+            before = await self._dungeon_quest_snapshot(client)
+            zone = await client.zone_name()
+            attempt = (zone, before)
+            if getattr(client, '_xuanshu_giant_vat_photo_attempt', None) == attempt:
+                return
+            await client.teleport(self.GIANT_VAT_PHOTO_POSITION)
+            await asyncio.sleep(.5)
+            if not self._is_giant_vat_photo_prompt(await self.read_popup(client)):
+                return
+            client._xuanshu_giant_vat_photo_attempt = attempt
+            await client.send_key(Keycode.A, 0.05)
+            first, second = self.GIANT_VAT_PHOTO_ORIENTATIONS
+            await client.body.write_orientation(first)
+            camera = await client.game_client.selected_camera_controller()
+            if camera is not None:
+                await camera.update_orientation(first)
+            await asyncio.sleep(.2)
+            await client.send_key(Keycode.Z, 0.1)
+            await client.send_key(Keycode.Z, 0.1)
+            if before is None:
+                logger.debug('巨美大桶拍照后任务状态不可读，跳过第二次拍照。')
+                return
+            for _ in range(10):
+                await asyncio.sleep(.3)
+                after = await self._dungeon_quest_snapshot(client)
+                if after is None:
+                    logger.debug('巨美大桶拍照后任务状态不可读，跳过第二次拍照。')
+                    return
+                if after != before:
+                    return
+            if (not getattr(client, 'questing_status', False)
+                    or await client.zone_name() != zone
+                    or await client.is_loading() or await client.in_battle()):
+                return
+            await client.body.write_orientation(second)
+            camera = await client.game_client.selected_camera_controller()
+            if camera is not None:
+                await camera.update_orientation(second)
+            await asyncio.sleep(.2)
+            await client.send_key(Keycode.Z, 0.1)
+            await client.send_key(Keycode.Z, 0.1)
+            return
         if gummy_worms and await client.zone_name() == self.GUMMY_WORMS_PHOTO_ZONE:
             await client.teleport(self.GUMMY_WORMS_PHOTO_POSITION)
             await asyncio.sleep(.5)
@@ -2451,6 +2619,8 @@ class Quester():
 
                 # Handles interactables
                 sigil_msg_check = await self.read_popup(self.current_leader_client)
+                if await self._maybe_photo_giant_vat(self.current_leader_client, sigil_msg_check):
+                    return
                 if is_dungeon_entry_prompt(sigil_msg_check):
                     entry_zone = await self.current_leader_client.zone_name()
                     while is_dungeon_entry_prompt(sigil_msg_check):
@@ -2467,7 +2637,6 @@ class Quester():
                 else:
                     msg = sigil_msg_check.lower()
                     if interaction_kind(msg) == "talk":
-                        logger.debug('Talking to NPC')
                         quest_updated = await self.handle_npc_talking_quests(
                             self.current_leader_client, self.clients
                         )
@@ -2599,9 +2768,13 @@ class Quester():
             await self.auto_collect_rewrite(self.current_leader_client)
 
     async def bring_clients_to_same_location(self, questing_friend_tp: bool, gear_switching_in_solo_zones: bool):
+        if getattr(self.current_leader_client, "refilling_potions", False) is True:
+            return
         leader_pos = await self.current_leader_client.body.position()
         teleported = False
         for c in self.clients:
+            if getattr(c, "refilling_potions", False) is True or getattr(c, "questing_status", True) is False:
+                continue
             if await c.zone_name() == await self.current_leader_client.zone_name():
                 errored = True
                 # teleport throws should update bool
@@ -2638,7 +2811,8 @@ class Quester():
 
             if all_high_energy:
                 # buy potions if necessary, otherwise auto pet will fail
-                await self.heal_and_handle_potions()
+                if await self.heal_and_handle_potions() is False:
+                    return
 
                 logger.debug('All questing clients have high energy, training pets on all clients.')
                 await gather_owned(*[auto_pet(c, ignore_pet_level_up, play_dance_game, questing=True) for c in self.clients])
@@ -2669,6 +2843,11 @@ class Quester():
         if self.current_leader_client.auto_pet_status:
             await self.initial_auto_pet(energy_info, questing_clients, ignore_pet_level_up, play_dance_game)
 
+        if not self.client.questing_status:
+            return
+        questing_clients = [c for c in questing_clients if c.questing_status]
+        follower_clients = await self.get_follower_clients()
+
         # gather all clients to the same zone and exact location
         await self.bring_clients_to_same_location(questing_friend_tp, gear_switching_in_solo_zones)
 
@@ -2693,6 +2872,9 @@ class Quester():
         while self.client.questing_status:
             await asyncio.sleep(.4)
 
+            if await self._quest_dialogue_blocks_movement(self.current_leader_client):
+                continue
+
             # in case client(s) in combat and the questing loop continued anyway
             await gather_owned(*[self.leader_wait_for_free(p) for p in self.clients])
 
@@ -2703,7 +2885,11 @@ class Quester():
             ])
 
             # Collect wisps, use potions, or get potions if necessary
-            await self.heal_and_handle_potions()
+            if await self.heal_and_handle_potions() is False:
+                questing_clients = [c for c in questing_clients if c.questing_status]
+                client_quests = {c: q for c, q in client_quests.items() if c.questing_status}
+                follower_clients = await self.get_follower_clients()
+                continue
 
             # if dungeon recall button is visible, click it
             await self.handle_dungeon_recall(follower_clients=follower_clients)
@@ -2716,6 +2902,9 @@ class Quester():
             follower_clients, client_quests = await self.determine_new_leader_and_followers(client_quests, questing_clients, follower_clients)
 
             if await self._maybe_recover_mainline(self.current_leader_client):
+                continue
+            if (await is_free_leader_questing(self.current_leader_client)
+                    and await self._maybe_photo_giant_vat(self.current_leader_client)):
                 continue
 
             # handle circumstances where any follower client is not in the same zone as the leader client
@@ -2741,9 +2930,8 @@ class Quester():
 
                     await self.handle_normal_quests(follower_clients, questing_friend_tp)
                 else:
-                    dungeon_recovery = getattr(self.current_leader_client, "quest_dungeon_recovery", None)
-                    if isinstance(dungeon_recovery, dict):
-                        dungeon_recovery.update(snapshot=None, since=None)
+                    if await self._maybe_refresh_stalled_dungeon_quest(self.current_leader_client):
+                        continue
                     # Double check - sometimes wiz lies about quest position - a simple sleep and re-grabbing of the quest xyz solves the issue
                     await asyncio.sleep(3.0)
                     quest_xyz = await self.current_leader_client.quest_position.position()
@@ -2833,6 +3021,7 @@ class Quester():
             hitter
             for hitter in getattr(self.client, "quest_party_hitters", [])
             if getattr(hitter, "questing_status", False)
+            and getattr(hitter, "refilling_potions", False) is not True
         ]
         if not assigned_hitters:
             return entry_clients
@@ -2956,6 +3145,10 @@ class Quester():
 
     async def auto_quest_solo(self, auto_pet_disabled=False, ignore_pet_level_up=False, play_dance_game=False):
         from src.mainline_progress import log_mainline_progress
+        if getattr(self.client, "refilling_potions", False) is True:
+            return
+        if await self._quest_dialogue_blocks_movement(self.client):
+            return
         if await close_npc_quest_menu(self.client):
             return
         if await close_automation_popup(self.client):
@@ -2982,6 +3175,8 @@ class Quester():
         if await self._maybe_recover_mainline(self.client):
             return
         if await is_free(self.client):
+            if await self._maybe_photo_giant_vat(self.client):
+                return
             await log_mainline_progress(self.client)
             if await is_potion_needed(self.client) and await self.client.stats.current_mana() > 1 and await self.client.stats.current_hitpoints() > 1:
                 await collect_wisps(self.client)
@@ -3013,6 +3208,8 @@ class Quester():
                 if await self._maybe_refresh_stalled_dungeon_quest(self.client):
                     return
 
+                if await self._quest_dialogue_blocks_movement(self.client):
+                    return
                 zone_before_quest_move = await self.client.zone_name()
                 await self.teleport_to_quest_target(self.client, quest_xyz)
 
@@ -3045,6 +3242,8 @@ class Quester():
                 if await is_visible_by_path(self.client, npc_range_path) and calc_Distance(quest_xyz, current_pos) < 750.0:
                     # Handles interactables
                     sigil_msg_check = await self.read_popup(self.client)
+                    if await self._maybe_photo_giant_vat(self.client, sigil_msg_check):
+                        return
                     if is_dungeon_entry_prompt(sigil_msg_check):
                         # Handles entering dungeons
                         entry_clients = await self.prepare_party_dungeon_entry()
@@ -3095,7 +3294,6 @@ class Quester():
                                 )
                             return
                     elif interaction_kind(sigil_msg_check) == "talk":
-                        logger.debug('Talking to NPC')
                         quest_updated = await self.handle_npc_talking_quests(
                             self.client, [self.client]
                         )
@@ -3119,9 +3317,8 @@ class Quester():
                     await self.take_photomancy_photo(self.client, quest_objective)
 
             else:
-                dungeon_recovery = getattr(self.client, "quest_dungeon_recovery", None)
-                if isinstance(dungeon_recovery, dict):
-                    dungeon_recovery.update(snapshot=None, since=None)
+                if await self._maybe_refresh_stalled_dungeon_quest(self.client):
+                    return
                 # Double check - sometimes wiz lies about quest position - a simple sleep and re-grabbing of the quest xyz seems to solve the issue
                 await asyncio.sleep(3.0)
                 quest_xyz = await self.client.quest_position.position()

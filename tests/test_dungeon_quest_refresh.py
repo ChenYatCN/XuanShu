@@ -2,8 +2,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from wizwalker import Keycode
-from src.paths import all_quests_sort_button_path, quest_two_button_path
+from wizwalker import Keycode, XYZ
+from src.paths import all_quests_sort_button_path, quest_buttons_parent_path
 from src.questing import Quester
 
 
@@ -36,7 +36,7 @@ class DungeonQuestRefreshTests(unittest.IsolatedAsyncioTestCase):
         async def visible(_client, path):
             return self.menu_open and (
                 path == all_quests_sort_button_path
-                or path == [*quest_two_button_path, "questInfoWindow", "wndQuestInfo", "txtGoal"]
+                or path == [*quest_buttons_parent_path, "wndQuestInfo0", "questInfoWindow", "wndQuestInfo", "txtGoal"]
             )
 
         self.client.send_key.side_effect = send_key
@@ -70,7 +70,7 @@ class DungeonQuestRefreshTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.client.send_key.await_count, 2)
         self.clicked.assert_awaited_once_with(
             self.client,
-            [*quest_two_button_path, "questInfoWindow", "wndQuestInfo", "txtGoal"],
+            [*quest_buttons_parent_path, "wndQuestInfo0", "questInfoWindow", "wndQuestInfo", "txtGoal"],
         )
         self.assertFalse(self.menu_open)
         self.now = 181.0
@@ -88,6 +88,36 @@ class DungeonQuestRefreshTests(unittest.IsolatedAsyncioTestCase):
         self.now = 180.0
         self.assertFalse(await self.quester._maybe_refresh_stalled_dungeon_quest(self.client))
         self.client.send_key.assert_not_awaited()
+
+    async def test_confirmed_dungeon_card_recovery_preempts_mainline_finder(self):
+        self.client.mainline_finder_enabled = True
+        self.client.mainline_finder_offer_guard = True
+        self.quester._mainline_identity = AsyncMock(return_value=(42, 'DungeonQuest', '', None, False))
+        self.quester._run_mainline_finder = AsyncMock()
+        self.quester._mainline_finder_observations[id(self.client)] = {'count': 3}
+        self.quester._mainline_finder_retry_at[id(self.client)] = 900
+        await self.arm()
+        self.assertFalse(await self.quester._maybe_recover_mainline(self.client))
+        self.assertFalse(self.client.mainline_finder_offer_guard)
+        self.assertNotIn(id(self.client), self.quester._mainline_finder_observations)
+        self.assertNotIn(id(self.client), self.quester._mainline_finder_retry_at)
+        self.now = 180.0
+        self.assertTrue(await self.quester._maybe_recover_mainline(self.client))
+        self.clicked.assert_awaited_once_with(
+            self.client,
+            [*quest_buttons_parent_path, 'wndQuestInfo0', 'questInfoWindow', 'wndQuestInfo', 'txtGoal'],
+        )
+        self.quester._mainline_identity.assert_not_awaited()
+        self.quester._run_mainline_finder.assert_not_awaited()
+
+    async def test_party_confirmed_dungeon_arms_card_recovery_before_finder(self):
+        self.client.mainline_finder_enabled = True
+        self.client.quest_party_group_dungeon_zone = 'Dungeon/RoomA'
+        self.quester._mainline_identity = AsyncMock()
+        self.assertFalse(await self.quester._maybe_recover_mainline(self.client))
+        self.assertEqual(self.client.quest_dungeon_recovery['zone'], 'Dungeon/RoomA')
+        self.assertEqual(self.client.quest_dungeon_recovery['since'], 0.0)
+        self.quester._mainline_identity.assert_not_awaited()
 
     async def test_busy_state_defers_then_rechecks_progress(self):
         await self.arm()
@@ -130,6 +160,23 @@ class DungeonQuestRefreshTests(unittest.IsolatedAsyncioTestCase):
         self.clicked.assert_not_awaited()
         self.assertFalse(self.menu_open)
         self.assertEqual(self.client.send_key.await_count, 2)
+
+    async def test_zero_quest_position_still_checks_dungeon_recovery(self):
+        self.client.quest_position.position.return_value = XYZ(0.0, 0.0, 0.0)
+        self.client.use_potions = False
+        self.client.auto_pet_status = False
+        self.quester.handle_pending_dungeon_confirmation = AsyncMock(return_value=False)
+        self.quester._quest_party_probe_blocks_movement = AsyncMock(return_value=False)
+        self.quester._maybe_recover_mainline = AsyncMock(return_value=False)
+        self.quester._maybe_recover_nightmare = AsyncMock(return_value=False)
+        self.quester._maybe_refresh_stalled_dungeon_quest = AsyncMock(return_value=True)
+        with (patch("src.questing.close_npc_quest_menu", new=AsyncMock(return_value=False)),
+              patch("src.questing.close_automation_popup", new=AsyncMock(return_value=False)),
+              patch("src.questing.is_free", new=AsyncMock(return_value=True)),
+              patch("src.questing.is_potion_needed", new=AsyncMock(return_value=False)),
+              patch("src.mainline_progress.log_mainline_progress", new=AsyncMock())):
+            await self.quester.auto_quest_solo()
+        self.quester._maybe_refresh_stalled_dungeon_quest.assert_awaited_once_with(self.client)
 
 
 if __name__ == "__main__":

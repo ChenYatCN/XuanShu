@@ -118,9 +118,11 @@ class MainlineTests(unittest.IsolatedAsyncioTestCase):
         client.questing_status = True
         client.auto_pet_status = False
         client.use_potions = False
+        client.mainline_finder_enabled = False
         client.entity_detect_combat_status = False
         client.quest_position.position.return_value = XYZ(100, 0, 0)
         quester = Quester(client, [client], None)
+        quester._quest_dialogue_blocks_movement = AsyncMock(return_value=False)
         quester.handle_pending_dungeon_confirmation = AsyncMock(return_value=False)
         quester._quest_party_probe_blocks_movement = AsyncMock(return_value=False)
         quester._maybe_refresh_stalled_dungeon_quest = AsyncMock(return_value=True)
@@ -143,6 +145,7 @@ class MainlineTests(unittest.IsolatedAsyncioTestCase):
             client.process_id = number
             client.zone_name.return_value = 'WizardCity/Area'
         quester = Quester(p1, [p1, p2], 1)
+        quester._quest_dialogue_blocks_movement = AsyncMock(return_value=False)
         quester.get_follower_clients = AsyncMock(return_value=[])
         quester.get_questing_clients = AsyncMock(return_value=[p1, p2])
         quester.bring_clients_to_same_location = AsyncMock()

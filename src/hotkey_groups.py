@@ -108,6 +108,10 @@ class HotkeyGroups:
     async def remove_missing(self):
         live = self.clients()
         for key, (members, _) in list(self.groups.items()):
-            members[:] = [c for c in members if client_available(c, live)]
+            remaining = [c for c in members if client_available(c, live)]
+            if key[0] == 'toggle_questing' and len(remaining) != len(members):
+                await self.stop(key)
+                continue
+            members[:] = remaining
             if not members:
                 await self.stop(key)

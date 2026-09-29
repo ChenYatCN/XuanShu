@@ -38,6 +38,14 @@ class KrokExitFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.move.assert_awaited_once_with(self.client, self.target, leader_client=None)
         self.client.send_key.assert_not_awaited()
 
+    async def test_missing_title_during_move_does_not_clear_stall_as_progress(self):
+        await self.attempt(0)
+        state = self.quester._krok_exit_watch[id(self.client)]
+        self.quest.side_effect = ['Go outside', '']
+        await self.attempt(5)
+        self.assertIs(self.quester._krok_exit_watch[id(self.client)], state)
+        self.client.send_key.assert_not_awaited()
+
     async def test_three_stalled_attempts_over_ten_seconds_trigger_end(self):
         await self.attempt(0)
         await self.attempt(5)

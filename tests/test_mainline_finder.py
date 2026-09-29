@@ -46,14 +46,46 @@ class MainlineFinderTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await self.quester._maybe_recover_mainline(self.client))
         self.quester._run_mainline_finder.assert_not_awaited()
 
-    async def test_game_confirmed_mainline_is_not_recovered_on_index_miss(self):
+    async def test_npc_range_does_not_permanently_block_finder(self):
+        from src.paths import npc_range_path
+        with (patch('src.questing.is_free_leader_questing', new=AsyncMock(return_value=True)),
+              patch('src.questing.is_spiral_door_open', new=AsyncMock(return_value=False)),
+              patch('src.questing.is_visible_by_path', new=AsyncMock(
+                  side_effect=lambda c, path: path == npc_range_path))):
+            self.assertFalse(await self.quester._mainline_finder_blocked(self.client))
+
+    async def test_dialogue_settles_latest_quest_even_with_finder_disabled(self):
+        self.client.mainline_finder_enabled = False
+        self.client.quest_id = AsyncMock(return_value=100)
+        self.client.goal_id = AsyncMock(return_value=1)
+        now = [0.0]
+        free = AsyncMock(return_value=False)
+        with (patch('src.questing.is_free_leader_questing', new=free),
+              patch('src.questing.time.monotonic', side_effect=lambda: now[0])):
+            self.assertTrue(await self.quester._quest_dialogue_blocks_movement(self.client))
+            free.return_value = True
+            self.assertTrue(await self.quester._quest_dialogue_blocks_movement(self.client))
+            now[0] = 2.0
+            self.client.quest_id.return_value = 200
+            self.assertTrue(await self.quester._quest_dialogue_blocks_movement(self.client))
+            now[0] = 4.0
+            self.assertTrue(await self.quester._quest_dialogue_blocks_movement(self.client))
+            now[0] = 5.1
+            self.assertFalse(await self.quester._quest_dialogue_blocks_movement(self.client))
+        self.assertIsNone(self.client.quest_dialogue_settle)
+
+    async def test_game_flag_does_not_allow_index_miss_movement(self):
         self.quester._mainline_identity = AsyncMock(
             return_value=(42, 'NewMainlineKey', 'New Mainline', None, True))
         self.quester._run_mainline_finder = AsyncMock()
-        self.assertFalse(await self.quester._maybe_recover_mainline(self.client))
+        self.quester._mainline_finder_blocked = AsyncMock(return_value=False)
+        self.assertTrue(await self.quester._maybe_recover_mainline(self.client))
         self.quester._run_mainline_finder.assert_not_awaited()
 
     async def test_confirmed_side_quest_waits_three_reads_then_claims_lock(self):
+        # Old dungeon metadata must not suppress Finder after leaving the instance.
+        self.client.quest_dungeon_recovery = {'zone': 'Dungeon/OldRoom'}
+        self.client.quest_party_group_dungeon_zone = 'Dungeon/OldRoom'
         self.quester._mainline_identity = AsyncMock(
             return_value=(42, 'SideQuest', 'Side Quest', None, False))
         self.quester._run_mainline_finder = AsyncMock(return_value=True)

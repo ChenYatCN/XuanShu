@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -18,6 +19,7 @@ class NPCInteractionRetryTests(unittest.IsolatedAsyncioTestCase):
             send_key=AsyncMock(),
             quest_id=AsyncMock(return_value=10),
             goal_id=AsyncMock(return_value=20),
+            zone_name=AsyncMock(return_value='Lemuria/LM_Z02_UrsaiVillage'),
             quest_position=SimpleNamespace(position=AsyncMock(return_value=XYZ(1, 2, 3))),
             game_client=SimpleNamespace(selected_camera_controller=AsyncMock(return_value=self.camera)),
         )
@@ -26,6 +28,7 @@ class NPCInteractionRetryTests(unittest.IsolatedAsyncioTestCase):
         self.quester.quest_interaction_ready = AsyncMock(return_value=True)
         self.quester._mainline_turn_in_snapshot = AsyncMock(return_value=None)
         self.quester._continue_mainline_chain = AsyncMock()
+        self.quester._maybe_refresh_stalled_dungeon_quest = AsyncMock(return_value=False)
         self.clock = 0.0
 
         def monotonic():
@@ -85,6 +88,84 @@ class NPCInteractionRetryTests(unittest.IsolatedAsyncioTestCase):
             [call.args[0] for call in self.client.send_key.await_args_list],
             [Keycode.X, Keycode.A, Keycode.A, Keycode.A],
         )
+
+    async def test_exhausted_round_retries_after_cooldown_without_worker_restart(self):
+        self.quester.read_quest_txt = AsyncMock(return_value='Talk')
+        self.assertFalse(await self.quester.handle_npc_talking_quests(self.client, [self.client]))
+        self.assertIsNone(self.client.quest_recovery_owner)
+        count = self.client.send_key.await_count
+        self.assertFalse(await self.quester.handle_npc_talking_quests(self.client, [self.client]))
+        self.assertEqual(self.client.send_key.await_count, count)
+        self.clock += 31.0
+        self.assertFalse(await self.quester.handle_npc_talking_quests(self.client, [self.client]))
+        self.assertGreater(self.client.send_key.await_count, count)
+        self.assertEqual(self.quester._maybe_refresh_stalled_dungeon_quest.await_count, 3)
+
+    async def test_new_goal_clears_previous_exhaustion_immediately(self):
+        self.quester.read_quest_txt = AsyncMock(return_value='Talk')
+        await self.quester.handle_npc_talking_quests(self.client, [self.client])
+        count = self.client.send_key.await_count
+        self.client.goal_id.side_effect = lambda: 22 if self.client.send_key.await_count > count else 21
+        self.assertTrue(await self.quester.handle_npc_talking_quests(self.client, [self.client]))
+        self.assertNotIn(id(self.client), self.quester._npc_retry_exhausted)
+        self.assertIsNone(self.client.quest_recovery_owner)
+
+    async def test_missing_hud_does_not_count_as_quest_progress(self):
+        self.quester.read_quest_txt = AsyncMock(side_effect=lambda _: 'Talk' if not self.client.send_key.await_count else '')
+        self.assertFalse(await self.quester.handle_npc_talking_quests(self.client, [self.client]))
+        self.quester._continue_mainline_chain.assert_not_awaited()
+
+    async def test_zero_quest_id_during_refresh_is_not_progress(self):
+        self.quester.read_quest_txt = AsyncMock(side_effect=lambda _: '' if self.client.send_key.await_count else 'Talk')
+        self.client.quest_id.side_effect = lambda: 0 if self.client.send_key.await_count else 10
+        self.assertFalse(await self.quester.handle_npc_talking_quests(self.client, [self.client]))
+        self.quester._continue_mainline_chain.assert_not_awaited()
+
+    async def test_completed_mainline_with_readable_hud_still_runs_handoff(self):
+        self.quester.read_quest_txt = AsyncMock(return_value='Talk')
+        self.client.quest_id.side_effect = lambda: 0 if self.client.send_key.await_count else 10
+        self.assertTrue(await self.quester.handle_npc_talking_quests(self.client, [self.client]))
+        self.quester._continue_mainline_chain.assert_awaited_once()
+
+    async def test_new_quest_id_clears_previous_cooldown(self):
+        self.quester.read_quest_txt = AsyncMock(return_value='Talk')
+        await self.quester.handle_npc_talking_quests(self.client, [self.client])
+        count = self.client.send_key.await_count
+        self.client.quest_id.return_value = 11
+        self.client.goal_id.side_effect = lambda: 21 if self.client.send_key.await_count > count else 20
+        self.assertTrue(await self.quester.handle_npc_talking_quests(self.client, [self.client]))
+        self.assertNotIn(id(self.client), self.quester._npc_retry_exhausted)
+
+    async def test_dialogue_change_clears_previous_exhaustion(self):
+        self.quester.read_quest_txt = AsyncMock(return_value='Talk')
+        await self.quester.handle_npc_talking_quests(self.client, [self.client])
+        count = self.client.send_key.await_count
+        with patch('src.questing.is_free_leader_questing', new=AsyncMock(return_value=False)):
+            self.assertFalse(await self.quester.handle_npc_talking_quests(self.client, [self.client]))
+        self.assertNotIn(id(self.client), self.quester._npc_retry_exhausted)
+        self.assertEqual(self.client.send_key.await_count, count)
+
+    async def test_error_and_cancellation_release_owner(self):
+        for error in (RuntimeError('stale HUD'), asyncio.CancelledError()):
+            with self.subTest(error=type(error).__name__):
+                self.quester._npc_retry_exhausted[id(self.client)] = {'old': True}
+                self.quester.read_quest_txt = AsyncMock(side_effect=error)
+                if isinstance(error, asyncio.CancelledError):
+                    with self.assertRaises(asyncio.CancelledError):
+                        await self.quester.handle_npc_talking_quests(self.client, [self.client])
+                else:
+                    self.assertFalse(await self.quester.handle_npc_talking_quests(self.client, [self.client]))
+                self.assertIsNone(self.client.quest_recovery_owner)
+                self.assertNotIn(id(self.client), self.quester._npc_retry_exhausted)
+
+    async def test_other_owner_is_preserved_and_wait_log_is_throttled(self):
+        self.client.quest_recovery_owner = 'mainline_finder'
+        with patch('src.questing.logger') as log:
+            for _ in range(3):
+                self.assertFalse(await self.quester.handle_npc_talking_quests(self.client, [self.client]))
+            log.debug.assert_called_once()
+        self.assertEqual(self.client.quest_recovery_owner, 'mainline_finder')
+        self.client.send_key.assert_not_awaited()
 
 
 if __name__ == "__main__":

@@ -207,6 +207,22 @@ class TargetingSprintyCombat(UpstreamSprintyCombat):
     """Upstream SprintyCombat with a narrow 3D-model targeting fallback."""
 
     async def handle_round(self):
+        # Wait for assigned hitters to appear in this battle's roster before
+        # evaluating priorities that could otherwise buff the quester itself.
+        while (getattr(self.client, 'questing_status', False)
+               and getattr(self.client, 'quest_party_hitters', [])):
+            if (not await self.client.in_battle()
+                    or await self.client.duel.duel_phase() != DuelPhase.planning):
+                return
+            members = await self.get_members()
+            present = {await member.owner_id() for member in members}
+            expected = {
+                await hitter.client_object.global_id_full()
+                for hitter in self.client.quest_party_hitters
+            }
+            if expected <= present:
+                break
+            await asyncio.sleep(0.25)
         # Own the whole planning transaction, including enchant/discard/pass and
         # the card -> target sequence.  Card.cast claims the same task-reentrant
         # lock, so direct calls are protected without deadlocking this wrapper.

@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from contextlib import ExitStack
 from types import SimpleNamespace
@@ -9,8 +10,13 @@ from src.questing import Quester, claim_quest_recovery
 
 
 class PrivateWingExitTests(unittest.IsolatedAsyncioTestCase):
+    source_zone = Quester.PRIVATE_WING_ZONE
+    owner = 'private_wing'
+    exit_xyz = (20.521, 11529.802, 2.052)
+    failed_attr = '_xuanshu_private_wing_failed'
+
     def setUp(self):
-        self.zone = Quester.PRIVATE_WING_ZONE
+        self.zone = self.source_zone
         self.now = 0.0
         self.progress = (123, 1, 'Find the exit')
         self.client = SimpleNamespace(
@@ -44,9 +50,9 @@ class PrivateWingExitTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stall_uses_exact_exit_and_waits_for_stable_new_zone(self):
         async def teleport(target):
-            self.assertEqual(self.client.quest_recovery_owner, 'private_wing')
+            self.assertEqual(self.client.quest_recovery_owner, self.owner)
             self.assertFalse(claim_quest_recovery(self.client, 'dungeon_quest'))
-            self.assertEqual((target.x, target.y, target.z), (20.521, 11529.802, 2.052))
+            self.assertEqual((target.x, target.y, target.z), self.exit_xyz)
             self.zone = 'Empyrea/Interiors/NextZone'
         self.client.teleport.side_effect = teleport
         self.zone_stable.side_effect = [False, True, True]
@@ -54,11 +60,11 @@ class PrivateWingExitTests(unittest.IsolatedAsyncioTestCase):
         self.client.teleport.assert_not_awaited()
         await self.move(11)
         self.client.teleport.assert_awaited_once()
-        self.zone_wait.assert_awaited_once_with(self.client, current_zone=Quester.PRIVATE_WING_ZONE)
+        self.zone_wait.assert_awaited_once_with(self.client, current_zone=self.source_zone)
         self.client.quest_position.position.assert_awaited()
         self.assertEqual(self.zone_stable.await_count, 3)
         self.assertIsNone(self.client.quest_recovery_owner)
-        self.assertIsNone(self.client._xuanshu_private_wing_failed)
+        self.assertIsNone(getattr(self.client, self.failed_attr))
         self.assertNotIn(id(self.client), self.quester._krok_exit_watch)
 
     async def test_normal_zone_change_during_task_move_never_uses_exit(self):
@@ -91,7 +97,7 @@ class PrivateWingExitTests(unittest.IsolatedAsyncioTestCase):
         self.progress = (123, 2, 'Find the exit')
         self.now = 50
         await restarted.teleport_to_quest_target(self.client, XYZ(9000, 0, 0))
-        self.assertIsNone(self.client._xuanshu_private_wing_failed)
+        self.assertIsNone(getattr(self.client, self.failed_attr))
 
     async def test_not_running_busy_or_other_zone_never_uses_exit(self):
         self.client.questing_status = False
@@ -109,3 +115,59 @@ class PrivateWingExitTests(unittest.IsolatedAsyncioTestCase):
         self.zone = 'Empyrea/Interiors/OtherZone'
         await self.move(25)
         self.client.teleport.assert_not_awaited()
+
+
+class GobblertonExitTests(PrivateWingExitTests):
+    source_zone = Quester.GOBBLERTON_ZONE
+    owner = 'gobblerton'
+    exit_xyz = (874.868, 5917.971, 800.977)
+    failed_attr = '_xuanshu_gobblerton_failed'
+
+    async def test_body_movement_is_not_quest_progress(self):
+        self.zone_wait.side_effect = TimeoutError()
+        for step in (0, 4, 8, 11):
+            self.client.body.position.return_value = XYZ(step * 200, 0, 0)
+            await self.move(step)
+        self.client.teleport.assert_awaited_once()
+
+    async def test_battle_blocks_normal_and_special_tp(self):
+        self.free.return_value = False
+        await self.move(0, 4, 8, 11)
+        self.client.teleport.assert_not_awaited()
+        self.collision.assert_not_awaited()
+
+    async def test_progress_during_final_normal_tp_prevents_recovery(self):
+        await self.move(0, 4, 8)
+        async def progress(*args, **kwargs):
+            self.progress = (123, 2, 'Find the exit')
+        self.collision.side_effect = progress
+        await self.move(11)
+        self.client.teleport.assert_not_awaited()
+
+    async def test_cancellation_releases_owner(self):
+        self.zone_wait.side_effect = asyncio.CancelledError()
+        with self.assertRaises(asyncio.CancelledError):
+            await self.move(0, 4, 8, 11)
+        self.assertIsNone(self.client.quest_recovery_owner)
+        await self.move(20, 30, 40)
+        self.client.teleport.assert_awaited_once()
+
+    async def test_loading_and_nested_tp_are_blocked_until_new_zone_stable(self):
+        async def wait(*args, **kwargs):
+            count = self.collision.await_count
+            self.zone = 'Karamelle/NextZone'
+            self.client.is_loading.return_value = True
+            await self.move(12)
+            self.assertEqual(self.collision.await_count, count)
+            self.client.is_loading.side_effect = [True, False, False]
+        self.zone_wait.side_effect = wait
+        await self.move(0, 4, 8, 11)
+        self.assertIsNone(self.client.quest_recovery_owner)
+        self.client.quest_position.position.assert_awaited_once()
+
+    async def test_no_zone_change_is_not_success(self):
+        with patch('src.questing.logger') as log:
+            await self.move(0, 4, 8, 11, 20, 30)
+        log.warning.assert_called_once()
+        self.client.quest_position.position.assert_not_awaited()
+        self.assertIsNone(self.client.quest_recovery_owner)

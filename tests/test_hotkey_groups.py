@@ -64,7 +64,7 @@ class HotkeyGroupTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(second, 1)
         self.assertTrue(stopped.is_set())
 
-    async def test_team_disconnect_keeps_remaining_workers(self):
+    async def test_team_disconnect_stops_questing_group(self):
         clients = [SimpleNamespace(title='p1'), SimpleNamespace(title='p2')]
         stopped = []
         async def worker(c):
@@ -81,6 +81,6 @@ class HotkeyGroupTests(unittest.IsolatedAsyncioTestCase):
         clients.pop()
         await manager.remove_missing()
         await asyncio.sleep(0.3)
-        self.assertEqual(stopped, ['p2'])
-        self.assertTrue(manager.active('toggle_questing'))
+        self.assertCountEqual(stopped, ['p1', 'p2'])
+        self.assertFalse(manager.active('toggle_questing'))
         await manager.stop()

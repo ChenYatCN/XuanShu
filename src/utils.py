@@ -606,7 +606,53 @@ async def navigate_to_potions(client: Client):
     # Teleport to hilda brewer
 
 
-async def buy_potions(client: Client, recall: bool = True, original_zone=None):
+async def return_to_dungeon_after_potions(client: Client, original_zone: str) -> bool:
+    """Use the game's Resume Instance button, never a quest/friend teleport."""
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        if not await client.is_loading() and await is_visible_by_path(client, dungeon_recall_path):
+            break
+        await asyncio.sleep(0.25)
+    else:
+        logger.error(f"自动任务：{client.title} 未找到地牢返回按钮，停止本次回传。")
+        return False
+
+    logger.info(f"自动任务：{client.title} 正在通过地牢返回按钮返回副本。")
+    departure_zone = await client.zone_name()
+    await click_window_by_path(client, dungeon_recall_path)
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline:
+        if await client.is_loading() or await client.zone_name() != departure_zone:
+            break
+        await asyncio.sleep(0.25)
+    else:
+        logger.error(f"自动任务：{client.title} 点击地牢返回按钮后未观察到区域切换。")
+        return False
+
+    deadline = time.monotonic() + 45.0
+    stable_reads = 0
+    while time.monotonic() < deadline:
+        if not await client.is_loading() and await client.zone_name() == original_zone:
+            stable_reads += 1
+            if stable_reads >= 3:
+                pending_hitters = {
+                    id(h) for h in getattr(client, "quest_party_hitters", [])
+                    if getattr(h, "questing_status", False)
+                }
+                client.potion_dungeon_returned = (
+                    original_zone, time.monotonic(), pending_hitters,
+                ) if pending_hitters or getattr(client, "quest_party_status_session", None) is not None else None
+                client.quest_party_battle_sync_state = None
+                logger.info(f"自动任务：{client.title} 已返回地牢，恢复组队同步。")
+                return True
+        else:
+            stable_reads = 0
+        await asyncio.sleep(0.5)
+    logger.error(f"自动任务：{client.title} 未确认返回原地牢 {original_zone!r}。")
+    return False
+
+
+async def buy_potions(client: Client, recall: bool = True, original_zone=None, dungeon_return: bool = False):
     try:
         await asyncio.sleep(1.0)
         max_potions = await client.stats.potion_max()
@@ -664,6 +710,12 @@ async def buy_potions(client: Client, recall: bool = True, original_zone=None):
 
         # Only recall if we actually left the original zone.
         if original_zone != current_zone:
+            if dungeon_return:
+                logger.info(f"自动任务：{client.title} 药水补充完成，准备返回地牢。")
+                returned = await return_to_dungeon_after_potions(client, original_zone)
+                if not returned:
+                    client.questing_status = False
+                return returned
             return await recall_to_teleport_mark(client, expected_zone=original_zone)
 
     return True
@@ -755,30 +807,46 @@ async def auto_potions_force_buy(
     # If we have any missing potions, get potions
     if await client.stats.potion_charge() < await client.stats.potion_max():
         original_zone = await client.zone_name()
-        # do not recall from potion buy if we were already in the commons - wait for zone change will fail
-        if original_zone == "WizardCity/WC_Hub":
-            recall = False
-        else:
-            recall = True
-            if not await ensure_teleport_mark(client):
+        dungeon_state = getattr(client, "quest_dungeon_recovery", None)
+        dungeon_return = (
+            original_zone == getattr(client, "quest_party_group_dungeon_zone", None)
+            or isinstance(dungeon_state, dict) and dungeon_state.get("zone") == original_zone
+        )
+        client.refilling_potions = True
+        client.potion_dungeon_returned = None
+        logger.info(f"自动任务：{client.title} 开始补充药水，暂时退出地牢同步。")
+        try:
+            # No return travel is needed when already in the Commons.
+            recall = original_zone != "WizardCity/WC_Hub"
+            if recall and not dungeon_return and not await ensure_teleport_mark(client):
                 logger.error(f"Client {client.title} - 药水补充失败：原地图标记未确认，取消出发。")
                 return False
-        if recall and await client.zone_name() != original_zone:
-            logger.error(f"Client {client.title} - 放置标记期间地图改变，取消补药。")
+            if recall and await client.zone_name() != original_zone:
+                logger.error(f"Client {client.title} - 放置标记期间地图改变，取消补药。")
+                return False
+            await asyncio.wait_for(navigate_to_ravenwood(client), timeout=90.0)
+            await asyncio.wait_for(navigate_to_commons_from_ravenwood(client), timeout=90.0)
+            await asyncio.wait_for(navigate_to_potions(client), timeout=90.0)
+            recalled = await asyncio.wait_for(
+                buy_potions(client, recall=recall, original_zone=original_zone,
+                            dungeon_return=dungeon_return), timeout=180.0,
+            )
+            if not recalled and dungeon_return:
+                client.questing_status = False
+            if await is_potion_needed(client, minimum_mana):
+                await use_potion(client)
+            return recalled
+        except asyncio.CancelledError:
+            if dungeon_return:
+                client.questing_status = False
+            raise
+        except Exception:
+            logger.exception(f"自动任务：{client.title} 补药流程异常。")
+            if dungeon_return:
+                client.questing_status = False
             return False
-        # Navigate to ravenwood
-        await navigate_to_ravenwood(client)
-        # Navigate to commons
-        await navigate_to_commons_from_ravenwood(client)
-        # Navigate to hilda brewer
-        await navigate_to_potions(client)
-        # Buy potions
-        recalled = await buy_potions(client, recall=recall, original_zone=original_zone)
-
-        if await is_potion_needed(client, minimum_mana):
-            await use_potion(client)
-
-        return recalled
+        finally:
+            client.refilling_potions = False
 
     return True
 
@@ -1071,32 +1139,58 @@ async def click_window_until_closed(client: Client, path):
 
 
 async def refill_potions(
-    client: Client, mark: bool = False, recall: bool = True, original_zone=None
+    client: Client, mark: bool = False, recall: bool = True, original_zone=None,
+    dungeon_return: bool = False,
 ):
     if await client.stats.reference_level() >= 6:
         starting_zone = await client.zone_name()
         if original_zone is None:
             original_zone = starting_zone
 
-        if recall and original_zone != starting_zone:
-            logger.error(f"Client {client.title} - 原地图 {original_zone!r} 与出发地图 {starting_zone!r} 不符，取消补药。")
-            return False
-        if (recall or mark) and starting_zone != "WizardCity/WC_Hub":
-            if not await ensure_teleport_mark(client):
-                logger.error(f"Client {client.title} - 药水补充失败：原地图标记未确认，取消出发。")
-                return False
+        dungeon_state = getattr(client, "quest_dungeon_recovery", None)
+        dungeon_return = dungeon_return or (
+            original_zone == getattr(client, "quest_party_group_dungeon_zone", None)
+            or isinstance(dungeon_state, dict) and dungeon_state.get("zone") == original_zone
+        )
 
-        if recall and await client.zone_name() != original_zone:
-            logger.error(f"Client {client.title} - 放置标记期间地图改变，取消补药。")
+        client.refilling_potions = True
+        client.potion_dungeon_returned = None
+        logger.info(f"自动任务：{client.title} 开始补充药水，暂时退出地牢同步。")
+        try:
+            if recall and original_zone != starting_zone:
+                logger.error(f"Client {client.title} - 原地图 {original_zone!r} 与出发地图 {starting_zone!r} 不符，取消补药。")
+                return False
+            if (recall or mark) and not dungeon_return and starting_zone != "WizardCity/WC_Hub":
+                if not await ensure_teleport_mark(client):
+                    logger.error(f"Client {client.title} - 药水补充失败：原地图标记未确认，取消出发。")
+                    return False
+
+            if recall and await client.zone_name() != original_zone:
+                logger.error(f"Client {client.title} - 放置标记期间地图改变，取消补药。")
+                return False
+            await asyncio.wait_for(navigate_to_ravenwood(client), timeout=90.0)
+            await asyncio.wait_for(navigate_to_commons_from_ravenwood(client), timeout=90.0)
+            await asyncio.wait_for(navigate_to_potions(client), timeout=90.0)
+            result = await asyncio.wait_for(
+                buy_potions(client, recall, original_zone=original_zone,
+                            dungeon_return=dungeon_return), timeout=180.0,
+            )
+            if not result and dungeon_return:
+                # A failed instance return must not fall through to quest/friend TP.
+                client.questing_status = False
+                logger.error(f"自动任务：{client.title} 地牢补药返回失败，已停止该客户端自动任务。")
+            return result
+        except asyncio.CancelledError:
+            if dungeon_return:
+                client.questing_status = False
+            raise
+        except Exception:
+            logger.exception(f"自动任务：{client.title} 补药流程异常。")
+            if dungeon_return:
+                client.questing_status = False
             return False
-        # Navigate to ravenwood
-        await navigate_to_ravenwood(client)
-        # Navigate to commons from ravenwood
-        await navigate_to_commons_from_ravenwood(client)
-        # Navigate to hilda brewer
-        await navigate_to_potions(client)
-        # Buy potions
-        return await buy_potions(client, recall, original_zone=original_zone)
+        finally:
+            client.refilling_potions = False
 
     return False
 
@@ -1184,15 +1278,28 @@ async def is_free(client: Client):
 
 
 async def get_quest_name(client: Client):
-    while not await is_free(client):
-        await asyncio.sleep(0.1)
-    quest_name_window = await get_window_from_path(client.root_window, quest_name_path)
-    while not await is_visible_by_path(client, quest_name_path):
-        await asyncio.sleep(0.1)
-    quest_objective = await quest_name_window.maybe_text()
-    quest_objective = quest_objective.replace("<center>", "")
-    quest_objective = quest_objective.replace("</center>", "")
-    return quest_objective
+    # The HUD may be rebuilt between reads. Never retain a missing/stale window
+    # while waiting for a different lookup to become visible.
+    try:
+        if not await is_free(client):
+            return ""
+        quest_name_window = await get_window_from_path(client.root_window, quest_name_path)
+        if quest_name_window is None or isinstance(quest_name_window, bool):
+            return ""
+        if not await quest_name_window.is_visible():
+            return ""
+        quest_objective = await quest_name_window.maybe_text()
+        if not isinstance(quest_objective, str):
+            return ""
+        client._quest_name_read_retry_at = 0.0
+        return quest_objective.replace("<center>", "").replace("</center>", "")
+    except Exception as exc:
+        now = time.monotonic()
+        retry_at = getattr(client, "_quest_name_read_retry_at", 0.0)
+        if not isinstance(retry_at, (int, float)) or now >= retry_at:
+            logger.debug(f"Client {client.title} - Quest HUD unavailable; retry next iteration: {exc}")
+            client._quest_name_read_retry_at = now + 30.0
+        return ""
 
 
 # quest_number - 0-3
@@ -1246,6 +1353,8 @@ async def get_popup_title(client: Client) -> Optional[str]:
 async def is_popup_title_relevant(client: Client, quest_info: str = None) -> bool:
     if not quest_info:
         quest_info = await get_quest_name(client)
+    if not quest_info:
+        return False
 
     popup_text = await get_window_from_path(client.root_window, popup_title_path)
     maybe_collect_item = await popup_text.maybe_text()

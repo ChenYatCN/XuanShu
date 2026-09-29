@@ -23,7 +23,16 @@ class Sigil():
 
 
 	async def record_quest(self):
-		self.original_quest = await get_quest_name(self.client)
+		self.original_quest = await self.read_quest_name()
+
+	async def read_quest_name(self):
+		# Dungeon classification needs a real title, never a missing HUD snapshot.
+		while self.client.sigil_status:
+			quest = await get_quest_name(self.client)
+			if quest:
+				return quest
+			await asyncio.sleep(0.25)
+		raise asyncio.CancelledError()
 
 	@logger.catch()
 	async def team_up(self, client: Client = None):
@@ -120,7 +129,7 @@ class Sigil():
 			await asyncio.sleep(1.5)
 
 			# if quest objective is same, we know it's a short dungeon, most likely with 1 room
-			if await get_quest_name(self.client) == self.original_quest:
+			if await self.read_quest_name() == self.original_quest:
 				start_xyz = await self.client.body.position() 
 				second_xyz = await calc_FrontalVector(self.client, speed_constant=200, speed_adjusted=False)
 				await asyncio.sleep(5.0)
@@ -160,7 +169,7 @@ class Sigil():
 					await asyncio.sleep(1)
 					if await is_free(self.client):
 						quest_xyz = await self.client.quest_position.position()
-						if await get_quest_name(self.client) != self.original_quest:
+						if await self.read_quest_name() != self.original_quest:
 							try:
 								await collision_tp(self.client, quest_xyz)
 							except ValueError:
@@ -174,7 +183,7 @@ class Sigil():
 						if await is_visible_by_path(self.client, npc_range_path):
 							await self.client.send_key(Keycode.X, 0.1)
 
-						if await get_quest_name(self.client) == self.original_quest:
+						if await self.read_quest_name() == self.original_quest:
 							await asyncio.sleep(1)
 							break
 
@@ -218,7 +227,7 @@ class Sigil():
 			await asyncio.gather(*[self.join_sigil(p) for p in self.clients])
 			
 			# if quest objective is same, we know it's a short dungeon, most likely with 1 room
-			if await get_quest_name(self.client) == self.original_quest:
+			if await self.read_quest_name() == self.original_quest:
 				start_xyz = await self.client.body.position() 
 				second_xyz = await calc_FrontalVector(self.client, speed_constant=200, speed_adjusted=False)
 				await asyncio.gather(*[SprintyClient(p).tp_to_closest_mob() for p in self.clients])
@@ -264,7 +273,7 @@ class Sigil():
 					await asyncio.sleep(1)
 					if await is_free(self.client):
 						quest_xyz = await self.client.quest_position.position()
-						if await get_quest_name(self.client) != self.original_quest:
+						if await self.read_quest_name() != self.original_quest:
 							try:
 								# await navmap_tp(self.client, quest_xyz, auto_quest_leader=True)
 								await asyncio.gather(*[collision_tp(p, quest_xyz, leader_client=self.client) for p in self.clients])
@@ -281,7 +290,7 @@ class Sigil():
 							if await is_visible_by_path(self.client, npc_range_path):
 								await self.client.send_key(Keycode.X, 0.1)
 
-						if await get_quest_name(self.client) == self.original_quest:
+						if await self.read_quest_name() == self.original_quest:
 							await asyncio.sleep(1)
 							break
 

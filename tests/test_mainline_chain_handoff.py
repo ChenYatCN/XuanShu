@@ -31,6 +31,13 @@ class MainlineChainHandoffTests(unittest.IsolatedAsyncioTestCase):
             send_key=AsyncMock(),
         )
         self.quester = Quester(self.client, [self.client], None)
+        async def identity(client):
+            qid = await client.quest_id()
+            return (qid, '', '', {'world': 'Test', 'number': 2} if qid in (10, 11) else None, qid in (10, 11))
+        self.quester._mainline_identity = identity
+        self.now = 0.0
+        async def sleep(delay):
+            self.now += delay
         self.quester.read_popup = AsyncMock(return_value="Press X to Talk")
         self.snapshot = (10, "Zone", self.position, "same npc")
         self.patches = [
@@ -39,7 +46,8 @@ class MainlineChainHandoffTests(unittest.IsolatedAsyncioTestCase):
             patch("src.questing.is_visible_by_path", new=AsyncMock(
                 side_effect=lambda _client, path: path == ["WorldView", "NPCRangeWin"]
             )),
-            patch("src.questing.asyncio.sleep", new=AsyncMock()),
+            patch("src.questing.asyncio.sleep", new=AsyncMock(side_effect=sleep)),
+            patch("src.questing.time.monotonic", side_effect=lambda: self.now),
         ]
         for item in self.patches:
             item.start()
@@ -55,10 +63,10 @@ class MainlineChainHandoffTests(unittest.IsolatedAsyncioTestCase):
         self.quester.read_popup.return_value = "Press X to Enter"
         self.assertIsNone(await self.quester._mainline_turn_in_snapshot(self.client, 10))
 
-    async def test_new_quest_or_missing_auto_dialogue_never_presses_x(self):
+    async def test_new_mainline_or_unchanged_quest_never_presses_x(self):
         self.client.quest_id.return_value = 11
         await self.quester._continue_mainline_chain(self.client, self.snapshot)
-        self.client.quest_id.return_value = 0
+        self.client.quest_id.return_value = 10
         self.client.auto_dialogue_running = False
         await self.quester._continue_mainline_chain(self.client, self.snapshot)
         self.client.send_key.assert_not_awaited()
@@ -79,12 +87,26 @@ class MainlineChainHandoffTests(unittest.IsolatedAsyncioTestCase):
         self.client.send_key.assert_awaited_once_with(Keycode.X, 0.15)
         self.assertFalse(self.client.mainline_chain_retry_active)
 
-    async def test_sidequest_identity_stops_without_another_x(self):
+    async def test_existing_sidequest_still_retries_original_npc(self):
+        self.client.auto_dialogue_running = False
+        self.client.quest_id.side_effect = lambda: 11 if self.client.send_key.await_count else 12
+        await self.quester._continue_mainline_chain(self.client, self.snapshot)
+        self.client.send_key.assert_awaited_once_with(Keycode.X, 0.15)
+        self.assertFalse(self.client.mainline_chain_retry_active)
+
+    async def test_temporary_mainline_during_dialogue_is_not_accepted_early(self):
+        self.client.quest_id.side_effect = lambda: 11 if self.now < 1.0 else 0
+        with patch('src.questing.is_free_leader_questing', new=AsyncMock(
+                side_effect=lambda c: self.now >= 1.0)):
+            await self.quester._continue_mainline_chain(self.client, self.snapshot)
+        self.assertEqual(self.client.send_key.await_count, 2)
+
+    async def test_sidequest_identity_does_not_cancel_bounded_handoff(self):
         async def quest_id():
             return 12 if self.client.send_key.await_count else 0
         self.client.quest_id.side_effect = quest_id
         await self.quester._continue_mainline_chain(self.client, self.snapshot)
-        self.assertEqual(self.client.send_key.await_count, 1)
+        self.assertEqual(self.client.send_key.await_count, 2)
         self.assertFalse(self.client.mainline_chain_retry_active)
 
     async def test_no_progress_has_a_two_press_limit(self):
