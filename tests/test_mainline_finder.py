@@ -27,6 +27,10 @@ class MainlineFinderTests(unittest.IsolatedAsyncioTestCase):
             send_key=AsyncMock(), root_window=object(),
         )
         self.quester = Quester(self.client, [self.client], None)
+        self.quester._restore_owned_mainline = AsyncMock(return_value=False)
+        async def close_book(client):
+            await client.send_key(Keycode.Q)
+        self.quester._close_questbook = AsyncMock(side_effect=close_book)
 
     async def test_disabled_does_not_read_or_interrupt_side_quest(self):
         self.client.mainline_finder_enabled = False
@@ -45,6 +49,22 @@ class MainlineFinderTests(unittest.IsolatedAsyncioTestCase):
         self.quester._run_mainline_finder = AsyncMock()
         self.assertFalse(await self.quester._maybe_recover_mainline(self.client))
         self.quester._run_mainline_finder.assert_not_awaited()
+
+    async def test_stable_previous_mainline_can_seek_specific_next_id(self):
+        row = next(r for r in quest_rows() if r['english'] == 'Extra Life')
+        self.quester._mainline_identity = AsyncMock(
+            return_value=(42, 'QuestTitle_162472', 'Extra Life', row, True))
+        self.quester._run_mainline_finder = AsyncMock(return_value=False)
+        now = [0.0]
+        with (patch('src.questing.time.monotonic', side_effect=lambda: now[0]),
+              patch('src.questing.is_free_leader_questing', new=AsyncMock(return_value=True)),
+              patch('src.questing.is_spiral_door_open', new=AsyncMock(return_value=False)),
+              patch('src.questing.is_visible_by_path', new=AsyncMock(return_value=False))):
+            for point in (0, 1.5, 3.1):
+                now[0] = point
+                self.assertTrue(await self.quester._maybe_recover_mainline(self.client, expected_id=43))
+        self.quester._run_mainline_finder.assert_awaited_once_with(self.client, expected_id=43)
+        self.assertIsNone(self.client.quest_recovery_owner)
 
     async def test_npc_range_does_not_permanently_block_finder(self):
         from src.paths import npc_range_path
@@ -98,7 +118,7 @@ class MainlineFinderTests(unittest.IsolatedAsyncioTestCase):
                 now[0] = point
                 self.assertTrue(await self.quester._maybe_recover_mainline(self.client))
                 self.quester._run_mainline_finder.assert_not_awaited()
-            now[0] = 0.9
+            now[0] = 3.1
             self.assertTrue(await self.quester._maybe_recover_mainline(self.client))
         self.quester._run_mainline_finder.assert_awaited_once_with(self.client)
         self.assertIsNone(self.client.quest_recovery_owner)

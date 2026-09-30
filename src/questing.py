@@ -1657,7 +1657,111 @@ class Quester():
         client.quest_dialogue_settle = None
         return False
 
-    async def _maybe_recover_mainline(self, client: Client) -> bool:
+    async def _mainline_sync_blocks_movement(self, client: Client) -> bool:
+        """Check the live questers before any ordinary group quest movement."""
+        members = list(getattr(client, 'quest_mainline_sync_members', []))
+        if len(members) < 2:
+            return False
+        now = time.monotonic()
+        group_log = members[0]
+        identities = {}
+        waiting = []
+        for member in members:
+            if not getattr(member, 'questing_status', False):
+                waiting.append(f'{member.title} 等待任务客户端恢复')
+                continue
+            if (await self._quest_dialogue_blocks_movement(member)
+                    or getattr(member, 'mainline_chain_retry_active', False)
+                    or isinstance(getattr(member, 'quest_recovery_owner', None), str)
+                    or await is_visible_by_path(member, decline_quest_path)
+                    or await is_visible_by_path(member, cancel_multiple_quest_menu_path)
+                    or await is_visible_by_path(member, quest_buttons_parent_path)):
+                member.quest_mainline_sync_state = None
+                waiting.append(f'{member.title} 对话或切区中')
+                continue
+            try:
+                snapshot = (await member.quest_id(), await member.zone_name())
+            except Exception:
+                snapshot = None
+            state = getattr(member, 'quest_mainline_sync_state', None)
+            if not isinstance(state, dict) or state['snapshot'] != snapshot:
+                member.quest_mainline_sync_state = {'snapshot': snapshot, 'since': now, 'reads': 1}
+                waiting.append(f'{member.title} 等待任务稳定')
+                continue
+            state['reads'] += 1
+            if snapshot is None or state['reads'] < 2 or now - state['since'] < 3.0:
+                waiting.append(f'{member.title} 等待任务稳定')
+                continue
+            identity = await self._mainline_identity(member)
+            if (identity is None or identity[0] != snapshot[0]
+                    or identity[3] is None):
+                waiting.append(f'{member.title} 等待接取')
+                continue
+            identities[id(member)] = identity
+
+        quest_ids = {identity[0] for identity in identities.values()}
+        positions = {(identity[3]['world'], identity[3]['number'])
+                     for identity in identities.values()}
+        blocked = bool(waiting or len(quest_ids) != 1 or len(positions) != 1)
+        if not blocked:
+            if getattr(group_log, 'quest_mainline_sync_log', None) != ('ready', next(iter(quest_ids))):
+                row = next(iter(identities.values()))[3]
+                titles = '/'.join(member.title for member in members)
+                logger.info('主线同步完成：{} -> {} 第 {} 个 | {}',
+                            titles, row['world'], row['number'], row.get('english', ''))
+            group_log.quest_mainline_sync_log = ('ready', next(iter(quest_ids)))
+            group_log.quest_mainline_sync_warning = None
+            return False
+
+        status = tuple(waiting) + tuple(
+            f'{member.title} Quest ID {identities[id(member)][0]}'
+            for member in members if id(member) in identities
+        )
+        if getattr(group_log, 'quest_mainline_sync_log', None) != ('waiting', status):
+            logger.info('自动任务：主线任务已更新，等待分组客户端同步。')
+            logger.info('主线同步：{}', ' | '.join(status))
+            group_log.quest_mainline_sync_log = ('waiting', status)
+        abnormal = [item.split(' ', 1)[0] for item in waiting if item.endswith('等待接取')]
+        if len(quest_ids) > 1:
+            newest = max(identity[3]['number'] for identity in identities.values())
+            abnormal.extend(member.title for member in members
+                            if id(member) in identities
+                            and identities[id(member)][3]['number'] < newest)
+        warning = tuple(dict.fromkeys(abnormal))
+        if warning and getattr(group_log, 'quest_mainline_sync_warning', None) != warning:
+            logger.warning('主线同步：{} 未接到当前主线，暂停任务传送。', '/'.join(warning))
+            group_log.quest_mainline_sync_warning = warning
+        if len(identities) == len(members) and len(quest_ids) > 1:
+            rows = [identity[3] for identity in identities.values()]
+            if len({row['world'] for row in rows}) == 1:
+                target = max(identities.values(), key=lambda item: item[3]['number'])
+                target_count = sum(item[0] == target[0] for item in identities.values())
+                current = identities.get(id(client))
+                snapshot = getattr(client, 'mainline_last_turn_in_snapshot', None)
+                if (target_count >= max(1, len(members) - 1)
+                        and current and current[3]['number'] < target[3]['number']
+                        and isinstance(snapshot, tuple) and snapshot[0] == current[0]
+                        and now >= getattr(client, 'mainline_sync_npc_retry_at', 0)):
+                    client.mainline_sync_npc_retry_at = now + 60.0
+                    logger.info('主线同步：正在为 {} 尝试原 NPC 续接。', client.title)
+                    await self._continue_mainline_chain(client, snapshot, expected_id=target[0])
+                    if await client.quest_id() != target[0]:
+                        await self._maybe_recover_mainline(client, expected_id=target[0])
+                    return True
+                if (target_count >= max(1, len(members) - 1)
+                        and current and current[3]['number'] < target[3]['number']
+                        and snapshot is None):
+                    await self._maybe_recover_mainline(client, expected_id=target[0])
+                    return True
+        # The client's own worker runs its existing NPC continuation first.
+        # Only its existing finder can recover a stable, unmatched quest.
+        if client in members and id(client) not in identities and not any(
+                item.startswith(f'{client.title} 对话') or item.startswith(f'{client.title} 等待任务稳定')
+                for item in waiting):
+            await self._maybe_recover_mainline(client)
+        return True
+
+    async def _maybe_recover_mainline(self, client: Client, expected_id=None) -> bool:
         """Pause a confirmed side quest, then run one bounded Quest Finder pass."""
         if not getattr(client, 'mainline_finder_enabled', False):
             self._mainline_finder_observations.pop(id(client), None)
@@ -1691,7 +1795,7 @@ class Quester():
                 observed['since'] = time.monotonic()
                 return True
             return True
-        if identity[3] is not None:
+        if identity[3] is not None and (expected_id is None or identity[0] == expected_id):
             self._mainline_finder_observations.pop(key, None)
             self._mainline_finder_retry_at.pop(key, None)
             client.mainline_finder_offer_guard = False
@@ -1716,7 +1820,7 @@ class Quester():
             observed['since'] = now
             return True
         observed['count'] += 1
-        stable_seconds = 3.0 if identity[0] == 0 else 0.8
+        stable_seconds = 3.0
         if (observed['count'] < self.MAINLINE_FINDER_STABLE_READS
                 or now - observed['since'] < stable_seconds):
             return True
@@ -1728,11 +1832,13 @@ class Quester():
         logger.info('自动任务：当前追踪任务不属于主线，开始寻找主线任务。')
         recovered = False
         try:
-            recovered = await self._run_mainline_finder(client)
+            recovered = await (self._run_mainline_finder(client)
+                               if expected_id is None else
+                               self._run_mainline_finder(client, expected_id=expected_id))
             if recovered:
                 self._mainline_finder_observations.pop(key, None)
                 self._mainline_finder_retry_at.pop(key, None)
-                logger.info('自动任务：已重新接取主线任务，恢复正常自动任务。')
+                logger.info('自动任务：已确认主线任务并恢复追踪，恢复正常自动任务。')
             else:
                 self._mainline_finder_retry_at[key] = time.monotonic() + self.MAINLINE_FINDER_RETRY_SECONDS
                 logger.warning('自动任务：本轮未能找到可确认的主线任务，退出主线恢复流程。')
@@ -1783,7 +1889,7 @@ class Quester():
             except Exception:
                 return ''
 
-    async def _questbook_page(self, client: Client):
+    async def _questbook_page(self, client: Client, mainlines=None):
         menu = await get_window_from_path(client.root_window, quest_buttons_parent_path)
         if not menu or not await menu.is_visible():
             raise RuntimeError('Q 任务菜单未显示')
@@ -1801,6 +1907,14 @@ class Quester():
             texts = [(await self._window_text(window), window, path)
                      for window, path in descendants]
             signature.append(tuple(text for text, _, _ in texts if text))
+            if mainlines is not None:
+                title = next((text for text, _, path in texts
+                              if ('title' in path[-1].casefold()
+                                  or path[-1].casefold() in ('txtquestname', 'txtname')) and text), '')
+                if title:
+                    target = next(((window, path) for _, window, path in texts
+                                   if path[-1] == 'txtGoal'), (card, card_path))
+                    mainlines.append((title, target))
             if any(text.casefold() in ('任务搜寻', 'quest finder')
                    for text, _, _ in texts):
                 target = next(((window, path) for _, window, path in texts
@@ -1835,11 +1949,120 @@ class Quester():
         async with client.mouse_handler:
             await client.mouse_handler.click_window(window)
 
+    async def _close_questbook(self, client: Client) -> None:
+        if not await is_visible_by_path(client, quest_buttons_parent_path):
+            return
+        await client.send_key(Keycode.Q)
+        deadline = time.monotonic() + 2.5
+        while await is_visible_by_path(client, quest_buttons_parent_path):
+            if time.monotonic() >= deadline:
+                raise RuntimeError('任务菜单未成功关闭，暂停任务传送')
+            await asyncio.sleep(.1)
+
+    async def _restore_owned_mainline(self, client: Client, expected_id=None) -> bool:
+        """Scan existing quest cards before searching for an unaccepted quest."""
+        from src.mainline_progress import match_quest, normalize_name, quest_rows
+
+        rows = quest_rows()
+        owned = []
+        quests = await (await client.quest_manager()).quest_data()
+        for quest_id, quest in quests.items():
+            if not isinstance(quest_id, int) or quest_id <= 0:
+                continue
+            code = await quest.name_lang_key() or ''
+            title = await client.cache_handler.get_langcode_name(code) if code else ''
+            row = match_quest(rows, quest_id, code, title or '')
+            if row is not None:
+                owned.append((quest_id, title or '', row))
+
+        zone = await client.zone_name()
+        world = zone.split('/', 1)[0].casefold()
+        try:
+            if not await is_visible_by_path(client, quest_buttons_parent_path):
+                await client.send_key(Keycode.Q)
+            deadline = time.monotonic() + 4.0
+            while not await is_visible_by_path(client, quest_buttons_parent_path):
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('检查已接主线时任务菜单未稳定打开')
+                await asyncio.sleep(.1)
+            logger.info('自动任务：检查各页已接任务，优先恢复现有主线追踪。')
+            seen = set()
+            found = {}
+            for _ in range(self.MAINLINE_FINDER_MAX_PAGES):
+                cards = []
+                signature, _, next_page = await self._questbook_page(client, mainlines=cards)
+                if signature in seen:
+                    break
+                seen.add(signature)
+                for title, _target in cards:
+                    row = match_quest(rows, None, '', title)
+                    matches = [item for item in owned
+                               if normalize_name(item[1]) == normalize_name(title)
+                               or row is not None and item[2] == row]
+                    if row is not None and len(matches) != 1:
+                        raise RuntimeError('任务列表中存在主线，但 Quest ID 暂无法唯一确认；暂不执行任务搜寻')
+                    if len(matches) == 1:
+                        quest_id, _, matched = matches[0]
+                        if (expected_id is not None and quest_id == expected_id
+                                or expected_id is None
+                                and matched['world'].split('(', 1)[0].strip().casefold() == world):
+                            found[quest_id] = (title, matched)
+                if next_page is None:
+                    raise RuntimeError('已接任务检查未完成：无法唯一识别右侧翻页控件')
+                await self._click_ui_window(client, next_page[0])
+                deadline = time.monotonic() + 2.5
+                while True:
+                    await asyncio.sleep(.1)
+                    changed, _, _ = await self._questbook_page(client)
+                    if changed != signature:
+                        break
+                    if time.monotonic() >= deadline:
+                        # A one-page quest book may remain on the same page.
+                        break
+                if changed == signature:
+                    raise RuntimeError('已接任务检查未完成：翻页未确认，暂不执行任务搜寻')
+            else:
+                raise RuntimeError('已接任务检查达到翻页保护上限，暂不执行任务搜寻')
+            if len(found) > 1:
+                raise RuntimeError('存在多条可匹配的当前世界主线，无法唯一恢复追踪')
+            if not found:
+                logger.info('自动任务：各页未找到可确认的目标主线，继续任务搜寻。')
+                return False
+            quest_id, (title, _) = next(iter(found.items()))
+            for _ in range(self.MAINLINE_FINDER_MAX_PAGES):
+                cards = []
+                _, _, next_page = await self._questbook_page(client, mainlines=cards)
+                target = next((target for card_title, target in cards if card_title == title), None)
+                if target is not None:
+                    await self._click_ui_window(client, target[0])
+                    # Close the menu before checking dialogue-free stability.
+                    await self._close_questbook(client)
+                    stable_since = None
+                    deadline = time.monotonic() + 8.0
+                    while time.monotonic() < deadline:
+                        identity = await self._mainline_identity(client)
+                        if (identity and identity[0] == quest_id and identity[3] is not None
+                                and await is_free_leader_questing(client)):
+                            if stable_since is None:
+                                stable_since = time.monotonic()
+                            elif time.monotonic() - stable_since >= 3.0:
+                                logger.info('自动任务：主线已接取，已恢复追踪：{} | Quest ID {}', title, quest_id)
+                                return True
+                        else:
+                            stable_since = None
+                        await asyncio.sleep(.2)
+                    raise RuntimeError('主线已在任务列表中，但重新追踪尚未确认；暂不执行任务搜寻')
+                if next_page is None:
+                    break
+                await self._click_ui_window(client, next_page[0])
+                await asyncio.sleep(.2)
+            raise RuntimeError('已接主线卡片重定位失败，暂不执行任务搜寻')
+        finally:
+            await self._close_questbook(client)
+
     async def _select_quest_finder(self, client: Client) -> bool:
-        opened = False
         try:
             await client.send_key(Keycode.Q)
-            opened = True
             deadline = time.monotonic() + 4.0
             while time.monotonic() < deadline:
                 if await is_visible_by_path(client, quest_buttons_parent_path):
@@ -1883,8 +2106,7 @@ class Quester():
                 await asyncio.sleep(0.1)
             raise RuntimeError('点击“任务搜寻”后未确认追踪任务切换')
         finally:
-            if opened and await is_visible_by_path(client, quest_buttons_parent_path):
-                await client.send_key(Keycode.Q)
+            await self._close_questbook(client)
 
     async def _mainline_offer_candidate(self, client: Client):
         """Accept only a titled offer linked to one verified mainline Quest ID."""
@@ -1926,12 +2148,14 @@ class Quester():
             return None
         return candidates[0], row
 
-    async def _run_mainline_finder(self, client: Client) -> bool:
+    async def _run_mainline_finder(self, client: Client, expected_id=None) -> bool:
         from src.mainline_progress import log_mainline_progress
 
         identity = await self._mainline_identity(client)
         if identity is None:
             return False
+        if await self._restore_owned_mainline(client, expected_id=expected_id):
+            return True
         if identity[1] != 'Quest Finder' and not await self._select_quest_finder(client):
             return False
 
@@ -1943,10 +2167,14 @@ class Quester():
         while time.monotonic() < deadline and getattr(client, 'questing_status', False):
             identity = await self._mainline_identity(client)
             if identity and identity[3] is not None:
-                if expected_quest_id is None or identity[0] == expected_quest_id:
+                if ((expected_id is None or identity[0] == expected_id)
+                        and (expected_quest_id is None or identity[0] == expected_quest_id)):
                     client._xuanshu_mainline_id = None
                     await log_mainline_progress(client)
                     return True
+                if identity[0] != expected_id:
+                    await asyncio.sleep(0.2)
+                    continue
                 return False
             if identity and identity[1] != 'Quest Finder':
                 return False
@@ -1962,7 +2190,7 @@ class Quester():
                     await asyncio.sleep(0.2)
                     continue
                 candidate = await self._mainline_offer_candidate(client)
-                if candidate is None:
+                if candidate is None or expected_id is not None and candidate[0] != expected_id:
                     logger.warning('自动任务：无法在接取前确认邀请属于主线，拒绝接取。')
                     await client.send_key(Keycode.ESC, 0.1)
                     return False
@@ -2022,12 +2250,14 @@ class Quester():
             npc = plain_text(await get_popup_title(client)).casefold()
             if not npc or interaction_kind(await self.read_popup(client)) != "talk":
                 return None
-            return quest_id, await client.zone_name(), await client.body.position(), npc
+            snapshot = (quest_id, await client.zone_name(), await client.body.position(), npc)
+            client.mainline_last_turn_in_snapshot = snapshot
+            return snapshot
         except Exception as exc:
             logger.trace("Mainline handoff snapshot unavailable: {}", exc)
             return None
 
-    async def _continue_mainline_chain(self, client: Client, snapshot) -> None:
+    async def _continue_mainline_chain(self, client: Client, snapshot, expected_id=None) -> None:
         """Retry a confirmed mainline handoff only while the same NPC is in reach."""
         if snapshot is None:
             return
@@ -2046,7 +2276,8 @@ class Quester():
         async def ready_to_retry():
             if not getattr(client, "questing_status", False):
                 return False
-            if (getattr(client, "quest_party_probe_pending", False)
+            if (isinstance(getattr(client, 'quest_recovery_owner', None), str)
+                    or getattr(client, "quest_party_probe_pending", False)
                     or getattr(client, "quest_party_battle_rescue_active", False)
                     or getattr(client, "quest_party_quest_worker_restart_requested", False)):
                 return False
@@ -2068,7 +2299,7 @@ class Quester():
         # The game can select an unrelated nonzero quest during a handoff.
         # Do not mistake it for the next mainline before dialogue settles.
         quest_id, _ = await current_quest()
-        if (quest_id is None or quest_id == previous_id
+        if (quest_id is None or quest_id == previous_id and expected_id is None
                 or not getattr(client, "questing_status", False)):
             return
         logger.info('{} 当前主线已完成，等待下一主线。', client.title)
@@ -2097,7 +2328,9 @@ class Quester():
             return
 
         quest_id, matched = await current_quest()
-        if matched or quest_id == previous_id or not await ready_to_retry():
+        if (matched and (expected_id is None or quest_id == expected_id)
+                or quest_id == previous_id and expected_id is None
+                or not await ready_to_retry()):
             return
 
         client.mainline_chain_retry_active = True
@@ -2105,7 +2338,8 @@ class Quester():
         try:
             for attempt in range(1, 3):
                 quest_id, matched = await current_quest()
-                if matched or quest_id is None or not await ready_to_retry():
+                if (matched and (expected_id is None or quest_id == expected_id)
+                        or quest_id is None or not await ready_to_retry()):
                     return
                 logger.info(
                     f"{client.title} 下一主线未出现，尝试重新与原 NPC 交互（{attempt}/2）。"
@@ -2119,7 +2353,8 @@ class Quester():
                     quest_id, mainline = await current_quest()
                     if quest_id is None:
                         return
-                    if mainline and await is_free_leader_questing(client):
+                    if (mainline and (expected_id is None or quest_id == expected_id)
+                            and await is_free_leader_questing(client)):
                         if quiet_since is None:
                             quiet_since = time.monotonic()
                         elif time.monotonic() - quiet_since >= 3.0:
@@ -2877,6 +3112,8 @@ class Quester():
 
             # in case client(s) in combat and the questing loop continued anyway
             await gather_owned(*[self.leader_wait_for_free(p) for p in self.clients])
+            if await self._mainline_sync_blocks_movement(self.current_leader_client):
+                continue
 
             # The leader controls movement, but each questing client owns its
             # own tracked mainline task and one-time progress log.
@@ -2900,6 +3137,9 @@ class Quester():
             # dynamically change leader client when follower's get left behind
             # if there were previously clients on the same quest check for quest objective change on all clients
             follower_clients, client_quests = await self.determine_new_leader_and_followers(client_quests, questing_clients, follower_clients)
+
+            if await self._mainline_sync_blocks_movement(self.current_leader_client):
+                continue
 
             if await self._maybe_recover_mainline(self.current_leader_client):
                 continue
@@ -2926,8 +3166,13 @@ class Quester():
                     if await self._maybe_refresh_stalled_dungeon_quest(self.current_leader_client):
                         continue
 
+                    if await self._mainline_sync_blocks_movement(self.current_leader_client):
+                        continue
+
                     await self.teleport_to_quest(hitting_client, follower_clients)
 
+                    if await self._mainline_sync_blocks_movement(self.current_leader_client):
+                        continue
                     await self.handle_normal_quests(follower_clients, questing_friend_tp)
                 else:
                     if await self._maybe_refresh_stalled_dungeon_quest(self.current_leader_client):
@@ -3172,6 +3417,8 @@ class Quester():
         # movement until that probe decides whether the zone is solo-only.
         if await self._quest_party_probe_blocks_movement():
             return
+        if await self._mainline_sync_blocks_movement(self.client):
+            return
         if await self._maybe_recover_mainline(self.client):
             return
         if await is_free(self.client):
@@ -3209,6 +3456,8 @@ class Quester():
                     return
 
                 if await self._quest_dialogue_blocks_movement(self.client):
+                    return
+                if await self._mainline_sync_blocks_movement(self.client):
                     return
                 zone_before_quest_move = await self.client.zone_name()
                 await self.teleport_to_quest_target(self.client, quest_xyz)

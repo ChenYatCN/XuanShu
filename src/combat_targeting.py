@@ -210,6 +210,7 @@ class TargetingSprintyCombat(UpstreamSprintyCombat):
         # Wait for assigned hitters to appear in this battle's roster before
         # evaluating priorities that could otherwise buff the quester itself.
         while (getattr(self.client, 'questing_status', False)
+               and not getattr(self.client, 'in_solo_zone', False)
                and getattr(self.client, 'quest_party_hitters', [])):
             if (not await self.client.in_battle()
                     or await self.client.duel.duel_phase() != DuelPhase.planning):

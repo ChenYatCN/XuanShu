@@ -1061,10 +1061,20 @@ async def main():
         for client in (walker.clients if members is None else members):
             was_questing = client.questing_status
             client.questing_status = active and id(client) in participant_ids
-            client.mainline_finder_enabled = mainline_finder_enabled
+            client.quest_mainline_sync_members = []
+            if not active:
+                client.quest_mainline_sync_state = None
+                client.quest_mainline_sync_log = None
+            client.mainline_finder_enabled = mainline_finder_enabled or (
+                active and client in party.questers and len(party.questers) > 1
+            )
             if not mainline_finder_enabled:
                 client.mainline_finder_offer_guard = False
             if client.questing_status and not was_questing:
+                client.quest_mainline_sync_state = None
+                client.quest_mainline_sync_log = None
+                client.mainline_sync_npc_retry_at = 0.0
+                client.mainline_last_turn_in_snapshot = None
                 client.quest_dialogue_settle = None
                 client._mainline_identity_debug = None
                 client._quest_name_read_retry_at = 0.0
@@ -1100,6 +1110,9 @@ async def main():
                 client.quest_party_solo_gear_active = False
                 client.in_solo_zone = False
         if active:
+            questers = list(party.questers)
+            for client in questers:
+                client.quest_mainline_sync_members = questers
             for hitter, quester in party.hitter_assignments:
                 quester.quest_party_hitters.append(hitter)
                 quester.quest_party_probe_pending = True
@@ -3006,7 +3019,7 @@ async def main():
                         original_client_locations[hitter.process_id] = original_position
                         saved_original_position = True
                     return_position = await quester.body.position()
-                    await hitter.teleport(XYZ(0.0, 0.0, 10000.0))
+                    await hitter.teleport(XYZ(0.0, 0.0, -10000.0))
                     await hitter.send_key(key=Keycode.A, seconds=0.25)
                     await hitter.send_key(key=Keycode.D, seconds=0.25)
 
