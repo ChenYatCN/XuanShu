@@ -82,6 +82,7 @@ def quest_has_action(value, action) -> bool:
         "defeat": ("WizardQuestGoals_Kill", "WizardQuestGoals_KillCollect"),
         "talk": ("WizardQuestGoals_TalkNPC",),
         "use": ("WizardQuestGoals_UseItem",),
+        "explore": ("WizardQuestGoals_Explore",),
         "photomance": ("WizardQuestGoals_00000670", "WizardQuestGoals_00000671",
                        "WizardQuestGoals_00000672", "WizardQuestGoals_00000748"),
     }[action]

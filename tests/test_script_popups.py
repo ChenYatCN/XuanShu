@@ -10,6 +10,9 @@ from src.script_popups import close_script_popup, popup_kind, run_with_script_po
 
 class ScriptPopupTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        terminal = patch('src.script_popups.closed_dungeon_popup', AsyncMock(return_value=False))
+        terminal.start()
+        self.addCleanup(terminal.stop)
         pet = patch('src.script_popups.close_pet_level_popup', AsyncMock(return_value=False))
         pet.start()
         self.addCleanup(pet.stop)
@@ -172,6 +175,83 @@ class ScriptPopupTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await asyncio.wait_for(close_task, 1))
         self.client.mouse_handler.click_window.assert_awaited_once_with(self.confirm)
 
+    async def test_exit_dialog_does_not_start_area_recovery(self):
+        self.client._xuanshu_zone_retry_users = 1
+        self.title.value = '退出'
+        self.caption.value = '你确定你要现在离开吗？'
+        self.resolve_path.side_effect = lambda _root, path: (
+            self.window if path == missing_area_path else False
+        )
+        with patch('src.script_popups.asyncio.sleep', new=AsyncMock()) as sleep:
+            self.assertFalse(await close_script_popup(self.client))
+            sleep.assert_not_awaited()
+        self.assertIsNone(getattr(self.client, '_xuanshu_missing_area_retry', None))
+        self.client.mouse_handler.click_window.assert_not_awaited()
+
+    async def test_stale_recovery_releases_exit_dialog_before_retry_or_timeout(self):
+        self.client._xuanshu_zone_retry_users = 1
+        self.client._xuanshu_missing_area_retry = dict(
+            attempts=5, next_retry_at=float('inf'), clear_since=None,
+            warned=True, started_at=0)
+        self.title.value = '退出'
+        self.caption.value = '你确定你要现在离开吗？'
+        self.resolve_path.side_effect = lambda _root, path: (
+            self.window if path == missing_area_path else False
+        )
+        with patch('src.script_popups.asyncio.sleep', new=AsyncMock()) as sleep:
+            self.assertFalse(await close_script_popup(self.client))
+            sleep.assert_not_awaited()
+        self.assertIsNone(self.client._xuanshu_missing_area_retry)
+        self.client.mouse_handler.click_window.assert_not_awaited()
+
+    async def test_exit_dialog_reaches_existing_dungeon_handler(self):
+        from src.questing import Quester
+        self.client._xuanshu_zone_retry_users = 1
+        self.title.value = '退出'
+        self.caption.value = '你确定你要现在离开吗？'
+        self.resolve_path.side_effect = lambda _root, path: (
+            self.window if path == missing_area_path else False
+        )
+        quester = SimpleNamespace(
+            client=self.client,
+            _quest_dialogue_blocks_movement=AsyncMock(return_value=False),
+            handle_pending_dungeon_confirmation=AsyncMock(return_value=True))
+        with patch('src.questing.close_npc_quest_menu', AsyncMock(return_value=False)):
+            await Quester.auto_quest_solo(quester)
+        quester.handle_pending_dungeon_confirmation.assert_awaited_once()
+        self.client.mouse_handler.click_window.assert_not_awaited()
+
+    async def test_hidden_retry_button_does_not_start_recovery(self):
+        self.client._xuanshu_zone_retry_users = 1
+        retry = SimpleNamespace(is_visible=AsyncMock(return_value=False))
+        self.title.value = 'Confirm'
+        self.caption.value = 'Do you want to go to your friend?'
+        self.resolve_path.side_effect = lambda _root, path: (
+            self.window if path == missing_area_path else
+            retry if path == missing_area_retry_path else False
+        )
+        self.assertFalse(await close_script_popup(self.client))
+        self.assertIsNone(getattr(self.client, '_xuanshu_missing_area_retry', None))
+        self.client.mouse_handler.click_window.assert_not_awaited()
+
+    async def test_dialog_changed_while_waiting_for_mouse_releases_recovery(self):
+        self.client._xuanshu_zone_retry_users = 1
+        retry = SimpleNamespace(is_visible=AsyncMock(return_value=True))
+        self.title.value = '退出'
+        self.caption.value = '你确定你要现在离开吗？'
+        self.resolve_path.side_effect = lambda _root, path: (
+            self.window if path == missing_area_path else
+            retry if path == missing_area_retry_path else False
+        )
+        async def replace():
+            retry.is_visible.return_value = False
+        self.client.mouse_handler.__aenter__.side_effect = replace
+        with patch('src.script_popups.asyncio.sleep', new=AsyncMock()) as sleep:
+            self.assertFalse(await close_script_popup(self.client))
+            sleep.assert_not_awaited()
+        self.assertIsNone(self.client._xuanshu_missing_area_retry)
+        self.client.mouse_handler.click_window.assert_not_awaited()
+
     async def test_missing_area_retry_is_automation_only_and_never_closes(self):
         modal = SimpleNamespace(is_visible=AsyncMock(return_value=True))
         retry = SimpleNamespace(is_visible=AsyncMock(return_value=True))
@@ -307,7 +387,10 @@ class QuestPopupIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_solo_handles_notice_before_dungeon_confirmation(self):
         from src.questing import Quester
         client = SimpleNamespace(title='p1')
-        quester = SimpleNamespace(client=client, handle_pending_dungeon_confirmation=AsyncMock())
+        quester = SimpleNamespace(
+            client=client,
+            _quest_dialogue_blocks_movement=AsyncMock(return_value=False),
+            handle_pending_dungeon_confirmation=AsyncMock())
         with patch('src.questing.close_npc_quest_menu', AsyncMock(return_value=False)), patch(
             'src.questing.close_automation_popup', AsyncMock(return_value=True)
         ) as close:

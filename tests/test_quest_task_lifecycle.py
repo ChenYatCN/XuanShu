@@ -29,6 +29,7 @@ class QuestTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         namespace = {
             'walker': SimpleNamespace(clients=clients),
             'current_quest_party': current_quest_party,
+            'mainline_finder_enabled': False,
         }
         function = self.questing_function('apply_questing_roles')
         exec(compile(ast.Module(body=[function], type_ignores=[]), 'XuanShu.py', 'exec'), namespace)
@@ -36,6 +37,7 @@ class QuestTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         apply_roles(True)
         self.assertEqual(quester.quest_party_hitters, [hitter])
+        self.assertIs(hitter.quest_party_quester, quester)
         for client in clients:
             client.quest_party_observed_zone = 'old zone'
             client.quest_party_status_session = object()
@@ -54,6 +56,7 @@ class QuestTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         for client in clients:
             self.assertFalse(client.questing_status)
             self.assertEqual(client.quest_party_hitters, [])
+            self.assertIsNone(client.quest_party_quester)
             self.assertIsNone(client.quest_party_observed_zone)
             self.assertIsNone(client.quest_party_status_session)
             self.assertIsNone(client.quest_party_quest_worker_zone)

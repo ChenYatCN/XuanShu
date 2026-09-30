@@ -85,6 +85,10 @@ wizsprinter_pkg_dir = require_venv_package(
     "wizwalker.extensions.wizsprinter"
 )
 wizlaunch_pkg_dir = require_venv_package("wizlaunch")
+# Collision navigation must not silently disappear from a successful build.
+for _collision_package in ("numpy", "shapely"):
+    require_venv_package(_collision_package)
+    importlib.import_module(_collision_package)
 
 # Account Steam mode, validation and per-account window profiles require the
 # current native wizlaunch API. Fail early instead of producing an EXE whose
@@ -123,6 +127,7 @@ hiddenimports += safe_collect_submodules("wizwalker.extensions.wizsprinter.comba
 hiddenimports += safe_collect_submodules("lark")
 
 hiddenimports += safe_collect_submodules("wizlaunch")
+hiddenimports += ["numpy", "shapely", "shapely.geometry"]
 
 hiddenimports += [
     "wizwalker",

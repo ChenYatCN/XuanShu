@@ -7,7 +7,7 @@ from loguru import logger
 
 from src.automation_ownership import automation_owner
 from src.interaction_prompts import plain_text
-from src.utils import close_endorsement_window, get_window_from_path
+from src.utils import close_endorsement_window, get_window_from_path, closed_dungeon_popup
 from src.window_text import read_control_text
 from src.paths import exit_pet_leveled_up_button_path
 from src.paths import exit_pet_leveled_up_button_path
@@ -160,6 +160,11 @@ async def _retry_missing_area_popup_owned(client):
         modal = await get_window_from_path(client.root_window, missing_area_path)
         if not modal or not await modal.is_visible():
             return False
+        # AdjustmentWindow is shared by other confirmations (including dungeon
+        # exits). Only the dedicated RetryBtn identifies this recovery dialog.
+        retry = await get_window_from_path(client.root_window, missing_area_retry_path)
+        if not retry or not await retry.is_visible():
+            return False
         state = {'attempts': 0, 'next_retry_at': 0.0,
                  'clear_since': None, 'warned': False,
                  'started_at': time.monotonic()}
@@ -193,6 +198,13 @@ async def _retry_missing_area_popup_owned(client):
             await asyncio.sleep(.5)
             continue
 
+        retry = await get_window_from_path(client.root_window, missing_area_retry_path)
+        if not retry or not await retry.is_visible():
+            # A different modal replaced the loading error. Release input so
+            # its own handler can proceed, even after a previous timeout.
+            client._xuanshu_missing_area_retry = None
+            return False
+
         state['clear_since'] = None
         if now < state['next_retry_at']:
             await asyncio.sleep(min(.5, state['next_retry_at'] - now))
@@ -208,10 +220,6 @@ async def _retry_missing_area_popup_owned(client):
                 state['warned'] = True
             return True
 
-        retry = await get_window_from_path(client.root_window, missing_area_retry_path)
-        if not retry or not await retry.is_visible():
-            await asyncio.sleep(.5)
-            continue
         async with client.mouse_handler:
             # The modal may have changed while waiting for the per-client mouse.
             modal = await get_window_from_path(client.root_window, missing_area_path)
@@ -266,6 +274,11 @@ async def skip_magic_wheel_tutorial(client):
 
 
 async def _close_automation_popup_owned(client):
+    if await closed_dungeon_popup(client, dismiss=True):
+        client._xuanshu_missing_area_retry = None
+        if not getattr(client, 'refilling_potions', False):
+            client.questing_status = False
+        return True
     if getattr(client, '_xuanshu_zone_retry_users', 0):
         if await _retry_missing_area_popup_owned(client):
             return True

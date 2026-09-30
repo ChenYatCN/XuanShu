@@ -24,7 +24,7 @@ class MainlineFinderTests(unittest.IsolatedAsyncioTestCase):
             is_loading=AsyncMock(return_value=False),
             in_battle=AsyncMock(return_value=False),
             zone_name=AsyncMock(return_value='Empyrea/Area'),
-            send_key=AsyncMock(), root_window=object(),
+            send_key=AsyncMock(), root_window=SimpleNamespace(children=AsyncMock(return_value=[])),
         )
         self.quester = Quester(self.client, [self.client], None)
         self.quester._restore_owned_mainline = AsyncMock(return_value=False)
@@ -49,6 +49,17 @@ class MainlineFinderTests(unittest.IsolatedAsyncioTestCase):
         self.quester._run_mainline_finder = AsyncMock()
         self.assertFalse(await self.quester._maybe_recover_mainline(self.client))
         self.quester._run_mainline_finder.assert_not_awaited()
+
+    async def test_known_cave_without_entry_prompt_uses_dungeon_recovery(self):
+        self.client.zone_name.return_value = 'Lemuria/Interiors/LM_Z05_I02_Cave'
+        self.quester._mainline_identity = AsyncMock()
+        self.quester._run_mainline_finder = AsyncMock()
+        self.quester._maybe_refresh_stalled_dungeon_quest = AsyncMock(return_value=False)
+        self.assertFalse(await self.quester._maybe_recover_mainline(self.client))
+        self.assertEqual(self.client.quest_dungeon_recovery['zone'], self.client.zone_name.return_value)
+        self.quester._mainline_identity.assert_not_awaited()
+        self.quester._run_mainline_finder.assert_not_awaited()
+        self.quester._maybe_refresh_stalled_dungeon_quest.assert_awaited_once_with(self.client)
 
     async def test_stable_previous_mainline_can_seek_specific_next_id(self):
         row = next(r for r in quest_rows() if r['english'] == 'Extra Life')

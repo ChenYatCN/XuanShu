@@ -11,6 +11,7 @@ class CrystalExitTests(unittest.IsolatedAsyncioTestCase):
         for blocked in (False, True):
             client = AsyncMock()
             client.title = 'p1'
+            client.refilling_potions = False
             client.zone_name.return_value = 'DragonSpire/DS_A3_Kings/Interiors/DS_Crystal_T9'
             client.is_loading.return_value = False
             client.body.position.return_value = XYZ(0, 0, 0)

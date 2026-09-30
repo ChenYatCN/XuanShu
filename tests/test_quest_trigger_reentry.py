@@ -15,6 +15,7 @@ class QuestTriggerReentryTests(unittest.IsolatedAsyncioTestCase):
         self.client = AsyncMock()
         self.client.title = "p1"
         self.client.questing_status = True
+        self.client.refilling_potions = False
         self.client.quest_recovery_owner = None
         self.client.quest_dungeon_recovery = None
         for name in (
@@ -65,7 +66,7 @@ class QuestTriggerReentryTests(unittest.IsolatedAsyncioTestCase):
         await self.observe()
         self.assertEqual(await self.observe(), [False, False, True])
         self.client.goto.assert_any_await(1000.0, 2900.0)
-        self.assertEqual(await self.observe(5), [False] * 5)
+        self.assertEqual(await self.observe(5), [True] * 5)
         self.assertEqual(self.client.goto.await_count, 4)
 
     async def test_prompt_success_does_not_repeat_for_unchanged_quest(self):
@@ -73,6 +74,19 @@ class QuestTriggerReentryTests(unittest.IsolatedAsyncioTestCase):
         await self.observe()
         self.assertEqual(await self.observe(5), [False] * 5)
         self.assertEqual(self.client.goto.await_count, 2)
+
+    async def test_exploration_uses_existing_reentry_instead_of_noop_tp(self):
+        self.quester._dungeon_quest_snapshot.return_value = (42, 7, 'Go To Puerto Nuovo')
+        self.assertEqual(await self.observe(), [False, False, True])
+        self.assertEqual(self.client.goto.await_count, 2)
+
+    async def test_exhausted_goal_resumes_on_real_progress(self):
+        await self.observe()
+        await self.observe()
+        self.assertEqual(await self.observe(3), [True] * 3)
+        self.quester._dungeon_quest_snapshot.return_value = (42, 8, 'Use Next Trigger')
+        self.assertEqual(await self.observe(), [False, False, True])
+        self.assertEqual(self.client.goto.await_count, 6)
 
     async def test_far_target_and_non_interaction_goal_never_move(self):
         self.position = XYZ(2000.0, 2000.0, 0.0)

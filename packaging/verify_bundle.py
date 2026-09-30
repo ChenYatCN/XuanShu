@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import argparse
 import hashlib
 from pathlib import Path
 
@@ -52,8 +53,12 @@ def _load_entries(toc_path: Path):
 
 
 def main() -> None:
-    entries = _load_entries(ANALYSIS_TOC)
-    package_entries = _load_entries(PACKAGE_TOC)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--build-dir', type=Path, default=ANALYSIS_TOC.parent)
+    parser.add_argument('--exe', type=Path, default=OUTPUT_EXE)
+    args = parser.parse_args()
+    entries = _load_entries(args.build_dir / 'Analysis-00.toc')
+    package_entries = _load_entries(args.build_dir / 'PKG-00.toc')
     compat_source = _norm(COMBAT_COMPAT)
     venv_source = _norm(VENV_PACKAGES)
     forbidden_source = _norm(FORBIDDEN_ROOT_PACKAGE)
@@ -114,6 +119,15 @@ def main() -> None:
     archive_names = {
         name.replace("\\", "/").casefold() for name, _, _ in package_entries
     }
+    for module in ("numpy", "shapely", "shapely.geometry"):
+        sources = [source for name, source, kind in entries
+                   if name == module and kind.startswith("PYMODULE")]
+        if not sources or any(not _norm(source).startswith(venv_source + "\\")
+                              for source in sources):
+            raise RuntimeError(f"碰撞计算依赖缺失或来源错误：{module}")
+    for marker in ("numpy/_core/_multiarray_umath", "shapely/lib."):
+        if not any(marker in name and name.endswith(".pyd") for name in archive_names):
+            raise RuntimeError(f"成品缺少碰撞计算原生模块：{marker}")
     required_suffixes = (
         "wizpatch.exe",
         "traversaldata/zonemap.txt",
@@ -131,15 +145,16 @@ def main() -> None:
     ):
         raise RuntimeError("成品中缺少 wizlaunch 原生模块。")
 
-    if not OUTPUT_EXE.exists() or OUTPUT_EXE.stat().st_size < 1_000_000:
-        raise RuntimeError(f"成品 EXE 不存在或大小异常：{OUTPUT_EXE}")
+    if not args.exe.exists() or args.exe.stat().st_size < 1_000_000:
+        raise RuntimeError(f"成品 EXE 不存在或大小异常：{args.exe}")
 
     compat_hash = hashlib.sha256(COMBAT_COMPAT.read_bytes()).hexdigest().upper()
     print("[验证通过] wizwalker：.venv 最新版")
     print(f"[验证通过] SprintyCombat：兼容版 SHA256 {compat_hash}")
     print("[验证通过] Qt、wizlaunch、wizpatch、分辨率兼容模块和导航数据完整")
     print("[验证通过] 未混入 Codex/编辑器运行库")
-    print(f"[验证通过] 成品：{OUTPUT_EXE}")
+    print("[验证通过] NumPy、Shapely 及碰撞计算原生模块完整")
+    print(f"[验证通过] 成品：{args.exe}")
 
 
 if __name__ == "__main__":

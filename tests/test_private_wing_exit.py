@@ -117,6 +117,67 @@ class PrivateWingExitTests(unittest.IsolatedAsyncioTestCase):
         self.client.teleport.assert_not_awaited()
 
 
+class LemuriaDungeonExitTests(PrivateWingExitTests):
+    source_zone = Quester.LEMURIA_DUNGEON_ZONE
+    owner = 'lemuria_dungeon'
+    exit_xyz = (-1818.267, -6764.240, 2.001)
+    failed_attr = '_xuanshu_lemuria_dungeon_failed'
+
+    def setUp(self):
+        super().setUp()
+        self.client.send_key = AsyncMock()
+        async def tick(seconds):
+            self.now += seconds
+        patcher = patch('src.questing.asyncio.sleep', new=AsyncMock(side_effect=tick))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    async def test_ui_confirmed_x_changes_zone_and_releases_lock(self):
+        from src.paths import npc_range_path
+        async def teleport(target):
+            self.assertEqual(self.client.quest_recovery_owner, self.owner)
+            self.client.body.position.return_value = target
+        async def press(*args):
+            self.zone = 'Lemuria/Next'
+        self.client.teleport.side_effect = teleport
+        self.client.send_key.side_effect = press
+        with patch('src.questing.is_visible_by_path', new=AsyncMock(
+                side_effect=lambda c, path: path == npc_range_path and self.client.teleport.await_count > 0)):
+            await self.move(0, 4, 8, 11)
+        self.client.send_key.assert_awaited_once()
+        self.zone_wait.assert_awaited_once_with(self.client, current_zone=self.source_zone)
+        self.client.quest_position.position.assert_awaited_once()
+        self.assertIsNone(self.client.quest_recovery_owner)
+
+    async def test_x_retry_is_bounded_and_failure_is_suppressed(self):
+        from src.paths import npc_range_path
+        async def teleport(target):
+            self.client.body.position.return_value = target
+        self.client.teleport.side_effect = teleport
+        with patch('src.questing.is_visible_by_path', new=AsyncMock(
+                side_effect=lambda c, path: path == npc_range_path and self.client.teleport.await_count > 0)):
+            await self.move(0, 4, 8, 11, 30, 40)
+        self.assertEqual(self.client.send_key.await_count, 2)
+        self.client.teleport.assert_awaited_once()
+        self.assertIsNone(self.client.quest_recovery_owner)
+        self.client.quest_position.position.assert_not_awaited()
+
+    async def test_missing_interaction_prompt_never_sends_x(self):
+        async def teleport(target):
+            self.client.body.position.return_value = target
+        self.client.teleport.side_effect = teleport
+        await self.move(0, 4, 8, 11)
+        self.client.send_key.assert_not_awaited()
+        self.assertIsNone(self.client.quest_recovery_owner)
+
+    async def test_cancelled_special_tp_releases_lock(self):
+        self.client.teleport.side_effect = asyncio.CancelledError()
+        with self.assertRaises(asyncio.CancelledError):
+            await self.move(0, 4, 8, 11)
+        self.assertIsNone(self.client.quest_recovery_owner)
+        self.client.send_key.assert_not_awaited()
+
+
 class GobblertonExitTests(PrivateWingExitTests):
     source_zone = Quester.GOBBLERTON_ZONE
     owner = 'gobblerton'

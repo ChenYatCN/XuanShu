@@ -111,6 +111,7 @@ class BattlefieldFallbackCombatCard(CombatCard):
     ):
         client = self.combat_handler.client
         async with automation_owner(client, "auto-combat-cast"):
+            self.combat_handler._round_input_started = True
             return await self._cast_owned(
                 target, sleep_time=sleep_time, debug_paint=debug_paint
             )
@@ -128,6 +129,8 @@ class BattlefieldFallbackCombatCard(CombatCard):
             )
 
         client = self.combat_handler.client
+        owner_id = await target.owner_id()
+        target = await self.combat_handler.refresh_member(owner_id)
         original_error = None
         try:
             # Run wizwalker's original card and Health-window click first.
@@ -146,8 +149,10 @@ class BattlefieldFallbackCombatCard(CombatCard):
         except wizwalker.WizWalkerMemoryError:
             return
 
-        owner_id = await target.owner_id()
         try:
+            # A member control may have been replaced during the selection wait.
+            # Resolve the same owner again; never substitute a different target.
+            target = await self.combat_handler.refresh_member(owner_id)
             windows = await _visible_target_windows(target)
             if not windows:
                 windows = []
@@ -171,6 +176,7 @@ class BattlefieldFallbackCombatCard(CombatCard):
         except (ValueError, wizwalker.WizWalkerMemoryError) as exc:
             original_error = exc
 
+        target = await self.combat_handler.refresh_member(owner_id)
         points = await _member_screen_points(client, target)
         if not points:
             detail = f"；原版点击错误：{original_error}" if original_error else ""
@@ -202,11 +208,46 @@ class BattlefieldFallbackCombatCard(CombatCard):
             f"目标 {owner_id} 的血条和战斗盘实体点击均未被游戏接受"
         )
 
+    async def discard(self, **kwargs):
+        self.combat_handler._round_input_started = True
+        return await super().discard(**kwargs)
+
 
 class TargetingSprintyCombat(UpstreamSprintyCombat):
     """Upstream SprintyCombat with a narrow 3D-model targeting fallback."""
 
     async def handle_round(self):
+        # Retry reads only. Once any cast/enchant/discard/pass may have reached
+        # the game, leave this round to the existing next-round waiter.
+        state_names = ("turn_adjust", "rel_round_offset", "was_pass",
+                       "had_first_round", "cur_card_count", "prev_card_count")
+        saved = {name: getattr(self, name) for name in state_names if hasattr(self, name)}
+        self._round_input_started = False
+        for attempt in range(3):
+            try:
+                return await self._handle_fresh_round()
+            except wizwalker.MemoryInvalidated as exc:
+                self._spell_check_boxes = None
+                logger.warning("战斗成员已失效，刷新当前回合读取（{}/3）：{}", attempt + 1, exc)
+                if self._round_input_started:
+                    logger.warning("本回合已发出战斗操作，不重放施法；等待下一回合。")
+                    return
+                for name, value in saved.items():
+                    setattr(self, name, value)
+                if attempt < 2:
+                    await asyncio.sleep(0.2)
+
+    async def refresh_member(self, owner_id):
+        for member in await self.get_members():
+            if await member.owner_id() == owner_id:
+                return member
+        raise wizwalker.MemoryInvalidated("Combat member no longer present")
+
+    async def pass_button(self):
+        self._round_input_started = True
+        return await super().pass_button()
+
+    async def _handle_fresh_round(self):
         # Wait for assigned hitters to appear in this battle's roster before
         # evaluating priorities that could otherwise buff the quester itself.
         while (getattr(self.client, 'questing_status', False)

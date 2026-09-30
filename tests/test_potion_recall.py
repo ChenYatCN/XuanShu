@@ -17,11 +17,12 @@ class PotionRecallTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(stack.close)
         self.mocks = {}
         for name in ('ensure_teleport_mark','navigate_to_ravenwood', 'navigate_to_commons_from_ravenwood',
-                     'navigate_to_potions', 'buy_potions', 'is_potion_needed'):
+                     'navigate_to_potions', 'buy_potions', 'is_potion_needed', 'prepare_potion_dungeon_return'):
             self.mocks[name] = stack.enter_context(patch.object(utils, name, new_callable=AsyncMock))
         self.mocks['ensure_teleport_mark'].return_value = True
         self.mocks['buy_potions'].return_value = True
         self.mocks['is_potion_needed'].return_value = False
+        self.mocks['prepare_potion_dungeon_return'].return_value = True
 
     async def test_default_mark_false_still_marks_before_departure(self):
         events = []
@@ -194,23 +195,35 @@ class DungeonReturnTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(client.questing_status)
 
     async def test_red_button_return_waits_for_stable_original_zone(self):
-        client = SimpleNamespace(title='p2',
-            is_loading=AsyncMock(side_effect=[False, True, False, False, False]),
-            zone_name=AsyncMock(side_effect=['WizardCity/WC_Hub', 'Dungeon/Room',
-                                             'Dungeon/Room', 'Dungeon/Room']))
-        with patch.object(utils, 'is_visible_by_path', new=AsyncMock(return_value=True)) as visible, \
-             patch.object(utils, 'click_window_by_path', new=AsyncMock()) as click, \
+        client = SimpleNamespace(title='p2', is_loading=AsyncMock(return_value=False),
+            in_battle=AsyncMock(return_value=False), mouse_handler=AsyncMock(), root_window=object(),
+            potion_return_context={'zone': 'Dungeon/Room', 'snapshot': (42, 7, 'Talk'), 'zone_id': None},
+            zone_name=AsyncMock(return_value='WizardCity/WC_Hub'))
+        button = SimpleNamespace(is_visible=AsyncMock(return_value=True),
+                                 is_control_grayed=AsyncMock(return_value=False))
+        async def arrive(_):
+            client.zone_name.return_value = 'Dungeon/Room'
+        client.mouse_handler.click_window.side_effect = arrive
+        with patch.object(utils, 'get_window_from_path', new=AsyncMock(return_value=button)) as lookup, \
+             patch.object(utils, 'closed_dungeon_popup', new=AsyncMock(return_value=False)), \
+             patch.object(utils, 'is_free', new=AsyncMock(return_value=True)), \
+             patch.object(utils, 'potion_zone_id', new=AsyncMock(return_value=None)), \
+             patch.object(utils, 'potion_quest_snapshot', new=AsyncMock(return_value=(42, 7, 'Talk'))) as snapshot, \
              patch.object(utils.asyncio, 'sleep', new=AsyncMock()):
             self.assertTrue(await utils.return_to_dungeon_after_potions(client, 'Dungeon/Room'))
-        visible.assert_awaited_with(client, utils.dungeon_recall_path)
-        click.assert_awaited_once_with(client, utils.dungeon_recall_path)
+        lookup.assert_awaited_with(client.root_window, utils.dungeon_recall_path)
+        client.mouse_handler.click_window.assert_awaited_once_with(button)
+        self.assertEqual(snapshot.await_count, 3)
         self.assertEqual(utils.dungeon_recall_path,
             ['WorldView', 'windowHUD', 'compassAndTeleporterButtons', 'ResumeInstanceButton'])
         self.assertIsNone(client.potion_dungeon_returned)
 
     async def test_missing_red_button_returns_failure_without_click(self):
-        client = SimpleNamespace(title='p2', is_loading=AsyncMock(return_value=False))
-        with patch.object(utils, 'is_visible_by_path', new=AsyncMock(return_value=False)), \
+        client = SimpleNamespace(title='p2', is_loading=AsyncMock(return_value=False),
+                                 in_battle=AsyncMock(return_value=False), root_window=object(),
+                                 potion_return_context={'zone': 'Dungeon/Room', 'snapshot': (42, 7, 'Talk')})
+        with patch.object(utils, 'get_window_from_path', new=AsyncMock(return_value=False)), \
+             patch.object(utils, 'closed_dungeon_popup', new=AsyncMock(return_value=False)), \
              patch.object(utils, 'click_window_by_path', new=AsyncMock()) as click, \
              patch.object(utils.time, 'monotonic', side_effect=[0, 1, 11]), \
              patch.object(utils.asyncio, 'sleep', new=AsyncMock()):

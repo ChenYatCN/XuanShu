@@ -41,6 +41,7 @@ from src.interaction_prompts import (
 from src.paths import *
 from src.sprinty_client import SprintyClient
 from src.window_text import read_control_text
+from src.interaction_prompts import plain_text
 
 # from src.teleport_math import calc_Distance
 
@@ -606,22 +607,189 @@ async def navigate_to_potions(client: Client):
     # Teleport to hilda brewer
 
 
+async def closed_dungeon_popup(client: Client, dismiss: bool = False) -> bool:
+    """Recognize a terminal instance error, not the retryable file-loading UI."""
+    if not hasattr(client, 'root_window'):
+        return False
+    for modal in await client.root_window.get_windows_with_name('MessageBoxModalWindow'):
+        if not await modal.is_visible():
+            continue
+        captions = await modal.get_windows_with_name('CaptionText')
+        text = ' '.join([plain_text(await read_control_text(c) or '')
+                         for c in captions if await c.is_visible()]).casefold()
+        if not ('地下城已关闭' in text or '地下城已關閉' in text
+                or ('instance' in text and 'closed' in text and ('load' in text or 'area' in text))):
+            continue
+        client._xuanshu_dungeon_closed = True
+        logger.error(f'自动任务：{client.title} 区域加载失败，地下城已关闭；停止标记回传重试。')
+        if dismiss:
+            layout = ['messageBoxBG', 'messageBoxLayout', 'AdjustmentWindow', 'Layout']
+            buttons = []
+            for name in ('leftButton', 'centerButton', 'rightButton'):
+                button = await get_window_from_path(modal, [*layout, name])
+                if button and await button.is_visible():
+                    buttons.append(button)
+            if len(buttons) == 1:
+                async with client.mouse_handler:
+                    current_text = ' '.join([plain_text(await read_control_text(c) or '')
+                                           for c in captions if await c.is_visible()]).casefold()
+                    if (not await client.is_loading() and await modal.is_visible()
+                            and await buttons[0].is_visible() and current_text == text):
+                        await client.mouse_handler.click_window(buttons[0])
+        return True
+    return False
+
+
+def potion_dungeon_return_required(client: Client, zone: str) -> bool:
+    state = getattr(client, 'quest_dungeon_recovery', None)
+    # This promptless instance was confirmed by the user's live failure log.
+    # Do not classify every Interiors map as a dungeon (shops/houses also use it).
+    return bool(zone) and (
+        zone == 'Lemuria/Interiors/LM_Z07_BumblesMind'
+        or zone == getattr(client, 'quest_party_group_dungeon_zone', None)
+        or isinstance(state, dict) and state.get('zone') == zone
+    )
+
+
+async def potion_zone_id(client: Client):
+    """Use the existing ClientZone reader as extra evidence, not a new offset."""
+    try:
+        zone = await client.client_object.client_zone()
+        value = await zone.zone_id() if zone else None
+        return value if isinstance(value, int) and value > 0 else None
+    except Exception:
+        return None
+
+
+async def potion_quest_snapshot(client: Client):
+    # Lazy import: questing already imports utils. Reuse its verified HUD reader.
+    from src.questing import Quester
+    return await Quester(client, [client], None)._dungeon_quest_snapshot(client)
+
+
+async def observe_party_area(client: Client):
+    """Invalidate retained area evidence on any observed loading/zone change."""
+    try:
+        loading = await client.is_loading()
+        zone = await client.zone_name()
+    except wizwalker.WizWalkerMemoryError:
+        loading, zone = True, None
+    state = (loading, zone)
+    previous = getattr(client, '_party_area_observation', None)
+    if previous is not None and state != previous:
+        client._party_area_generation = getattr(client, '_party_area_generation', 0) + 1
+    client._party_area_observation = state
+
+
+async def _party_area_token(client: Client):
+    area = await client.client_object.client_zone()
+    # This address is compared within ONE client, not across processes. It
+    # corroborates uninterrupted presence; Zone ID alone is not instance proof.
+    return (await client.zone_name(), await area.read_base_address(), await area.zone_id(),
+            getattr(client, '_party_area_generation', 0))
+
+
+async def clients_share_live_area(first: Client, second: Client) -> bool:
+    """Use reciprocal entity evidence, or a validated red-button return proof."""
+    try:
+        if await first.is_loading() or await second.is_loading():
+            return False
+        zone = await first.zone_name()
+        if not zone or zone != await second.zone_name():
+            return False
+        for observer, peer in ((first, second), (second, first)):
+            try:
+                peer_id = await peer.client_object.global_id_full()
+                entities = await SprintyClient(observer).get_base_entity_list()
+            except wizwalker.WizWalkerMemoryError:
+                continue
+            for entity in entities:
+                try:
+                    if await entity.global_id_full() == peer_id:
+                        return (not await first.is_loading() and not await second.is_loading()
+                                and await first.zone_name() == zone
+                                and await second.zone_name() == zone)
+                except wizwalker.WizWalkerMemoryError:
+                    continue
+        for returned, peer in ((first, second), (second, first)):
+            context = getattr(returned, 'potion_return_context', None)
+            if not isinstance(context, dict) or not context.get('returned_snapshot'):
+                continue
+            token = context.get('peer_areas', {}).get(id(peer))
+            if (context.get('zone') == zone and token is not None
+                    and token == await _party_area_token(peer)
+                    and context.get('returned_area_token') == await _party_area_token(returned)
+                    and context.get('zone_id') == await potion_zone_id(returned)):
+                return not await returned.is_loading() and not await peer.is_loading()
+    except Exception as exc:
+        logger.debug(f'同副本证据暂时不可读，暂缓坐标同步：{exc}')
+    return False
+
+
+async def prepare_potion_dungeon_return(client: Client, zone: str, require_snapshot: bool = True) -> bool:
+    snapshot = await potion_quest_snapshot(client)
+    if snapshot is None and require_snapshot:
+        logger.error(f'自动任务：{client.title} 原地牢任务状态不可读，取消补药出发。')
+        return False
+    state = getattr(client, 'quest_dungeon_recovery', None)
+    client.potion_return_context = {
+        'zone': zone, 'zone_id': await potion_zone_id(client),
+        'snapshot': snapshot, 'dungeon_state': dict(state) if isinstance(state, dict) else None,
+        'group_zone': getattr(client, 'quest_party_group_dungeon_zone', None),
+    }
+    # Retain only peers proven present before departure. A peer's observed
+    # transition or replaced ClientZone invalidates this evidence on return.
+    peers = list(getattr(client, 'quest_party_hitters', []))
+    quester = getattr(client, 'quest_party_quester', None)
+    if quester is not None:
+        peers.append(quester)
+    peer_areas = {}
+    for peer in peers:
+        if not getattr(peer, 'refilling_potions', False) and await clients_share_live_area(client, peer):
+            try:
+                await observe_party_area(peer)
+                peer_areas[id(peer)] = await _party_area_token(peer)
+            except Exception:
+                pass
+    client.potion_return_context['peer_areas'] = peer_areas
+    return True
+
+
 async def return_to_dungeon_after_potions(client: Client, original_zone: str) -> bool:
     """Use the game's Resume Instance button, never a quest/friend teleport."""
+    context = getattr(client, 'potion_return_context', None)
+    if (not isinstance(context, dict) or context.get('zone') != original_zone
+            or context.get('snapshot') is None and context.get('zone_id') is None):
+        logger.error(f'自动任务：{client.title} 缺少原地牢任务记录，无法可靠确认返回，停止回传。')
+        return False
     deadline = time.monotonic() + 10.0
     while time.monotonic() < deadline:
-        if not await client.is_loading() and await is_visible_by_path(client, dungeon_recall_path):
-            break
+        if await closed_dungeon_popup(client, dismiss=True):
+            # A previous mark failure can be dismissed once before using the
+            # game's valid resume entry; never repeat the mark.
+            client._xuanshu_dungeon_closed = False
+        if not await client.is_loading() and not await client.in_battle():
+            button = await get_window_from_path(client.root_window, dungeon_recall_path)
+            if button and await button.is_visible() and not await button.is_control_grayed():
+                break
         await asyncio.sleep(0.25)
     else:
         logger.error(f"自动任务：{client.title} 未找到地牢返回按钮，停止本次回传。")
         return False
 
     logger.info(f"自动任务：{client.title} 正在通过地牢返回按钮返回副本。")
+    client._xuanshu_dungeon_closed = False
     departure_zone = await client.zone_name()
-    await click_window_by_path(client, dungeon_recall_path)
+    async with client.mouse_handler:
+        button = await get_window_from_path(client.root_window, dungeon_recall_path)
+        if (await client.is_loading() or await client.in_battle() or not button
+                or not await button.is_visible() or await button.is_control_grayed()):
+            return False
+        await client.mouse_handler.click_window(button)
     deadline = time.monotonic() + 15.0
     while time.monotonic() < deadline:
+        if await closed_dungeon_popup(client, dismiss=True) or getattr(client, '_xuanshu_dungeon_closed', False):
+            return False
         if await client.is_loading() or await client.zone_name() != departure_zone:
             break
         await asyncio.sleep(0.25)
@@ -632,18 +800,45 @@ async def return_to_dungeon_after_potions(client: Client, original_zone: str) ->
     deadline = time.monotonic() + 45.0
     stable_reads = 0
     while time.monotonic() < deadline:
-        if not await client.is_loading() and await client.zone_name() == original_zone:
+        if await closed_dungeon_popup(client, dismiss=True) or getattr(client, '_xuanshu_dungeon_closed', False):
+            return False
+        snapshot = None
+        if await is_free(client) and await client.zone_name() == original_zone:
+            snapshot = await potion_quest_snapshot(client)
+            if (snapshot is not None and context.get('snapshot') is not None
+                    and snapshot[0] != context['snapshot'][0]):
+                logger.error(f'自动任务：{client.title} 返回区域的任务身份与原记录不符，停止恢复任务。')
+                return False
+            before_id = context.get('zone_id') if isinstance(context, dict) else None
+            after_id = await potion_zone_id(client)
+            if before_id is not None and after_id != before_id:
+                logger.error(f'自动任务：{client.title} 返回同名区域但 Zone ID 不匹配，停止恢复任务。')
+                return False
+        if snapshot is not None:
             stable_reads += 1
             if stable_reads >= 3:
+                if isinstance(context, dict):
+                    context['returned_snapshot'] = snapshot
+                    try:
+                        await observe_party_area(client)
+                        context['returned_area_token'] = await _party_area_token(client)
+                    except Exception:
+                        context['returned_area_token'] = None
+                    saved = context.get('dungeon_state')
+                    if isinstance(saved, dict):
+                        client.quest_dungeon_recovery = dict(saved, zone=original_zone,
+                            snapshot=snapshot, since=None, active=False, attempted=False)
+                    client.quest_party_group_dungeon_zone = context.get('group_zone')
                 pending_hitters = {
                     id(h) for h in getattr(client, "quest_party_hitters", [])
                     if getattr(h, "questing_status", False)
+                    and not getattr(client, 'in_solo_zone', False)
                 }
                 client.potion_dungeon_returned = (
                     original_zone, time.monotonic(), pending_hitters,
                 ) if pending_hitters or getattr(client, "quest_party_status_session", None) is not None else None
                 client.quest_party_battle_sync_state = None
-                logger.info(f"自动任务：{client.title} 已返回地牢，恢复组队同步。")
+                logger.info(f"自动任务：{client.title} 地牢返回按钮已完成回传，任务状态可读；恢复前仍需确认队伍同副本。")
                 return True
         else:
             stable_reads = 0
@@ -716,7 +911,13 @@ async def buy_potions(client: Client, recall: bool = True, original_zone=None, d
                 if not returned:
                     client.questing_status = False
                 return returned
-            return await recall_to_teleport_mark(client, expected_zone=original_zone)
+            returned = await recall_to_teleport_mark(client, expected_zone=original_zone)
+            if not returned and getattr(client, '_xuanshu_dungeon_closed', False):
+                logger.warning(f'自动任务：{client.title} 标记指向的地下城已关闭，只尝试一次有效地牢返回入口。')
+                returned = await return_to_dungeon_after_potions(client, original_zone)
+                if not returned:
+                    client.questing_status = False
+            return returned
 
     return True
 
@@ -807,15 +1008,19 @@ async def auto_potions_force_buy(
     # If we have any missing potions, get potions
     if await client.stats.potion_charge() < await client.stats.potion_max():
         original_zone = await client.zone_name()
-        dungeon_state = getattr(client, "quest_dungeon_recovery", None)
-        dungeon_return = (
-            original_zone == getattr(client, "quest_party_group_dungeon_zone", None)
-            or isinstance(dungeon_state, dict) and dungeon_state.get("zone") == original_zone
-        )
+        dungeon_return = potion_dungeon_return_required(client, original_zone)
+        from src.questing import claim_quest_recovery, release_quest_recovery
+        if getattr(client, 'refilling_potions', False) or not claim_quest_recovery(client, 'potion_refill'):
+            return False
         client.refilling_potions = True
         client.potion_dungeon_returned = None
+        client.potion_return_context = None
+        client._xuanshu_dungeon_closed = False
         logger.info(f"自动任务：{client.title} 开始补充药水，暂时退出地牢同步。")
         try:
+            if not await prepare_potion_dungeon_return(client, original_zone, require_snapshot=dungeon_return):
+                client.questing_status = False
+                return False
             # No return travel is needed when already in the Commons.
             recall = original_zone != "WizardCity/WC_Hub"
             if recall and not dungeon_return and not await ensure_teleport_mark(client):
@@ -847,6 +1052,7 @@ async def auto_potions_force_buy(
             return False
         finally:
             client.refilling_potions = False
+            release_quest_recovery(client, 'potion_refill')
 
     return True
 
@@ -1066,6 +1272,8 @@ async def recall_to_teleport_mark(
 ) -> bool:
     """Use the original double-PAGE_UP recall and verify the zone transition."""
     for attempt in range(1, attempts + 1):
+        if await closed_dungeon_popup(client, dismiss=True) or getattr(client, '_xuanshu_dungeon_closed', False):
+            return False
         ready_deadline = time.monotonic() + 30.0
         while await client.is_loading() and time.monotonic() < ready_deadline:
             await asyncio.sleep(.2)
@@ -1092,6 +1300,8 @@ async def recall_to_teleport_mark(
         travel_started = False
         start_deadline = time.monotonic() + 12.0
         while time.monotonic() < start_deadline:
+            if await closed_dungeon_popup(client, dismiss=True) or getattr(client, '_xuanshu_dungeon_closed', False):
+                return False
             if await client.is_loading() or await client.zone_name() != departure_zone:
                 travel_started = True
                 break
@@ -1110,6 +1320,8 @@ async def recall_to_teleport_mark(
             await asyncio.sleep(0.25)
         await asyncio.sleep(1.25)
 
+        if await closed_dungeon_popup(client, dismiss=True) or getattr(client, '_xuanshu_dungeon_closed', False):
+            return False
         arrival_zone = await client.zone_name()
         if not await client.is_loading() and (expected_zone is None or arrival_zone == expected_zone):
             logger.debug(f"Client {client.title} - Return to teleport mark confirmed.")
@@ -1147,16 +1359,20 @@ async def refill_potions(
         if original_zone is None:
             original_zone = starting_zone
 
-        dungeon_state = getattr(client, "quest_dungeon_recovery", None)
-        dungeon_return = dungeon_return or (
-            original_zone == getattr(client, "quest_party_group_dungeon_zone", None)
-            or isinstance(dungeon_state, dict) and dungeon_state.get("zone") == original_zone
-        )
+        dungeon_return = dungeon_return or potion_dungeon_return_required(client, original_zone)
 
+        from src.questing import claim_quest_recovery, release_quest_recovery
+        if getattr(client, 'refilling_potions', False) or not claim_quest_recovery(client, 'potion_refill'):
+            return False
         client.refilling_potions = True
         client.potion_dungeon_returned = None
+        client.potion_return_context = None
+        client._xuanshu_dungeon_closed = False
         logger.info(f"自动任务：{client.title} 开始补充药水，暂时退出地牢同步。")
         try:
+            if not await prepare_potion_dungeon_return(client, original_zone, require_snapshot=dungeon_return):
+                client.questing_status = False
+                return False
             if recall and original_zone != starting_zone:
                 logger.error(f"Client {client.title} - 原地图 {original_zone!r} 与出发地图 {starting_zone!r} 不符，取消补药。")
                 return False
@@ -1191,6 +1407,7 @@ async def refill_potions(
             return False
         finally:
             client.refilling_potions = False
+            release_quest_recovery(client, 'potion_refill')
 
     return False
 

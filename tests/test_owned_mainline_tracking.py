@@ -16,6 +16,7 @@ class OwnedMainlineTrackingTests(unittest.IsolatedAsyncioTestCase):
         self.selected = False
         quest = SimpleNamespace(name_lang_key=AsyncMock(return_value='QuestTitle_162472'))
         self.client = SimpleNamespace(
+            title='p1',
             quest_manager=AsyncMock(return_value=SimpleNamespace(quest_data=AsyncMock(return_value={42: quest}))),
             cache_handler=SimpleNamespace(get_langcode_name=AsyncMock(return_value='Extra Life')),
             zone_name=AsyncMock(return_value=self.row['world'].split('(')[0].strip() + '/Area'),
@@ -58,6 +59,21 @@ class OwnedMainlineTrackingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.selected)
         self.assertFalse(self.open)
         self.assertGreaterEqual(self.now, 3)
+        self.assertEqual([call.args[1] for call in self.quester._click_ui_window.await_args_list],
+                         ['right', 'mainline'])
+
+    async def test_target_on_current_page_never_turns_page(self):
+        self.page = 1
+        self.assertTrue(await self.quester._restore_owned_mainline(self.client))
+        self.quester._click_ui_window.assert_awaited_once_with(self.client, 'mainline')
+        self.assertEqual(self.page, 1)
+
+    async def test_current_page_tracking_failure_never_rescans_or_turns_page(self):
+        self.page = 1
+        self.quester._mainline_identity = AsyncMock(return_value=None)
+        with self.assertRaisesRegex(RuntimeError, '重新追踪尚未确认'):
+            await self.quester._restore_owned_mainline(self.client)
+        self.quester._click_ui_window.assert_awaited_once_with(self.client, 'mainline')
 
     async def test_other_world_mainline_does_not_get_selected(self):
         self.client.zone_name.return_value = 'AnotherWorld/Area'
@@ -92,3 +108,17 @@ class OwnedMainlineTrackingTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, '翻页未确认'):
             await self.quester._restore_owned_mainline(self.client)
         self.assertFalse(self.open)
+
+    async def test_special_quest_and_bad_language_key_do_not_abort_scan(self):
+        quests = await (await self.client.quest_manager()).quest_data()
+        quests[99] = SimpleNamespace(name_lang_key=AsyncMock(return_value='任务搜寻'))
+        quests[100] = SimpleNamespace(name_lang_key=AsyncMock(return_value='Unavailable_123'))
+        async def language(code):
+            if code != 'QuestTitle_162472':
+                raise ValueError('No lang file named ' + code)
+            return 'Extra Life'
+        self.client.cache_handler.get_langcode_name.side_effect = language
+        self.assertTrue(await self.quester._restore_owned_mainline(self.client))
+        self.assertFalse(self.open)
+        self.assertNotIn('任务搜寻', [call.args[0] for call in
+                                     self.client.cache_handler.get_langcode_name.await_args_list])

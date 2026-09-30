@@ -25,12 +25,14 @@ from src.paths import *
 from src.collecting import collect_one
 from src.script_popups import close_automation_popup
 from src.window_text import read_control_text
+from src.automation_ownership import automation_owner
 from thefuzz import fuzz
 
 
 def claim_quest_recovery(client: Client, owner: str) -> bool:
     """One quest recovery may control a client at a time on the asyncio loop."""
-    if isinstance(getattr(client, "quest_recovery_owner", None), str):
+    if (getattr(client, 'refilling_potions', False)
+            or isinstance(getattr(client, "quest_recovery_owner", None), str)):
         return False
     client.quest_recovery_owner = owner
     return True
@@ -59,6 +61,30 @@ class Quester():
     PRIVATE_WING_STABLE_SECONDS = 1.5
     GOBBLERTON_ZONE = "Karamelle/KM_Z10_Gobblerton"
     GOBBLERTON_EXIT = XYZ(874.868, 5917.971, 800.977)
+    LEMURIA_DUNGEON_ZONE = 'Lemuria/Interiors/LM_Z05_I01_Dungeon'
+    LEMURIA_DUNGEON_EXIT = XYZ(-1818.267, -6764.240, 2.001)
+    SACRED_YARN_ZONE = 'MooShu/Interiors/MS_CAT_SacredYarnTemple'
+    SACRED_YARN_EXIT = XYZ(6.900, 2767.551, -2.704)
+    TAMARIN_HOUSE_ZONE = 'Lemuria/Interiors/LM_Z07_TamarinHouse'
+    TAMARIN_HOUSE_EXIT = XYZ(-1371.641, 1631.124, 1.000)
+    TAMARIN_HOUSE_ARRIVAL = XYZ(9.903, -424.032, 1.000)
+    BUMBLES_MIND_ZONE = 'Lemuria/Interiors/LM_Z07_BumblesMind'
+    BUMBLES_MIND_BATTLE = XYZ(2.390, -259.991, -1124.726)
+    LEMURIA_DUNGEON_ROOMS = (
+        LEMURIA_DUNGEON_ZONE,
+        'Lemuria/Interiors/LM_Z05_I02_Cave',
+    )
+    LEMURIA_NAVIGATION_HUB = 'Lemuria/LM_Z00_Hub'
+    # Only the public main maps; never infer END safety from a world prefix.
+    LEMURIA_NAVIGATION_AREAS = frozenset({
+        'Lemuria/LM_Z00_Hub', 'Lemuria/LM_Z01_WildLands',
+        'Lemuria/LM_Z02_UrsaiVillage', 'Lemuria/LM_Z03_NightForest',
+        'Lemuria/LM_Z04_Badlands', 'Lemuria/LM_Z05_Mandoria',
+        'Lemuria/LM_Z06_SkyCity', 'Lemuria/LM_Z07_Heap',
+    })
+    LEMURIA_NAVIGATION_CONFIRM_SECONDS = 45.0
+    LEMURIA_NAVIGATION_FALLBACK_SECONDS = 300.0
+    LEMURIA_NAVIGATION_COOLDOWN_SECONDS = 60.0
     # Stay below the existing 120-second stationary-task watchdog.
     NIGHTMARE_NO_PROGRESS_SECONDS = 60.0
     NIGHTMARE_POINTS = (
@@ -187,7 +213,8 @@ class Quester():
             return False
         zone = await client.zone_name()
         if not zone or zone != state["zone"]:
-            if zone and zone == getattr(client, "quest_party_group_dungeon_zone", None):
+            if zone and (zone == getattr(client, "quest_party_group_dungeon_zone", None)
+                         or zone in self.LEMURIA_DUNGEON_ROOMS):
                 # The existing party probe confirmed this next dungeon room.
                 state.update(zone=zone, snapshot=None, since=None,
                              attempted=False, waiting_logged=False)
@@ -234,6 +261,286 @@ class Quester():
                 state["snapshot"] = await self._dungeon_quest_snapshot(client)
             finally:
                 release_quest_recovery(client, "dungeon_quest")
+
+    async def _lemuria_navigation_sample(self, client: Client):
+        """Tri-state navigation evidence, never mistake a stale XYZ for proof."""
+        identity = await self._mainline_identity(client)
+        if (identity is None or identity[3] is None or identity[4] is not True
+                or identity[3]['world'].split('(')[0].strip().casefold() != 'lemuria'):
+            return None
+        try:
+            quest = (await (await client.quest_manager()).quest_data()).get(identity[0])
+            goal_id = await client.goal_id()
+            goal = (await quest.goal_data()).get(goal_id)
+            if (goal is None or await quest.permit_quest_helper() is not True
+                    or await goal.no_quest_helper() is not False
+                    or await quest.pet_only_quest() is not False
+                    or await goal.pet_only_quest() is not False):
+                return None
+            goal_type = await goal.goal_type()
+            kind = getattr(goal_type, 'value', None)
+            destination = await goal.goal_destination_zone()
+            code = await goal.name_lang_key()
+            text = plain_text(await self.read_quest_txt(client))
+            # Require an ordinary, rendered navigation stage. Photo/minigame,
+            # defeat/collect and unknown/no-helper goals belong to their normal
+            # handlers even when the arrow is intentionally absent.
+            if (not destination or not code or not text
+                    or quest_has_action(text, 'photomance')
+                    or not ((kind == 4 and quest_has_action(text, 'talk'))
+                            or (kind == 5 and quest_has_action(text, 'explore'))
+                            or (kind == 8 and quest_has_action(text, 'use')))):
+                return None
+            if (await client.quest_id() != identity[0] or await client.goal_id() != goal_id):
+                return None
+        except Exception:
+            return None
+        target = None
+        try:
+            value = await client.quest_position.position()
+            if (all(math.isfinite(v) for v in (value.x, value.y, value.z))
+                    and calc_Distance(value, XYZ(0, 0, 0)) > 1):
+                target = value
+        except Exception:
+            pass
+        mode = 'fallback' if target is None else 'unknown'
+        try:
+            hud = await get_window_from_path(client.root_window, quest_helper_hud_path)
+            arrow = await get_window_from_path(client.root_window, quest_helper_arrow_path)
+            distance = await get_window_from_path(client.root_window, quest_helper_distance_path)
+            if hud is not None and arrow is not None and distance is not None:
+                # A hidden whole HUD can be a deliberate user setting, not a
+                # broken target; do not send END to repair that setting.
+                if not await hud.is_visible():
+                    return None
+                arrow_visible = await arrow.is_visible()
+                distance_text = plain_text(await distance.maybe_text())
+                has_distance = bool(re.search(r'\d', distance_text))
+                if arrow_visible and has_distance and target is not None:
+                    mode = 'valid'
+                elif not arrow_visible and not has_distance:
+                    mode = 'missing'
+                elif target is None:
+                    mode = 'fallback'
+            # Missing controls are unknown UI evidence, not proof of loss.
+        except Exception:
+            pass
+        if mode == 'missing' and target is not None:
+            try:
+                if calc_Distance(await client.body.position(), target) < 150:
+                    return None  # ordinary arrival/interaction, not lost guidance
+            except Exception:
+                return None
+        return {'key': (identity[0], goal_id, code, destination, text),
+                'mode': mode, 'target': target}
+
+    async def _lemuria_navigation_blocked(self, client: Client, zone: str, owner=None):
+        if (zone not in self.LEMURIA_NAVIGATION_AREAS
+                or getattr(client, 'in_solo_zone', False)
+                or potion_dungeon_return_required(client, zone)
+                or getattr(client, 'refilling_potions', False)
+                or isinstance(getattr(client, 'quest_dialogue_settle', None), dict)):
+            return True
+        return await self._trigger_reentry_blocked(client, owner)
+
+    async def _maybe_recover_lemuria_navigation(self, client: Client) -> bool:
+        owner = 'lemuria_navigation'
+        if getattr(client, 'quest_recovery_owner', None) == owner:
+            return True
+        state = getattr(client, 'quest_lemuria_navigation_recovery', None)
+        zone = await client.zone_name()
+        if (not getattr(client, 'questing_status', False) or not zone.startswith('Lemuria/')
+                or getattr(client, 'quest_party_status_session', None) is not None
+                or any(client in getattr(c, 'quest_party_hitters', []) for c in self.clients)
+                or zone not in self.LEMURIA_NAVIGATION_AREAS
+                or getattr(client, 'in_solo_zone', False)
+                or potion_dungeon_return_required(client, zone)):
+            client.quest_lemuria_navigation_recovery = None
+            client.lemuria_navigation_pending = False
+            return False
+        if await self._lemuria_navigation_blocked(client, zone):
+            if isinstance(state, dict):
+                state['since'] = None
+            client.lemuria_navigation_pending = bool(isinstance(state, dict) and state.get('holding'))
+            return bool(isinstance(state, dict) and state.get('holding'))
+        sample = await self._lemuria_navigation_sample(client)
+        now = time.monotonic()
+        if sample is None or sample['mode'] == 'unknown':
+            if isinstance(state, dict) and state.get('holding'):
+                try:
+                    if (await client.quest_id(), await client.goal_id()) == state['key'][:2]:
+                        return True  # unreadable guidance is not restored guidance
+                except Exception:
+                    return True
+            client.quest_lemuria_navigation_recovery = None
+            client.lemuria_navigation_pending = False
+            return False  # unknown mainline/stage belongs to existing recovery
+        if sample['mode'] == 'valid':
+            if isinstance(state, dict) and state.get('holding'):
+                if state['key'] == sample['key']:
+                    if state.get('restored_since') is None:
+                        state['restored_since'] = now
+                        return True
+                    if now - state['restored_since'] < 1.5:
+                        return True
+                logger.info('自动任务：任务助手导航已恢复，继续任务传送。')
+                for member in getattr(client, 'quest_mainline_sync_members', [client]):
+                    member.quest_mainline_sync_state = None
+                client.quest_party_quest_worker_zone = zone
+                client.quest_party_probe_pending = bool(getattr(client, 'quest_party_hitters', []))
+            client.quest_lemuria_navigation_recovery = None
+            client.lemuria_navigation_pending = False
+            return False
+        if not isinstance(state, dict) or state['key'] != sample['key'] or state['zone'] != zone:
+            holding = bool(isinstance(state, dict) and state.get('holding')
+                           and state['key'] == sample['key'])
+            state = {'key': sample['key'], 'zone': zone, 'mode': sample['mode'],
+                     'since': now, 'holding': holding}
+            client.quest_lemuria_navigation_recovery = state
+        elif state['since'] is None or state['mode'] != sample['mode']:
+            state.update(since=now, mode=sample['mode'])
+        state['restored_since'] = None
+        client.lemuria_navigation_pending = True
+        counts = getattr(client, '_lemuria_navigation_attempts', None)
+        if not isinstance(counts, dict):
+            client._lemuria_navigation_attempts = counts = {}
+        quest_id = sample['key'][0]
+        if counts.get(quest_id, 0) >= 2:
+            state['holding'] = True
+            return True
+        if now < getattr(client, '_lemuria_navigation_retry_at', 0):
+            return state['holding']
+        threshold = (self.LEMURIA_NAVIGATION_CONFIRM_SECONDS if sample['mode'] == 'missing'
+                     else self.LEMURIA_NAVIGATION_FALLBACK_SECONDS)
+        if not state['holding'] and now - state['since'] < threshold:
+            return False
+        # Reserve the existing lock, then re-read all evidence before END.
+        if not claim_quest_recovery(client, owner):
+            return state['holding']
+        try:
+            if await self._lemuria_navigation_blocked(client, zone, owner):
+                return state['holding']
+            current = await self._lemuria_navigation_sample(client)
+            if (current is None or current['key'] != sample['key']
+                    or current['mode'] not in ('missing', 'fallback')
+                    or await client.zone_name() != zone):
+                return False
+            state['holding'] = True
+            logger.info('自动任务：Lemuria 当前主线正常，但任务助手导航丢失。')
+            logger.debug('{} Lemuria 导航恢复：QuestID={}，GoalID={}，阶段={!r}，证据={}',
+                         client.title, sample['key'][0], sample['key'][1],
+                         sample['key'][4], sample['mode'])
+            completed = await self._run_lemuria_navigation_recovery(client, state)
+            if completed:
+                state['holding'] = False
+                client.lemuria_navigation_pending = False
+                for member in getattr(client, 'quest_mainline_sync_members', [client]):
+                    member.quest_mainline_sync_state = None
+                arrival = await client.zone_name()
+                client.quest_party_quest_worker_zone = arrival
+                client.quest_party_probe_pending = bool(getattr(client, 'quest_party_hitters', []))
+            elif state['holding']:
+                logger.warning('Lemuria 任务助手导航仍未恢复。')
+            return True  # next iteration must pass the original party sync gate
+        except Exception as exc:
+            state['holding'] = True
+            logger.warning('Lemuria 任务助手导航仍未恢复。原因：{}', exc)
+            return True
+        finally:
+            client._lemuria_navigation_retry_at = time.monotonic() + self.LEMURIA_NAVIGATION_COOLDOWN_SECONDS
+            state['since'] = None
+            self._krok_exit_watch.pop(id(client), None)
+            self._trigger_reentry.pop(id(client), None)
+            self._npc_retry_exhausted.pop(id(client), None)
+            self._mainline_finder_observations.pop(id(client), None)
+            dungeon = getattr(client, 'quest_dungeon_recovery', None)
+            if isinstance(dungeon, dict):
+                dungeon.update(since=time.monotonic(), waiting_logged=False)
+            release_quest_recovery(client, owner)
+
+    async def _run_lemuria_navigation_recovery(self, client, state):
+        async def same_stage():
+            try:
+                quest_id, goal_id = await client.quest_id(), await client.goal_id()
+                if not isinstance(quest_id, int) or quest_id <= 0 or not isinstance(goal_id, int):
+                    return False
+                if (quest_id, goal_id) != state['key'][:2]:
+                    state['holding'] = False
+                    client.lemuria_navigation_pending = False
+                    return None
+            except Exception:
+                return False  # transient unreadability during END/loading
+            sample = await self._lemuria_navigation_sample(client)
+            if sample is not None and sample['key'] != state['key']:
+                state['holding'] = False
+                client.lemuria_navigation_pending = False
+                return None
+            return sample if sample is not None else False
+
+        async with asyncio.timeout(90):
+            sample = await same_stage()
+            if not sample or sample['mode'] == 'valid':
+                return bool(sample)  # never send END after navigation recovered
+            if (await self._lemuria_navigation_blocked(client, state['zone'], 'lemuria_navigation')
+                    or await client.zone_name() != state['zone']):
+                return False
+            if (await client.is_loading() or await client.in_battle()
+                    or not await is_free_leader_questing(client)):
+                return False
+            logger.info('自动任务：准备按 END 返回主城，刷新任务助手。')
+            quest_id = state['key'][0]
+            client._lemuria_navigation_attempts[quest_id] = client._lemuria_navigation_attempts.get(quest_id, 0) + 1
+            await client.send_key(Keycode.END, .1)
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                if not client.questing_status or await client.in_battle():
+                    return False
+                if not await client.is_loading() and await same_stage() is None:
+                    return False
+                if await client.is_loading() or await client.zone_name() != state['zone']:
+                    break
+                await asyncio.sleep(.2)
+            else:
+                return False
+            # A different zone alone is not a successful return or navigation.
+            deadline = time.monotonic() + 35
+            stable_since = None
+            while time.monotonic() < deadline:
+                if not client.questing_status or await client.in_battle():
+                    return False
+                if not await client.is_loading() and await same_stage() is None:
+                    return False
+                if (await client.zone_name() != self.LEMURIA_NAVIGATION_HUB
+                        or await client.is_loading() or not await is_free_leader_questing(client)):
+                    stable_since = None
+                elif stable_since is None:
+                    stable_since = time.monotonic()
+                elif time.monotonic() - stable_since >= 1.5:
+                    break
+                await asyncio.sleep(.2)
+            else:
+                return False
+            logger.info('自动任务：已返回主城，正在检查任务助手导航。')
+            deadline = time.monotonic() + 30
+            stable_since = None
+            while time.monotonic() < deadline:
+                if (not client.questing_status or await client.in_battle()
+                        or await client.zone_name() != self.LEMURIA_NAVIGATION_HUB):
+                    return False
+                sample = await same_stage()
+                if sample is None:
+                    return False
+                if (sample and sample['mode'] == 'valid' and not await client.is_loading()
+                        and await is_free_leader_questing(client)):
+                    if stable_since is None:
+                        stable_since = time.monotonic()
+                    elif time.monotonic() - stable_since >= 1.5:
+                        logger.info('自动任务：任务助手导航已恢复，继续任务传送。')
+                        return True
+                else:
+                    stable_since = None
+                await asyncio.sleep(.2)
+            return False
 
     async def _nightmare_can_act(self, client: Client) -> bool:
         return (client.questing_status
@@ -399,7 +706,7 @@ class Quester():
                 or await is_visible_by_path(client, all_quests_sort_button_path))
 
     async def _maybe_reenter_quest_trigger(self, client: Client, target: XYZ) -> bool:
-        """Re-enter a missed Talk/Use trigger after repeated near-point observations."""
+        """Re-enter a missed interaction/exploration trigger; never loop TP forever."""
         key_id = id(client)
         if await self._trigger_reentry_blocked(client):
             state = self._trigger_reentry.get(key_id)
@@ -409,6 +716,7 @@ class Quester():
         snapshot = await self._dungeon_quest_snapshot(client)
         if snapshot is None or not (
             quest_has_action(snapshot[2], "talk") or quest_has_action(snapshot[2], "use")
+            or quest_has_action(snapshot[2], "explore")
         ):
             self._trigger_reentry.pop(key_id, None)
             return False
@@ -428,7 +736,16 @@ class Quester():
             state["seen"] = 0
             return False
         if state["attempts"] >= self.TRIGGER_MAX_ATTEMPTS:
-            return False
+            if await self.quest_interaction_ready(client, target):
+                return False
+            if not state.get("exhausted_logged"):
+                logger.warning(f"Client {client.title} - 近距离任务点两次重新进场仍无进展；"
+                               f"暂停该任务点 TP，等待交互或任务状态变化：{snapshot}")
+                state["exhausted_logged"] = True
+            # Keep the worker alive to read progression/interaction. Returning
+            # False here previously fell straight back into collision_tp.
+            await asyncio.sleep(0.5)
+            return True
         state["seen"] += 1
         if state["seen"] < self.TRIGGER_STABLE_OBSERVATIONS:
             return False
@@ -643,8 +960,20 @@ class Quester():
         return client_quests
 
     async def zone_recorrect_hub(self):
+        if any(isinstance(getattr(p, 'quest_lemuria_navigation_recovery', None), dict)
+               and p.quest_lemuria_navigation_recovery.get('holding')
+               or getattr(p, 'quest_recovery_owner', None) == 'lemuria_navigation'
+               for p in self.clients):
+            return
         if await self.followers_in_correct_zone():
             return
+        for p in self.clients:
+            if await self._maybe_handle_bumbles_mind(p):
+                return
+            if getattr(p, 'quest_recovery_owner', None) == 'tamarin_house':
+                return
+            if await self._maybe_handle_tamarin_house(p):
+                return
         for p in self.clients:
             if getattr(p, "refilling_potions", False) is True or getattr(p, "questing_status", True) is False:
                 continue
@@ -1362,7 +1691,8 @@ class Quester():
             self._log_npc_retry_wait(talking_client, f"recovery owned by {talking_client.quest_recovery_owner}")
             return False
         try:
-            updated = await self._handle_npc_talking_quests(talking_client, present_clients)
+            async with automation_owner(talking_client, 'npc-dialogue-transaction'):
+                updated = await self._handle_npc_talking_quests(talking_client, present_clients)
             if updated:
                 self._npc_retry_exhausted.pop(id(talking_client), None)
                 self._npc_retry_debug_at.pop(id(talking_client), None)
@@ -1530,8 +1860,9 @@ class Quester():
             quiet_since = None
             dialogue_deadline = time.monotonic() + 60.0
             while time.monotonic() < dialogue_deadline:
+                dialogue_active = await self._advance_npc_dialogue(talking_client)
                 await close_npc_quest_menu(talking_client)
-                if await is_free_leader_questing(talking_client):
+                if not dialogue_active and await is_free_leader_questing(talking_client):
                     if quiet_since is None:
                         quiet_since = time.monotonic()
                     elif time.monotonic() - quiet_since >= 3.0:
@@ -1635,9 +1966,70 @@ class Quester():
                 or await is_visible_by_path(client, exit_dungeon_path)
                 or await is_visible_by_path(client, dungeon_warning_path))
 
+    async def _advance_npc_dialogue(self, client: Client) -> bool:
+        """One shared, serialized dialogue/offer step for task and dialogue workers."""
+        owner = getattr(client, 'quest_recovery_owner', None)
+        if isinstance(owner, str) and owner != 'npc_dialogue':
+            return False
+        async with automation_owner(client, 'npc-dialogue-step'):
+            if await client.is_loading() or await client.in_battle():
+                return False
+            button = await get_window_from_path(client.root_window, advance_dialog_path)
+            if not button or not await button.is_visible():
+                if getattr(client, '_npc_dialogue_debug', None) is not None:
+                    logger.debug('{} NPC 对话/邀请按钮已关闭，等待任务数据稳定。', client.title)
+                    client._npc_dialogue_debug = None
+                return False
+            caption = plain_text(await self._window_text(button)).casefold()
+            invitation = (caption in ('接受', 'accept')
+                          or await is_visible_by_path(client, decline_quest_path))
+            diagnostic = (caption, invitation)
+            if getattr(client, '_npc_dialogue_debug', None) != diagnostic:
+                logger.debug('{} NPC 状态：按钮 {!r}，任务邀请 {}', client.title, caption, invitation)
+                client._npc_dialogue_debug = diagnostic
+            now = time.monotonic()
+            state = getattr(client, 'quest_invitation_state', None)
+            if invitation:
+                if not isinstance(state, dict) or state.get('closed'):
+                    state = {'before_id': await client.quest_id(), 'attempts': 0,
+                             'next_at': 0.0, 'failed': False}
+                    client.quest_invitation_state = state
+                if now < state['next_at'] or state['failed']:
+                    return True
+                if state['attempts'] >= 3:
+                    state['failed'] = True
+                    logger.debug('{} 任务邀请接受重试耗尽，关闭邀请后交由现有主线恢复。', client.title)
+                    await client.send_key(Keycode.ESC, 0.1)
+                    return True
+                # Re-read the actual UI while holding the same input owner.
+                if await button.is_visible() and not await button.is_control_grayed():
+                    await self._click_ui_window(client, button)
+                    state['attempts'] += 1
+                    state['next_at'] = now + 1.5
+                    logger.debug('{} 任务邀请：点击接受 {}/3，接取前 Quest ID {}',
+                                 client.title, state['attempts'], state['before_id'])
+                    client.quest_dialogue_settle = {'snapshot': None, 'since': None}
+            else:
+                next_at = getattr(client, '_npc_dialogue_next_at', 0.0)
+                if not isinstance(next_at, (int, float)) or now >= next_at:
+                    await client.send_key(Keycode.SPACEBAR)
+                    client._npc_dialogue_next_at = now + .25
+            return True
+
     async def _quest_dialogue_blocks_movement(self, client: Client) -> bool:
         """Wait for a quiet, stable tracked quest after dialogue/transition."""
+        navigation = getattr(client, 'quest_lemuria_navigation_recovery', None)
+        if (isinstance(navigation, dict)
+                and isinstance(getattr(client, 'quest_dialogue_settle', None), dict)):
+            navigation['since'] = None
+        if await self._advance_npc_dialogue(client):
+            if isinstance(navigation, dict):
+                navigation['since'] = None
+            client.quest_dialogue_settle = {'snapshot': None, 'since': None}
+            return True
         if not await is_free_leader_questing(client):
+            if isinstance(navigation, dict):
+                navigation['since'] = None
             client.quest_dialogue_settle = {'snapshot': None, 'since': None}
             return True
         state = getattr(client, 'quest_dialogue_settle', None)
@@ -1654,6 +2046,21 @@ class Quester():
             return True
         if now - state['since'] < 3.0:
             return True
+        invitation = getattr(client, 'quest_invitation_state', None)
+        if isinstance(invitation, dict) and not invitation.get('closed'):
+            identity = await self._mainline_identity(client)
+            accepted = bool(identity and identity[0] != invitation['before_id']
+                            and identity[3] is not None)
+            logger.debug('{} 任务接取稳定：Quest ID {} -> {}，下一主线确认 {}',
+                         client.title, invitation['before_id'], snapshot[0], accepted)
+            invitation.update(closed=True, confirmed=accepted)
+            if not accepted and not invitation.get('npc_retry_done'):
+                invitation['npc_retry_done'] = True
+                previous = getattr(client, 'mainline_last_turn_in_snapshot', None)
+                if previous is not None:
+                    await self._continue_mainline_chain(client, previous)
+                    state.update(snapshot=None, since=None)
+                    return True
         client.quest_dialogue_settle = None
         return False
 
@@ -1667,6 +2074,11 @@ class Quester():
         identities = {}
         waiting = []
         for member in members:
+            navigation = getattr(member, 'quest_lemuria_navigation_recovery', None)
+            if isinstance(navigation, dict) and navigation.get('holding'):
+                member.quest_mainline_sync_state = None
+                waiting.append(f'{member.title} 等待任务助手导航恢复')
+                continue
             if not getattr(member, 'questing_status', False):
                 waiting.append(f'{member.title} 等待任务客户端恢复')
                 continue
@@ -1763,6 +2175,10 @@ class Quester():
 
     async def _maybe_recover_mainline(self, client: Client, expected_id=None) -> bool:
         """Pause a confirmed side quest, then run one bounded Quest Finder pass."""
+        if await is_visible_by_path(client, advance_dialog_path):
+            await self._advance_npc_dialogue(client)
+            self._mainline_finder_observations.pop(id(client), None)
+            return True
         if not getattr(client, 'mainline_finder_enabled', False):
             self._mainline_finder_observations.pop(id(client), None)
             self._mainline_finder_retry_at.pop(id(client), None)
@@ -1773,6 +2189,13 @@ class Quester():
         # pause movement (including its stability/retry waiting iterations).
         dungeon_state = getattr(client, 'quest_dungeon_recovery', None)
         dungeon_zone = getattr(client, 'quest_party_group_dungeon_zone', None)
+        current_zone = await client.zone_name()
+        if (current_zone in self.LEMURIA_DUNGEON_ROOMS
+                and (not isinstance(dungeon_state, dict) or dungeon_state.get('zone') != current_zone)):
+            client.quest_dungeon_recovery = dungeon_state = {
+                'zone': current_zone, 'snapshot': None, 'since': None,
+                'active': False, 'attempted': False, 'waiting_logged': False,
+            }
         if isinstance(dungeon_state, dict) or isinstance(dungeon_zone, str):
             zone = await client.zone_name()
             if zone and (zone == dungeon_zone or isinstance(dungeon_state, dict)
@@ -1969,14 +2392,32 @@ class Quester():
         for quest_id, quest in quests.items():
             if not isinstance(quest_id, int) or quest_id <= 0:
                 continue
-            code = await quest.name_lang_key() or ''
-            title = await client.cache_handler.get_langcode_name(code) if code else ''
+            try:
+                code = await quest.name_lang_key() or ''
+            except Exception as exc:
+                logger.debug('已接任务 {} 的 Language Key 暂不可读：{}', quest_id, exc)
+                continue
+            if code.casefold() in ('quest finder', '任务搜寻', '任务搜索'):
+                continue
+            title = ''
+            if code:
+                try:
+                    title = await client.cache_handler.get_langcode_name(code) or ''
+                except Exception as exc:
+                    # One special/untranslated quest must not abort the whole book.
+                    logger.debug('已接任务 {} 标题解析失败，继续使用 Quest ID / Language Key：{}', quest_id, exc)
             row = match_quest(rows, quest_id, code, title or '')
             if row is not None:
                 owned.append((quest_id, title or '', row))
 
         zone = await client.zone_name()
         world = zone.split('/', 1)[0].casefold()
+        eligible = [item for item in owned if (
+            expected_id is not None and item[0] == expected_id
+            or expected_id is None
+            and item[2]['world'].split('(', 1)[0].strip().casefold() == world)]
+        if len({item[0] for item in eligible}) > 1:
+            raise RuntimeError('存在多条可匹配的当前世界主线，无法唯一恢复追踪')
         try:
             if not await is_visible_by_path(client, quest_buttons_parent_path):
                 await client.send_key(Keycode.Q)
@@ -1987,13 +2428,24 @@ class Quester():
                 await asyncio.sleep(.1)
             logger.info('自动任务：检查各页已接任务，优先恢复现有主线追踪。')
             seen = set()
-            found = {}
-            for _ in range(self.MAINLINE_FINDER_MAX_PAGES):
-                cards = []
-                signature, _, next_page = await self._questbook_page(client, mainlines=cards)
+            load_deadline = time.monotonic() + 4.0
+            for page_number in range(1, self.MAINLINE_FINDER_MAX_PAGES + 1):
+                while True:
+                    cards = []
+                    try:
+                        signature, _, next_page = await self._questbook_page(client, mainlines=cards)
+                        break
+                    except RuntimeError as exc:
+                        if (page_number != 1 or time.monotonic() >= load_deadline
+                                or str(exc) not in ('Q 任务菜单未显示', '当前任务页没有可读取的任务卡片')):
+                            raise
+                        await asyncio.sleep(.1)
                 if signature in seen:
                     break
                 seen.add(signature)
+                logger.debug('{} Q 菜单已检查第 {} 页（从打开时当前页开始），卡片数 {}',
+                             client.title, page_number, len(cards))
+                selected = None
                 for title, _target in cards:
                     row = match_quest(rows, None, '', title)
                     matches = [item for item in owned
@@ -2006,36 +2458,13 @@ class Quester():
                         if (expected_id is not None and quest_id == expected_id
                                 or expected_id is None
                                 and matched['world'].split('(', 1)[0].strip().casefold() == world):
-                            found[quest_id] = (title, matched)
-                if next_page is None:
-                    raise RuntimeError('已接任务检查未完成：无法唯一识别右侧翻页控件')
-                await self._click_ui_window(client, next_page[0])
-                deadline = time.monotonic() + 2.5
-                while True:
-                    await asyncio.sleep(.1)
-                    changed, _, _ = await self._questbook_page(client)
-                    if changed != signature:
-                        break
-                    if time.monotonic() >= deadline:
-                        # A one-page quest book may remain on the same page.
-                        break
-                if changed == signature:
-                    raise RuntimeError('已接任务检查未完成：翻页未确认，暂不执行任务搜寻')
-            else:
-                raise RuntimeError('已接任务检查达到翻页保护上限，暂不执行任务搜寻')
-            if len(found) > 1:
-                raise RuntimeError('存在多条可匹配的当前世界主线，无法唯一恢复追踪')
-            if not found:
-                logger.info('自动任务：各页未找到可确认的目标主线，继续任务搜寻。')
-                return False
-            quest_id, (title, _) = next(iter(found.items()))
-            for _ in range(self.MAINLINE_FINDER_MAX_PAGES):
-                cards = []
-                _, _, next_page = await self._questbook_page(client, mainlines=cards)
-                target = next((target for card_title, target in cards if card_title == title), None)
-                if target is not None:
+                            selected = (quest_id, title, _target)
+                            break
+                if selected is not None:
+                    quest_id, title, target = selected
+                    logger.debug('{} Q 菜单第 {} 个检查页命中主线：{}，Quest ID {}，停止翻页',
+                                 client.title, page_number, title, quest_id)
                     await self._click_ui_window(client, target[0])
-                    # Close the menu before checking dialogue-free stability.
                     await self._close_questbook(client)
                     stable_since = None
                     deadline = time.monotonic() + 8.0
@@ -2053,10 +2482,25 @@ class Quester():
                         await asyncio.sleep(.2)
                     raise RuntimeError('主线已在任务列表中，但重新追踪尚未确认；暂不执行任务搜寻')
                 if next_page is None:
-                    break
+                    raise RuntimeError('已接任务检查未完成：无法唯一识别右侧翻页控件')
+                logger.debug('{} Q 菜单第 {} 个检查页未命中目标主线，才执行下一页。',
+                             client.title, page_number)
                 await self._click_ui_window(client, next_page[0])
-                await asyncio.sleep(.2)
-            raise RuntimeError('已接主线卡片重定位失败，暂不执行任务搜寻')
+                deadline = time.monotonic() + 2.5
+                while True:
+                    await asyncio.sleep(.1)
+                    changed, _, _ = await self._questbook_page(client)
+                    if changed != signature:
+                        break
+                    if time.monotonic() >= deadline:
+                        # A one-page quest book may remain on the same page.
+                        break
+                if changed == signature:
+                    raise RuntimeError('已接任务检查未完成：翻页未确认，暂不执行任务搜寻')
+            else:
+                raise RuntimeError('已接任务检查达到翻页保护上限，暂不执行任务搜寻')
+            logger.info('自动任务：各页未找到可确认的目标主线，继续任务搜寻。')
+            return False
         finally:
             await self._close_questbook(client)
 
@@ -2263,13 +2707,18 @@ class Quester():
             return
         previous_id, zone, anchor, npc = snapshot
 
+        def invitation_pending():
+            offer = getattr(client, 'quest_invitation_state', None)
+            return isinstance(offer, dict) and offer.get('attempts', 0) > 0 and not offer.get('confirmed')
+
         async def current_quest():
             try:
                 quest_id = await client.quest_id()
                 if quest_id == 0:
                     return 0, None
                 identity = await self._mainline_identity(client)
-                return quest_id, bool(identity and identity[3] is not None)
+                return quest_id, bool(identity and identity[3] is not None
+                                      and (quest_id != previous_id or not invitation_pending()))
             except Exception:
                 return None, None
 
@@ -2277,6 +2726,7 @@ class Quester():
             if not getattr(client, "questing_status", False):
                 return False
             if (isinstance(getattr(client, 'quest_recovery_owner', None), str)
+                    and client.quest_recovery_owner != 'npc_dialogue'
                     or getattr(client, "quest_party_probe_pending", False)
                     or getattr(client, "quest_party_battle_rescue_active", False)
                     or getattr(client, "quest_party_quest_worker_restart_requested", False)):
@@ -2298,8 +2748,10 @@ class Quester():
 
         # The game can select an unrelated nonzero quest during a handoff.
         # Do not mistake it for the next mainline before dialogue settles.
+        dialogue_active = await self._advance_npc_dialogue(client)
         quest_id, _ = await current_quest()
         if (quest_id is None or quest_id == previous_id and expected_id is None
+                and not dialogue_active and not invitation_pending()
                 or not getattr(client, "questing_status", False)):
             return
         logger.info('{} 当前主线已完成，等待下一主线。', client.title)
@@ -2310,12 +2762,13 @@ class Quester():
         quiet_quest = None
         deadline = time.monotonic() + 60.0
         while time.monotonic() < deadline:
+            dialogue_active = await self._advance_npc_dialogue(client)
             quest_id, _ = await current_quest()
             if quest_id is None or not getattr(client, "questing_status", False):
                 return
             if await client.zone_name() != zone or await client.in_battle():
                 return
-            if await is_free_leader_questing(client):
+            if not dialogue_active and await is_free_leader_questing(client):
                 if quiet_since is None or quiet_quest != quest_id:
                     quiet_since = time.monotonic()
                     quiet_quest = quest_id
@@ -2329,7 +2782,7 @@ class Quester():
 
         quest_id, matched = await current_quest()
         if (matched and (expected_id is None or quest_id == expected_id)
-                or quest_id == previous_id and expected_id is None
+                or quest_id == previous_id and expected_id is None and not invitation_pending()
                 or not await ready_to_retry()):
             return
 
@@ -2350,11 +2803,12 @@ class Quester():
                 quiet_since = None
                 deadline = time.monotonic() + 25.0
                 while time.monotonic() < deadline:
+                    dialogue_active = await self._advance_npc_dialogue(client)
                     quest_id, mainline = await current_quest()
                     if quest_id is None:
                         return
                     if (mainline and (expected_id is None or quest_id == expected_id)
-                            and await is_free_leader_questing(client)):
+                            and not dialogue_active and await is_free_leader_questing(client)):
                         if quiet_since is None:
                             quiet_since = time.monotonic()
                         elif time.monotonic() - quiet_since >= 3.0:
@@ -2371,7 +2825,7 @@ class Quester():
                     if await is_visible_by_path(client, cancel_multiple_quest_menu_path):
                         await close_npc_quest_menu(client)
                         return
-                    if await is_free_leader_questing(client):
+                    if not dialogue_active and await is_free_leader_questing(client):
                         if quiet_since is None:
                             quiet_since = time.monotonic()
                         elif time.monotonic() - quiet_since >= (1.5 if appeared else 4.0):
@@ -2385,16 +2839,7 @@ class Quester():
                 f"{client.title} 原 NPC 续接未成功，准备使用任务搜寻恢复主线。"
             )
         finally:
-            # The normal dialogue worker treats a left-hand decline button as
-            # a side-quest offer while this flag is set, even if side quests
-            # are otherwise enabled.  Dismiss a lingering offer on exit.
-            try:
-                if pressed and await is_visible_by_path(client, decline_quest_path):
-                    await client.send_key(Keycode.ESC, 0.1)
-            except Exception as exc:
-                logger.debug("Could not dismiss lingering quest offer: {}", exc)
-            finally:
-                client.mainline_chain_retry_active = False
+            client.mainline_chain_retry_active = False
 
     async def quest_interaction_ready(self, client, xyz, leader_client=None):
         if await client.is_loading() or await client.in_battle():
@@ -2434,17 +2879,308 @@ class Quester():
             watcher.cancel()
             await gather_owned(movement, watcher, return_exceptions=True)
 
+    def _bumbles_mind_task_matches(self, text) -> bool:
+        objective, location = split_quest_location(text)
+        objective = re.sub(r'\s+', '', objective).casefold()
+        location = re.sub(r'\s+', '', location).casefold()
+        # Exact screenshot stage. Language-table numbers are not QuestIDs.
+        return (objective, location) in {
+            ('退出大黄蜂的脑海', '废料堆'),
+        }
+
+    async def _maybe_handle_bumbles_mind(self, client: Client) -> bool:
+        if getattr(client, 'quest_recovery_owner', None) == 'bumbles_mind':
+            return True
+        if (not getattr(client, 'questing_status', False)
+                or await client.zone_name() != self.BUMBLES_MIND_ZONE
+                or getattr(client, 'quest_party_status_session', None) is not None
+                or any(client in getattr(c, 'quest_party_hitters', []) for c in self.clients)
+                or not self._bumbles_mind_task_matches(await self.read_quest_txt(client))):
+            return False
+        if not await client.in_battle():
+            await self.teleport_to_quest_target(client, await client.quest_position.position())
+        return True
+
+    async def _recover_bumbles_mind(self, client, progress, failed_attr):
+        # Combat is driven by the existing combat worker; never start a second
+        # controller or move the client again once battle has begun.
+        def has_progress(snapshot):
+            return snapshot is not None and (
+                snapshot[:2] != progress[:2]
+                or not self._bumbles_mind_task_matches(snapshot[2]))
+
+        async with asyncio.timeout(240):
+            for attempt in range(2):
+                if (not client.questing_status or await client.is_loading()
+                        or await client.zone_name() != self.BUMBLES_MIND_ZONE):
+                    raise RuntimeError('任务停止或区域变化')
+                current = await self._dungeon_quest_snapshot(client)
+                if has_progress(current):
+                    setattr(client, failed_attr, None)
+                    return
+                if (current is None
+                        or not self._bumbles_mind_task_matches(await self.read_quest_txt(client))):
+                    raise RuntimeError('任务阶段变化或不可读')
+                if await client.in_battle():
+                    break
+                if not await is_free_leader_questing(client):
+                    raise RuntimeError('进入对话或交互')
+                if await client.is_loading() or await client.zone_name() != self.BUMBLES_MIND_ZONE:
+                    raise RuntimeError('区域变化')
+                if await client.in_battle():
+                    break
+                logger.info('BumblesMind 前往战斗触发点（{}/2），QuestID={}，GoalID={}。',
+                            attempt + 1, progress[0], progress[1])
+                await client.teleport(self.BUMBLES_MIND_BATTLE)
+                deadline = time.monotonic() + 10
+                while not await client.in_battle():
+                    if (not client.questing_status or await client.is_loading()
+                            or await client.zone_name() != self.BUMBLES_MIND_ZONE):
+                        raise RuntimeError('等待战斗期间任务停止或区域变化')
+                    current = await self._dungeon_quest_snapshot(client)
+                    if has_progress(current):
+                        setattr(client, failed_attr, None)
+                        return
+                    if (current is None
+                            or not self._bumbles_mind_task_matches(await self.read_quest_txt(client))
+                            or not await is_free_leader_questing(client)):
+                        raise RuntimeError('等待战斗期间任务阶段变化或进入交互')
+                    if time.monotonic() >= deadline:
+                        break
+                    await asyncio.sleep(.2)
+                if await client.in_battle():
+                    break
+            else:
+                raise TimeoutError('两次传送后未触发战斗')
+            logger.info('BumblesMind 已进入战斗，等待现有战斗流程完成。')
+            deadline = time.monotonic() + 180
+            while await client.in_battle():
+                if not client.questing_status:
+                    raise RuntimeError('任务已停止')
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('战斗完成超时')
+                await asyncio.sleep(.2)
+            deadline = time.monotonic() + 15
+            stable_since = None
+            stable_identity = None
+            while time.monotonic() < deadline:
+                if not client.questing_status:
+                    raise RuntimeError('任务已停止')
+                current = await self._dungeon_quest_snapshot(client)
+                zone = await client.zone_name()
+                if (not zone or await client.is_loading() or await client.in_battle()
+                        or not await is_free_leader_questing(client)
+                        or not has_progress(current)):
+                    stable_since = None
+                    stable_identity = None
+                elif stable_since is None or stable_identity != (zone, current[:2], plain_text(current[2])):
+                    stable_identity = (zone, current[:2], plain_text(current[2]))
+                    stable_since = time.monotonic()
+                elif time.monotonic() - stable_since >= self.PRIVATE_WING_STABLE_SECONDS:
+                    setattr(client, failed_attr, None)
+                    logger.info('BumblesMind 战斗完成且任务已推进，恢复自动任务。')
+                    return
+                await asyncio.sleep(.2)
+            raise TimeoutError('战斗结束但未确认任务推进')
+
+    def _tamarin_house_task_matches(self, text) -> bool:
+        objective, location = split_quest_location(text)
+        objective = re.sub(r'\s+', '', objective).casefold()
+        location = re.sub(r'\s+', '', location).casefold()
+        # Text fallback explicitly authorized by the user; match the entire
+        # screenshot stage, not a substring such as "Golden Lion" in dialogue.
+        return (objective, location) in {
+            ('寻找金狮', '废料堆'), ('findthegoldenlion', 'heap'),
+        }
+
+    async def _maybe_handle_tamarin_house(self, client: Client) -> bool:
+        owner = 'tamarin_house'
+        if getattr(client, 'quest_recovery_owner', None) == owner:
+            return True
+        if (not getattr(client, 'questing_status', False)
+                or await client.zone_name() != self.TAMARIN_HOUSE_ZONE
+                or getattr(client, 'quest_party_status_session', None) is not None
+                or any(client in getattr(c, 'quest_party_hitters', []) for c in self.clients)):
+            return False
+        text = await self.read_quest_txt(client)
+        if not self._tamarin_house_task_matches(text):
+            return False
+        # Client-scoped, survives Quester recreation. This one screenshot stage
+        # is attempted once even if IDs are temporarily unreadable or the helper
+        # is toggled off/on. Both internal TP stages have bounded retries.
+        if isinstance(getattr(client, '_xuanshu_tamarin_house_stage', None), dict):
+            return False
+        if (isinstance(getattr(client, 'quest_recovery_owner', None), str)
+                or getattr(client, 'refilling_potions', False)
+                or getattr(client, 'quest_party_probe_pending', False)
+                or getattr(client, 'mainline_chain_retry_active', False)
+                or getattr(client, 'quest_party_battle_rescue_active', False)
+                or getattr(client, 'post_combat_movement_active', False)
+                or not await is_free_leader_questing(client)
+                or await is_spiral_door_open(client)):
+            return True
+        if not claim_quest_recovery(client, owner):
+            return True
+        state = None
+        try:
+            if (await client.zone_name() != self.TAMARIN_HOUSE_ZONE
+                    or not self._tamarin_house_task_matches(await self.read_quest_txt(client))
+                    or not await is_free_leader_questing(client)):
+                return True
+            snapshot = await self._dungeon_quest_snapshot(client)
+            state = dict(zone=self.TAMARIN_HOUSE_ZONE, text=plain_text(text),
+                         snapshot=snapshot, active=True, result='started')
+            client._xuanshu_tamarin_house_stage = state
+
+            async def same_task():
+                current_text = await self.read_quest_txt(client)
+                if not plain_text(current_text):
+                    raise RuntimeError('当前任务文字不可读')
+                if not self._tamarin_house_task_matches(current_text):
+                    return False
+                current = await self._dungeon_quest_snapshot(client)
+                if snapshot is not None:
+                    if current is None:
+                        raise RuntimeError('原任务标识暂不可读，取消强制传送')
+                    if current[:2] != snapshot[:2]:
+                        return False
+                return True
+
+            async def ready():
+                if not client.questing_status:
+                    raise RuntimeError('自动任务已停止')
+                if await client.in_battle():
+                    raise RuntimeError('客户端进入战斗')
+                return await is_free_leader_questing(client)
+
+            logger.info('TamarinHouse 检测到指定任务，开始两段 TP。')
+            logger.info('TamarinHouse 正在前往区域切换点。')
+            async with asyncio.timeout(40.0):
+                for attempt in range(2):
+                    if await client.zone_name() != state['zone'] or await client.is_loading():
+                        break
+                    if not await same_task():
+                        state['result'] = 'progressed'
+                        return True
+                    if (not await ready() or await client.is_loading()
+                            or await client.zone_name() != state['zone']):
+                        raise RuntimeError('第一次 TP 前客户端不再空闲或区域已改变')
+                    await client.teleport(self.TAMARIN_HOUSE_EXIT)
+                    deadline = time.monotonic() + 10.0
+                    while await client.zone_name() == state['zone'] and not await client.is_loading():
+                        if not await ready():
+                            raise RuntimeError('等待切换时进入对话或其他忙碌状态')
+                        if not await same_task():
+                            state['result'] = 'progressed'
+                            return True
+                        if time.monotonic() >= deadline:
+                            break
+                        await asyncio.sleep(.2)
+                    if await client.zone_name() != state['zone'] or await client.is_loading():
+                        break
+                else:
+                    raise TimeoutError('第一次 TP 两次尝试后仍未触发区域切换')
+
+                await wait_for_zone_change(client, current_zone=state['zone'])
+                arrival_zone = None
+                stable_since = None
+                while True:
+                    if not client.questing_status or await client.in_battle():
+                        raise RuntimeError('区域切换期间任务停止或进入战斗')
+                    zone = await client.zone_name()
+                    if zone and zone != state['zone'] and zone != arrival_zone:
+                        arrival_zone, stable_since = zone, None
+                    if (not zone or zone == state['zone'] or await client.is_loading()
+                            or not await ready()):
+                        stable_since = None
+                    elif stable_since is None:
+                        stable_since = time.monotonic()
+                    elif time.monotonic() - stable_since >= self.PRIVATE_WING_STABLE_SECONDS:
+                        break
+                    await asyncio.sleep(.2)
+                state['arrival_zone'] = arrival_zone
+                if not await same_task():
+                    state['result'] = 'progressed'
+                    return True
+                logger.info('TamarinHouse 区域切换完成，执行第二次 TP。')
+                for attempt in range(2):
+                    if not await same_task():
+                        state['result'] = 'progressed'
+                        return True
+                    if (not await ready() or await client.zone_name() != arrival_zone
+                            or await client.is_loading()):
+                        raise RuntimeError('第二次 TP 前区域或客户端状态已改变')
+                    await client.teleport(self.TAMARIN_HOUSE_ARRIVAL)
+                    deadline = time.monotonic() + 5.0
+                    stable_since = None
+                    last_position = None
+                    while time.monotonic() < deadline:
+                        if (await client.zone_name() != arrival_zone or await client.is_loading()
+                                or not await ready()):
+                            raise RuntimeError('第二次 TP 后发生战斗、对话或区域切换')
+                        if not await same_task():
+                            state['result'] = 'progressed'
+                            return True
+                        position = await client.body.position()
+                        if (calc_Distance(position, self.TAMARIN_HOUSE_ARRIVAL) > 100
+                                or last_position is None or calc_Distance(position, last_position) > 2):
+                            stable_since = None
+                        elif stable_since is None:
+                            stable_since = time.monotonic()
+                        elif time.monotonic() - stable_since >= self.PRIVATE_WING_STABLE_SECONDS:
+                            state['returned_snapshot'] = await self._dungeon_quest_snapshot(client)
+                            await client.quest_position.position()
+                            state['result'] = 'completed'
+                            logger.info('TamarinHouse 特殊任务处理完成，恢复自动任务。')
+                            return True
+                        last_position = position
+                        await asyncio.sleep(.2)
+                raise TimeoutError('第二次 TP 两次尝试后角色位置仍未稳定')
+        except asyncio.CancelledError:
+            if state is not None:
+                state['result'] = 'cancelled'
+            raise
+        except Exception as exc:
+            if state is not None:
+                state['result'] = 'failed'
+            logger.warning('TamarinHouse 特殊任务处理失败，退出本次恢复。原因：{}', exc)
+        finally:
+            if state is not None:
+                state['active'] = False
+            release_quest_recovery(client, owner)
+        return True
+
     async def teleport_to_quest_target(self, client, xyz, leader_client=None):
         if (getattr(client, "refilling_potions", False) is True
-                or getattr(client, 'quest_recovery_owner', None) == 'gobblerton'
+                or getattr(client, 'quest_recovery_owner', None) in ('gobblerton', 'lemuria_dungeon', 'sacred_yarn', 'tamarin_house', 'bumbles_mind', 'lemuria_navigation')
+                or isinstance(getattr(client, 'quest_lemuria_navigation_recovery', None), dict)
+                and client.quest_lemuria_navigation_recovery.get('holding')
                 or getattr(client, "questing_status", True) is False):
+            return
+        if await client.zone_name() == self.TAMARIN_HOUSE_ZONE and await self._maybe_handle_tamarin_house(client):
             return
         zone = await client.zone_name()
         key = id(client)
         private_wing = zone == self.PRIVATE_WING_ZONE
         gobblerton = zone == self.GOBBLERTON_ZONE
-        transition_exit = private_wing or gobblerton
-        failed_attr = '_xuanshu_gobblerton_failed' if gobblerton else '_xuanshu_private_wing_failed'
+        lemuria = zone == self.LEMURIA_DUNGEON_ZONE
+        sacred_yarn = zone == self.SACRED_YARN_ZONE
+        bumbles = (zone == self.BUMBLES_MIND_ZONE
+                   and self._bumbles_mind_task_matches(await self.read_quest_txt(client)))
+        if (sacred_yarn or bumbles) and (getattr(client, 'quest_party_status_session', None) is not None
+                or any(client in getattr(member, 'quest_party_hitters', []) for member in self.clients)):
+            return
+        transition_exit = private_wing or gobblerton or lemuria or sacred_yarn or bumbles
+        failed_attr = ('_xuanshu_bumbles_mind_failed' if bumbles else
+                       '_xuanshu_sacred_yarn_failed' if sacred_yarn else
+                       '_xuanshu_lemuria_dungeon_failed' if lemuria else
+                       '_xuanshu_gobblerton_failed' if gobblerton else '_xuanshu_private_wing_failed')
+        if not sacred_yarn:
+            client._xuanshu_sacred_yarn_failed = None
+        if zone != self.BUMBLES_MIND_ZONE:
+            client._xuanshu_bumbles_mind_failed = None
+        if not lemuria and isinstance(getattr(client, '_xuanshu_lemuria_dungeon_failed', None), dict):
+            client._xuanshu_lemuria_dungeon_failed = None
         if not gobblerton and isinstance(getattr(client, '_xuanshu_gobblerton_failed', None), dict):
             client._xuanshu_gobblerton_failed = None
         if not private_wing and isinstance(getattr(client, '_xuanshu_private_wing_failed', None), dict):
@@ -2492,11 +3228,21 @@ class Quester():
         target = (xyz.x, xyz.y, xyz.z)
         before = await client.body.position()
         progress = await self._dungeon_quest_snapshot(client) if transition_exit else None
+        if (sacred_yarn or bumbles) and progress is None:
+            self._krok_exit_watch.pop(key, None)
+            await self.move_until_quest_interaction(client, xyz, leader_client=leader_client)
+            return
+        def progress_changed(current, previous):
+            if bumbles and current is not None and previous is not None:
+                return (current[:2] != previous[:2]
+                        or not self._bumbles_mind_task_matches(current[2]))
+            return current != previous
+
         state = self._krok_exit_watch.get(key)
         if (state is None or state.get('zone') != zone or state['objective'] != objective
-                or state['target'] != target
+                or not (sacred_yarn or bumbles) and state['target'] != target
                 or transition_exit and progress is not None and state.get('progress') is not None
-                and progress != state['progress']):
+                and progress_changed(progress, state['progress'])):
             state = dict(zone=zone, objective=objective, target=target, anchor=before,
                          since=time.monotonic(), attempts=0, end_sent=False, progress=progress)
             self._krok_exit_watch[key] = state
@@ -2506,9 +3252,9 @@ class Quester():
             failed = getattr(client, failed_attr, None)
             if isinstance(failed, dict):
                 changed = (failed['zone'] != zone or failed['objective'] != objective
-                           or failed['target'] != target
+                           or not (sacred_yarn or bumbles) and failed['target'] != target
                            or progress is not None and failed['progress'] is not None
-                           and progress != failed['progress'])
+                           and progress_changed(progress, failed['progress']))
                 if changed and objective:
                     setattr(client, failed_attr, None)
                 else:
@@ -2547,7 +3293,7 @@ class Quester():
         if current_objective != objective:
             self._krok_exit_watch.pop(key, None)
             return
-        if gobblerton and await self._dungeon_quest_snapshot(client) != progress:
+        if (gobblerton or lemuria or sacred_yarn or bumbles) and progress_changed(await self._dungeon_quest_snapshot(client), progress):
             self._krok_exit_watch.pop(key, None)
             return
 
@@ -2557,29 +3303,139 @@ class Quester():
             return
         # Gobblerton tracks quest progress even when repeated TP moves the body.
         # Other exits retain their existing stationary-position requirement.
-        if not gobblerton and max(calc_Distance(before, state['anchor']),
+        if not (gobblerton or sacred_yarn or bumbles) and max(calc_Distance(before, state['anchor']),
                calc_Distance(after, state['anchor'])) > 100:
             state.update(anchor=after, since=time.monotonic(), attempts=0)
             return
         state['attempts'] += 1
+        if (sacred_yarn or bumbles) and state['end_sent']:
+            # Let the existing mainline/dungeon recovery inspect the next iteration.
+            self._krok_exit_watch.pop(key, None)
+            return
         if not objective or state['end_sent'] or state['attempts'] < 3 or time.monotonic() - state['since'] < 10:
             return
 
-        recovery_owner = "gobblerton" if gobblerton else "private_wing" if private_wing else "special_zone"
+        recovery_owner = ('bumbles_mind' if bumbles else 'sacred_yarn' if sacred_yarn else 'lemuria_dungeon' if lemuria else
+                          'gobblerton' if gobblerton else 'private_wing' if private_wing else 'special_zone')
         if not claim_quest_recovery(client, recovery_owner):
             return
         state['end_sent'] = True
         try:
+            if bumbles:
+                if (progress_changed(await self._dungeon_quest_snapshot(client), progress)
+                        or await client.zone_name() != zone
+                        or not self._bumbles_mind_task_matches(await self.read_quest_txt(client))
+                        or not client.questing_status or await client.is_loading()
+                        or await client.in_battle() or not await is_free_leader_questing(client)
+                        or await interaction_pending()):
+                    return
+                setattr(client, failed_attr, dict(zone=zone, objective=objective,
+                                                target=target, progress=progress))
+                try:
+                    await self._recover_bumbles_mind(client, progress, failed_attr)
+                except Exception as exc:
+                    logger.warning('BumblesMind 特殊恢复失败，退出本次恢复。原因：{}', exc)
+                return
             if transition_exit:
-                label = 'Gobblerton' if gobblerton else 'PrivateWing'
-                logger.info(f'自动任务：{label} 连续任务传送无进展，前往区域切换点。')
+                label = ('SacredYarnTemple' if sacred_yarn else 'Lemuria Dungeon' if lemuria
+                         else 'Gobblerton' if gobblerton else 'PrivateWing')
+                if lemuria or sacred_yarn:
+                    if (await client.zone_name() != zone
+                            or await self._dungeon_quest_snapshot(client) != progress):
+                        self._krok_exit_watch.pop(key, None)
+                        return
+                    if sacred_yarn:
+                        if (not client.questing_status or await client.is_loading()
+                                or await client.in_battle() or not await is_free_leader_questing(client)
+                                or await interaction_pending()):
+                            self._krok_exit_watch.pop(key, None)
+                            return
+                        logger.info('SacredYarnTemple 连续任务传送无进展，启动特殊恢复。')
+                    else:
+                        logger.info('自动任务：Lemuria Dungeon 连续任务传送受阻，启动特殊脱困。')
+                else:
+                    logger.info(f'自动任务：{label} 连续任务传送无进展，前往区域切换点。')
                 setattr(client, failed_attr, dict(
                     zone=zone, objective=objective, target=target, progress=progress
                 ))
                 try:
-                    async with asyncio.timeout(25.0):
-                        await client.teleport(self.GOBBLERTON_EXIT if gobblerton else self.PRIVATE_WING_EXIT)
-                        logger.info(f'自动任务：{label} 正在等待区域切换。')
+                    async with asyncio.timeout(40.0 if lemuria else 25.0):
+                        exit_point = (self.SACRED_YARN_EXIT if sacred_yarn else self.LEMURIA_DUNGEON_EXIT if lemuria else
+                                      self.GOBBLERTON_EXIT if gobblerton else self.PRIVATE_WING_EXIT)
+                        if lemuria:
+                            logger.info('自动任务：正在前往指定交互坐标。')
+                        if sacred_yarn:
+                            logger.info('SacredYarnTemple 正在前往指定区域切换点。')
+                            for attempt in range(2):
+                                if await client.zone_name() != zone or await client.is_loading():
+                                    break
+                                if (not client.questing_status or await client.in_battle()
+                                        or not await is_free_leader_questing(client)
+                                        or await interaction_pending()):
+                                    raise RuntimeError('任务停止或进入战斗/对话')
+                                current_progress = await self._dungeon_quest_snapshot(client)
+                                if current_progress is not None and current_progress != progress:
+                                    setattr(client, failed_attr, None)
+                                    return
+                                if current_progress is None:
+                                    raise RuntimeError('任务状态不可读')
+                                await client.teleport(exit_point)
+                                retry_deadline = time.monotonic() + 10.0
+                                while await client.zone_name() == zone and not await client.is_loading():
+                                    if (not client.questing_status or await client.in_battle()
+                                            or not await is_free_leader_questing(client)
+                                            or await interaction_pending()):
+                                        raise RuntimeError('等待切换期间任务停止或进入战斗/对话')
+                                    current_progress = await self._dungeon_quest_snapshot(client)
+                                    if current_progress is not None and current_progress != progress:
+                                        setattr(client, failed_attr, None)
+                                        return
+                                    if current_progress is None:
+                                        raise RuntimeError('任务状态不可读')
+                                    if time.monotonic() >= retry_deadline:
+                                        break
+                                    await asyncio.sleep(.2)
+                                if await client.zone_name() != zone or await client.is_loading():
+                                    break
+                            else:
+                                raise TimeoutError('两次传送后未触发区域切换')
+                        else:
+                            await client.teleport(exit_point)
+                        if lemuria:
+                            last_position = await client.body.position()
+                            position_stable_since = None
+                            attempts = 0
+                            retry_at = 0.0
+                            interaction_deadline = time.monotonic() + 20.0
+                            while await client.zone_name() == zone and not await client.is_loading():
+                                if not client.questing_status:
+                                    return
+                                if await client.in_battle():
+                                    raise RuntimeError('交互期间进入战斗')
+                                position = await client.body.position()
+                                now = time.monotonic()
+                                if now >= interaction_deadline:
+                                    raise TimeoutError('交互提示、对话完成或区域切换响应超时')
+                                if (calc_Distance(position, exit_point) > 100
+                                        or calc_Distance(position, last_position) > 2):
+                                    position_stable_since = None
+                                elif position_stable_since is None:
+                                    position_stable_since = now
+                                elif (now - position_stable_since >= .5
+                                        and await is_free_leader_questing(client)
+                                        and await is_visible_by_path(client, npc_range_path)
+                                        and now >= retry_at):
+                                    if attempts >= 2:
+                                        raise RuntimeError('两次 X 交互后未发生区域切换')
+                                    logger.info('自动任务：已到达目标位置，尝试 X 交互（{}/2）。', attempts + 1)
+                                    await client.send_key(Keycode.X, .1)
+                                    attempts += 1
+                                    retry_at = time.monotonic() + 4.0
+                                last_position = position
+                                await asyncio.sleep(.2)
+                            logger.info('自动任务：交互完成，等待区域切换。')
+                        if not sacred_yarn:
+                            logger.info(f'自动任务：{label} 正在等待区域切换。')
                         await wait_for_zone_change(client, current_zone=zone)
                         arrival_zone = await client.zone_name()
                         if arrival_zone == zone:
@@ -2589,23 +3445,39 @@ class Quester():
                             if not client.questing_status:
                                 return
                             current_zone = await client.zone_name()
-                            if (current_zone == zone or current_zone != arrival_zone
+                            if (sacred_yarn and current_zone and current_zone != zone
+                                    and current_zone != arrival_zone):
+                                arrival_zone = current_zone
+                                stable_since = None
+                            if (sacred_yarn and not current_zone
+                                    or current_zone == zone or current_zone != arrival_zone
                                     or await client.is_loading()
                                     or not await is_free_leader_questing(client)):
                                 stable_since = None
                             elif stable_since is None:
                                 stable_since = time.monotonic()
                             elif time.monotonic() - stable_since >= self.PRIVATE_WING_STABLE_SECONDS:
-                                await self._dungeon_quest_snapshot(client)
+                                snapshot = await self._dungeon_quest_snapshot(client)
+                                if sacred_yarn and snapshot is None:
+                                    await asyncio.sleep(.2)
+                                    continue
                                 await get_quest_name(client)
                                 await client.quest_position.position()
                                 self._krok_exit_watch.pop(key, None)
                                 setattr(client, failed_attr, None)
-                                logger.info(f'自动任务：{label} 区域切换完成，继续任务传送。')
+                                if sacred_yarn:
+                                    logger.info('SacredYarnTemple 区域切换完成，恢复自动任务。')
+                                else:
+                                    logger.info(f'自动任务：{label} 区域切换完成，继续任务传送。')
                                 return
                             await asyncio.sleep(.2)
                 except Exception as exc:
-                    logger.warning(f'自动任务：{label} 区域切换未成功，退出本次特殊恢复。{exc}')
+                    if sacred_yarn:
+                        logger.warning('SacredYarnTemple 特殊恢复失败，退出本次恢复。原因：{}', exc)
+                    elif lemuria:
+                        logger.warning('Lemuria Dungeon 特殊脱困失败，退出本次恢复。原因：{}', exc)
+                    else:
+                        logger.warning(f'自动任务：{label} 区域切换未成功，退出本次特殊恢复。{exc}')
                 return
             if special_exit:
                 logger.info(f'Client {client.title}: 连续任务传送至少 3 次且 10 秒无进展，执行区域脱困。')
@@ -2647,6 +3519,12 @@ class Quester():
                 return
             self._krok_exit_watch.pop(key, None)
         finally:
+            if sacred_yarn or bumbles:
+                self._krok_exit_watch.pop(key, None)
+            if lemuria:
+                dungeon = getattr(client, 'quest_dungeon_recovery', None)
+                if isinstance(dungeon, dict):
+                    dungeon.update(since=time.monotonic(), waiting_logged=False)
             release_quest_recovery(client, recovery_owner)
 
     async def teleport_to_quest(self, hitting_client: str, follower_clients: list[Client]):
@@ -3060,6 +3938,12 @@ class Quester():
     # TODO: Slay the beast
     async def auto_quest_leader(self, questing_friend_tp: bool, gear_switching_in_solo_zones: bool, hitting_client, ignore_pet_level_up: bool, play_dance_game: bool):
         from src.mainline_progress import log_mainline_progress
+        if any(await gather_owned(*[self._maybe_recover_lemuria_navigation(p) for p in self.clients])):
+            return
+        if await self._maybe_handle_bumbles_mind(self.current_leader_client):
+            return
+        if await self._maybe_handle_tamarin_house(self.current_leader_client):
+            return
         follower_clients = await self.get_follower_clients()
         questing_clients = await self.get_questing_clients()
 
@@ -3112,6 +3996,8 @@ class Quester():
 
             # in case client(s) in combat and the questing loop continued anyway
             await gather_owned(*[self.leader_wait_for_free(p) for p in self.clients])
+            if any(await gather_owned(*[self._maybe_recover_lemuria_navigation(p) for p in self.clients])):
+                continue
             if await self._mainline_sync_blocks_movement(self.current_leader_client):
                 continue
 
@@ -3349,6 +4235,12 @@ class Quester():
 
     async def _quest_party_probe_blocks_movement(self) -> bool:
         """Pause quest movement until the assigned hitter finishes its zone probe."""
+        if any(getattr(h, 'refilling_potions', False)
+               or isinstance(getattr(h, 'potion_dungeon_returned', None), tuple)
+               for h in getattr(self.client, 'quest_party_hitters', [])):
+            return True
+        if isinstance(getattr(self.client, 'potion_dungeon_returned', None), tuple):
+            return True
         if not getattr(self.client, "quest_party_hitters", []):
             return False
         if await self.client.is_loading():
@@ -3415,7 +4307,13 @@ class Quester():
         # In configurable quest-party mode the assigned hitter first probes a
         # newly entered zone with friend teleport.  Do not start the next quest
         # movement until that probe decides whether the zone is solo-only.
+        if await self._maybe_recover_lemuria_navigation(self.client):
+            return
         if await self._quest_party_probe_blocks_movement():
+            return
+        if await self._maybe_handle_bumbles_mind(self.client):
+            return
+        if await self._maybe_handle_tamarin_house(self.client):
             return
         if await self._mainline_sync_blocks_movement(self.client):
             return

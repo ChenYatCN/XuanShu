@@ -36,6 +36,14 @@ class ChatTranslationUITests(unittest.TestCase):
         dialog.handle_event({"kind": "message", "title": "p2",
                              "sender_gid": 42, "message": "Hi"})
         self.assertIn("[p2] GID 42: Hi", dialog.messages.toPlainText())
+        dialog.handle_event({'kind': 'message', 'source': 'chat_log', 'title': 'p2',
+                             'channel': '队伍', 'sender_name': '你', 'message': 'team hi'})
+        self.assertIn('[p2][队伍] [你]: team hi', dialog.messages.toPlainText())
+        dialog.handle_event({'kind': 'status', 'source': 'chat_log', 'title': 'p2',
+                             'status': '聊天记录：监听中'})
+        dialog.handle_event({'kind': 'status', 'title': 'p2', 'status': '私聊 Hook 失败'})
+        self.assertIn('聊天记录：监听中', dialog.status.text())
+        self.assertIn('私聊 Hook 失败', dialog.status.text())
         dialog.clients.setCurrentIndex(dialog.clients.findData("p2"))
         dialog.auto_reply.setChecked(True)
         dialog.set_available_clients(["p1"])

@@ -17,6 +17,7 @@ class SpecialExitTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(zone=zone), ExitStack() as stack:
                 client = AsyncMock()
                 client.title = 'p1'
+                client.refilling_potions = False
                 client.zone_name.return_value = zone
                 client.is_loading.return_value = False
                 client.body.position.return_value = XYZ(0, 0, 0)

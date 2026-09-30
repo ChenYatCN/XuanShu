@@ -33,6 +33,9 @@ dialog_text_path = ['WorldView', 'wndDialogMain', 'txtArea', 'txtMessage']
 
 # Quest Objective Path
 quest_name_path = ["WorldView", "windowHUD", "QuestHelperHud", "ElementWindow", "", "txtGoalName"]
+quest_helper_hud_path = ["WorldView", "windowHUD", "QuestHelperHud"]
+quest_helper_arrow_path = [*quest_helper_hud_path, "ElementWindow", "ArrowWindow"]
+quest_helper_distance_path = [*quest_helper_arrow_path, "txtDistance"]
 
 # NPC Range Popup Paths
 popup_title_path = ["WorldView", "NPCRangeWin", "wndTitleBackground", "NPCRangeTxtTitle"]

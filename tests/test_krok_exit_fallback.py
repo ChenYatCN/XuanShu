@@ -11,6 +11,7 @@ class KrokExitFallbackTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.client = AsyncMock()
         self.client.title = 'p1'
+        self.client.refilling_potions = False
         self.client.zone_name.return_value = 'Krokotopia/KT_WorldTeleporter'
         self.client.is_loading.return_value = False
         self.client.body.position.return_value = XYZ(0, 0, 0)

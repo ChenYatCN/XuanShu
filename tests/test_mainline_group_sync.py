@@ -6,6 +6,17 @@ from src.questing import Quester
 
 
 class MainlineGroupSyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_navigation_recovery_holds_group_then_requires_fresh_stability(self):
+        await self.check(at=0)
+        self.assertFalse(await self.check(at=4))
+        affected = self.clients[2]
+        affected.quest_lemuria_navigation_recovery = {'holding': True}
+        self.assertTrue(await self.check(at=5))
+        self.quester._maybe_recover_mainline.assert_not_awaited()
+        affected.quest_lemuria_navigation_recovery = None
+        self.assertTrue(await self.check(at=6))
+        self.assertFalse(await self.check(at=10))
+
     def setUp(self):
         self.now = 0.0
         self.clients = []

@@ -31,6 +31,7 @@ class MainlineChainHandoffTests(unittest.IsolatedAsyncioTestCase):
             send_key=AsyncMock(),
         )
         self.quester = Quester(self.client, [self.client], None)
+        self.quester._advance_npc_dialogue = AsyncMock(return_value=False)
         async def identity(client):
             qid = await client.quest_id()
             return (qid, '', '', {'world': 'Test', 'number': 2} if qid in (10, 11) else None, qid in (10, 11))
