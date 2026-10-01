@@ -1781,6 +1781,8 @@ async def main():
                             "tamarin_house",
                             "bumbles_mind",
                             "lemuria_navigation",
+                            "dueling_tent",
+                            "bumbles_pet",
                         ):
                             # Do not send dialogue keys while another recovery
                             # owns this client's task or zone transition.
@@ -2147,6 +2149,14 @@ async def main():
                         update_party_status(
                             hitter, quester, "任务客户端正在补药，暂缓区域同步"
                         )
+                        continue
+                    if getattr(quester, 'quest_recovery_owner', None) == 'dueling_tent':
+                        hitter.quest_party_battle_sync_state = None
+                        update_party_status(hitter, quester, '等待 DuelingTent 专属切区恢复')
+                        continue
+                    if getattr(quester, 'bumbles_pet_pending', False) is True:
+                        hitter.quest_party_battle_sync_state = None
+                        update_party_status(hitter, quester, '等待任务客户端完成宠物模式步骤')
                         continue
                     navigation = getattr(quester, "quest_lemuria_navigation_recovery", None)
                     if (getattr(quester, "quest_recovery_owner", None) == "lemuria_navigation"
@@ -2884,6 +2894,7 @@ async def main():
 
                 await asyncio.sleep(0.1)
                 if not freecam_status:
+                    observation_started = time.monotonic()
                     client_xyz = await client.body.position()
                     await asyncio.sleep(120)
                     client_xyz_2 = await client.body.position()
@@ -2916,6 +2927,16 @@ async def main():
 
                         if recovery_candidate and not await is_free(client):
                             recovery_candidate = False
+                        if recovery_candidate and any(getattr(p, 'bumbles_pet_pending', False) is True for p in walker.clients):
+                            recovery_candidate = False
+                        if recovery_candidate and (
+                            getattr(client, '_dueling_tent_recovered_at', -1) >= observation_started
+                            or isinstance(getattr(client, '_xuanshu_dueling_tent_failed', None), dict)
+                            and await client.zone_name() == Quester.DUELING_TENT_ZONE
+                        ):
+                            # A completed transition resets this stationary window;
+                            # exhausted same-stage recovery must not be restarted.
+                            recovery_candidate = False
                         if recovery_candidate and isinstance(
                             getattr(client, "quest_recovery_owner", None), str
                         ):
@@ -2944,6 +2965,8 @@ async def main():
                                 "tamarin_house",
                                 "bumbles_mind",
                                 "lemuria_navigation",
+                                "dueling_tent",
+                                "bumbles_pet",
                             )
                             for p in walker.clients
                         ):
@@ -2992,6 +3015,8 @@ async def main():
                                         "tamarin_house",
                                         "bumbles_mind",
                                         "lemuria_navigation",
+                                        "dueling_tent",
+                                        "bumbles_pet",
                                     )
                                     for p in walker.clients
                                 ):
@@ -3134,10 +3159,11 @@ async def main():
                 not quest_party_enabled
                 or quester.in_solo_zone
                 or getattr(quester, "quest_party_probe_pending", False)
+                or getattr(quester, 'bumbles_pet_pending', False) is True
                 or getattr(quester, "refilling_potions", False)
                 or isinstance(getattr(quester, "potion_dungeon_returned", None), tuple)
                 or getattr(quester, "quest_recovery_owner", None)
-                in ("nightmare_krok", "rotating_realm", "mainline_finder", "sacred_yarn", "tamarin_house", "bumbles_mind", "lemuria_navigation")
+                in ("nightmare_krok", "rotating_realm", "mainline_finder", "sacred_yarn", "tamarin_house", "bumbles_mind", "lemuria_navigation", "dueling_tent")
             ):
                 quester.quest_party_battle_started_at = None
                 return
@@ -5600,12 +5626,19 @@ async def main():
                             chat_monitor.configure(
                                 options.get("enabled", False),
                                 options.get("selected_title"),
-                                options.get("auto_reply", False),
+                                False,  # Manual nearby test phase never auto-replies.
                             )
                             if not chat_monitor.enabled:
                                 await chat_monitor.stop()
                             else:
                                 await chat_monitor.sync(walker.clients)
+
+                        case xuanshu_gui.GUICommandType.SendNearbyChatTest:
+                            options = com.data or {}
+                            chat_monitor.request_manual_send(
+                                walker.clients, options.get('title'), options.get('text'),
+                                blocked=bool(freecam_status or bot_tasks),
+                            )
 
                         case xuanshu_gui.GUICommandType.StartIbaoGroup:
                             try:

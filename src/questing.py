@@ -70,6 +70,10 @@ class Quester():
     TAMARIN_HOUSE_ARRIVAL = XYZ(9.903, -424.032, 1.000)
     BUMBLES_MIND_ZONE = 'Lemuria/Interiors/LM_Z07_BumblesMind'
     BUMBLES_MIND_BATTLE = XYZ(2.390, -259.991, -1124.726)
+    DUELING_TENT_ZONE = 'Novus/Interiors/NV_Z01_DuelingTent'
+    DUELING_TENT_EXIT = XYZ(16.146, -1194.045, -4.171)
+    BUMBLES_PET_ZONE = 'Lemuria/LM_Z07_Heap'
+    BUMBLES_PET_POSITION = XYZ(14017.3837890625, -563.506591796875, -2051.80712890625)
     LEMURIA_DUNGEON_ROOMS = (
         LEMURIA_DUNGEON_ZONE,
         'Lemuria/Interiors/LM_Z05_I02_Cave',
@@ -145,6 +149,7 @@ class Quester():
 
     async def _dungeon_recovery_blocked(self, client: Client) -> bool:
         if (not client.questing_status
+                or getattr(client, 'bumbles_pet_pending', False) is True
                 or isinstance(getattr(client, "quest_recovery_owner", None), str)
                 or getattr(client, "quest_party_probe_pending", False)
                 or getattr(client, "quest_party_battle_rescue_active", False)
@@ -336,6 +341,7 @@ class Quester():
 
     async def _lemuria_navigation_blocked(self, client: Client, zone: str, owner=None):
         if (zone not in self.LEMURIA_NAVIGATION_AREAS
+                or getattr(client, 'bumbles_pet_pending', False) is True
                 or getattr(client, 'in_solo_zone', False)
                 or potion_dungeon_return_required(client, zone)
                 or getattr(client, 'refilling_potions', False)
@@ -684,6 +690,7 @@ class Quester():
     async def _trigger_reentry_blocked(self, client: Client, owner: str = None) -> bool:
         current_owner = getattr(client, "quest_recovery_owner", None)
         if (not client.questing_status
+                or getattr(client, 'bumbles_pet_pending', False) is True
                 or isinstance(current_owner, str) and current_owner != owner
                 or getattr(client, "quest_party_probe_pending", False)
                 or getattr(client, "quest_party_battle_rescue_active", False)
@@ -707,6 +714,12 @@ class Quester():
 
     async def _maybe_reenter_quest_trigger(self, client: Client, target: XYZ) -> bool:
         """Re-enter a missed interaction/exploration trigger; never loop TP forever."""
+        tent_watch = self._krok_exit_watch.get(id(client), {})
+        if (await client.zone_name() == self.DUELING_TENT_ZONE
+                and (tent_watch.get('attempts', 0) > 0
+                     or isinstance(getattr(client, '_xuanshu_dueling_tent_failed', None), dict)
+                     or getattr(client, 'quest_recovery_owner', None) == 'dueling_tent')):
+            return False  # A blocked TP belongs to this map's dedicated recovery.
         key_id = id(client)
         if await self._trigger_reentry_blocked(client):
             state = self._trigger_reentry.get(key_id)
@@ -960,9 +973,11 @@ class Quester():
         return client_quests
 
     async def zone_recorrect_hub(self):
+        if any(getattr(p, 'bumbles_pet_pending', False) is True for p in self.clients):
+            return
         if any(isinstance(getattr(p, 'quest_lemuria_navigation_recovery', None), dict)
                and p.quest_lemuria_navigation_recovery.get('holding')
-               or getattr(p, 'quest_recovery_owner', None) == 'lemuria_navigation'
+               or getattr(p, 'quest_recovery_owner', None) in ('lemuria_navigation', 'dueling_tent')
                for p in self.clients):
             return
         if await self.followers_in_correct_zone():
@@ -987,6 +1002,10 @@ class Quester():
         await asyncio.sleep(2)
 
     async def friend_teleport(self, maybe_solo_zone: bool):
+        if any(getattr(c, 'bumbles_pet_pending', False) is True for c in self.clients):
+            return [], None
+        if any(getattr(c, 'quest_recovery_owner', None) == 'dueling_tent' for c in self.clients):
+            return [], None
         if getattr(self.current_leader_client, "refilling_potions", False) is True:
             return [], None
         clients_in_solo_zone = []
@@ -1944,6 +1963,7 @@ class Quester():
 
     async def _mainline_finder_blocked(self, client: Client) -> bool:
         if (not getattr(client, 'questing_status', False)
+                or getattr(client, 'bumbles_pet_pending', False) is True
                 or isinstance(getattr(client, 'quest_recovery_owner', None), str)
                 or getattr(client, 'mainline_chain_retry_active', False)
                 or getattr(client, 'quest_party_probe_pending', False)
@@ -2879,6 +2899,306 @@ class Quester():
             watcher.cancel()
             await gather_owned(movement, watcher, return_exceptions=True)
 
+    async def _bumbles_pet_stage(self, client):
+        if await client.zone_name() != self.BUMBLES_PET_ZONE:
+            return None
+        identity = await self._mainline_identity(client)
+        if not identity or not identity[0]:
+            return None
+        # Reuse tracked quest lookup. Never derive QuestID from a language suffix.
+        code, title, row = identity[1:4]
+        if code and code != 'QuestTitle_17442D':
+            return None
+        if not code and not (row and row.get('world') == 'LEMURIA' and row.get('number') == 83
+                             and title in ('Nose for Clues', '嗅探线索')):
+            return None
+        snapshot = await self._dungeon_quest_snapshot(client)
+        if snapshot is None or snapshot[0] != identity[0]:
+            return None
+        try:
+            quest = (await (await client.quest_manager()).quest_data()).get(identity[0])
+            goal = (await quest.goal_data()).get(snapshot[1])
+            if goal is None:
+                return None
+            goal_code = await goal.name_lang_key()
+        except Exception:
+            return None
+        if goal_code and goal_code != 'WizQst17442D_00000005':
+            return None
+        objective, location = split_quest_location(snapshot[2])
+        objective = re.sub(r'\s+', '', objective).casefold()
+        if objective not in ('使用宠物模式寻找大黄蜂', 'petmodetofindbumbles'):
+            return None
+        if location and re.sub(r'\s+', '', location).casefold() not in ('废料堆', 'heap'):
+            return None
+        if (await client.quest_id(), await client.goal_id()) != snapshot[:2]:
+            return None
+        return snapshot, goal_code, code
+
+    async def _play_as_pet_state(self, client):
+        """Tri-state mode check from the game's cancel/start action tooltip."""
+        try:
+            button = await get_window_from_path(client.root_window, play_as_pet_button_path)
+            if not button:
+                return None
+            tip = await button.tip()
+            actions = (
+                ('GUI2_00001155', 'Cancel Play as Pet', True),
+                ('GUI2_00001154', 'Play as Pet (Free)', False),
+                ('GUI2_00001181', 'Play as Pet (costs 5 Happiness per Minute)', False),
+            )
+            for key, english, active in actions:
+                if tip in (key, f'<string;{key}>') or plain_text(tip) == english:
+                    return active
+            for key, _english, active in actions:
+                try:
+                    localized = await client.cache_handler.get_langcode_name(key)
+                except Exception:
+                    continue
+                if localized and plain_text(tip) == plain_text(localized):
+                    return active
+        except Exception:
+            pass
+        return None  # Missing UI/unknown tooltip never proves either mode.
+
+    async def _finish_bumbles_pet(self, client, state):
+        """Cancel pet mode once after verified stage progression; never toggle twice."""
+        if (state.get('cancel_attempted')
+                or getattr(client, 'refilling_potions', False)
+                or isinstance(getattr(client, 'quest_recovery_owner', None), str)
+                or await client.is_loading() or await client.in_battle()
+                or await client.is_in_dialog() or not await is_free_leader_questing(client)):
+            return
+        if not claim_quest_recovery(client, 'bumbles_pet'):
+            return
+        try:
+            async with automation_owner(client, 'bumbles-pet-finish'):
+                async with asyncio.timeout(10):
+                    async def safe():
+                        snapshot = await self._dungeon_quest_snapshot(client)
+                        return (client.questing_status and snapshot is not None
+                                and snapshot != state['snapshot']
+                                and not getattr(client, 'refilling_potions', False)
+                                and not await client.is_loading() and not await client.in_battle()
+                                and not await client.is_in_dialog() and await is_free_leader_questing(client))
+                    if not await safe() or await self._play_as_pet_state(client) is not True:
+                        return
+                    button = await get_window_from_path(client.root_window, play_as_pet_button_path)
+                    if not button or not await button.is_visible():
+                        menu = await get_window_from_path(client.root_window, pet_system_button_path)
+                        if not menu or not await menu.is_visible() or await menu.is_control_grayed():
+                            raise RuntimeError('宠物菜单不可操作')
+                        # Only one menu-open attempt across worker recreation.
+                        if state.get('cancel_menu_attempted'):
+                            return
+                        state['cancel_menu_attempted'] = True
+                        await click_window_by_path(client, pet_system_button_path)
+                        await asyncio.sleep(.4)
+                    button = await get_window_from_path(client.root_window, play_as_pet_button_path)
+                    if (not button or not await button.is_visible() or await button.is_control_grayed()):
+                        raise RuntimeError('取消扮演宠物按钮不可操作')
+                    if not await safe() or await self._play_as_pet_state(client) is not True:
+                        return
+                    state['cancel_attempted'] = True
+                    await click_window_by_path(client, play_as_pet_button_path)
+                    stable_since = None
+                    deadline = time.monotonic() + 7
+                    while time.monotonic() < deadline:
+                        if not await safe():
+                            raise RuntimeError('取消宠物模式期间任务/客户端状态不稳定')
+                        if await self._play_as_pet_state(client) is False:
+                            if stable_since is None:
+                                stable_since = time.monotonic()
+                            elif time.monotonic() - stable_since >= 1:
+                                state['wizard_confirmed'] = True
+                                logger.info('自动任务：宠物任务步骤已完成，已取消扮演宠物，恢复正常任务传送。')
+                                return
+                        else:
+                            stable_since = None
+                        await asyncio.sleep(.2)
+                    raise TimeoutError('取消后未确认巫师模式；不重复切换按钮')
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if not state.get('cancel_warned'):
+                logger.warning('自动任务：取消扮演宠物未完成，继续暂停普通 TP。{}', exc)
+                state['cancel_warned'] = True
+        finally:
+            release_quest_recovery(client, 'bumbles_pet')
+
+    async def _maybe_handle_bumbles_pet(self, client):
+        if (not getattr(client, 'questing_status', False)
+                or getattr(client, 'quest_party_status_session', None) is not None
+                or any(client in getattr(member, 'quest_party_hitters', []) for member in self.clients)):
+            return False
+        owner = 'bumbles_pet'
+        if getattr(client, 'quest_recovery_owner', None) == owner:
+            return True
+        state = getattr(client, 'quest_bumbles_pet', None)
+        stage = await self._bumbles_pet_stage(client)
+        if stage is None and not isinstance(state, dict):
+            return False
+        mode = await self._play_as_pet_state(client)
+        if stage is None:
+            snapshot = await self._dungeon_quest_snapshot(client)
+            zone = await client.zone_name()
+            changed = ((snapshot is not None and snapshot != state['snapshot'])
+                       or zone and zone != self.BUMBLES_PET_ZONE)
+            if mode is True and snapshot is not None and snapshot != state['snapshot']:
+                client.bumbles_pet_pending = True
+                await self._finish_bumbles_pet(client, state)
+                mode = await self._play_as_pet_state(client)
+                # A single start tooltip read after a timed-out cancel is not
+                # stable confirmation. A later iteration may re-observe it.
+                if mode is False and not state.get('wizard_confirmed'):
+                    state['wizard_since'] = time.monotonic()
+                    return True
+            if mode is False and changed:
+                if not state.get('wizard_confirmed'):
+                    if state.get('wizard_since') is None:
+                        state['wizard_since'] = time.monotonic()
+                        return True
+                    if time.monotonic() - state['wizard_since'] < 1:
+                        return True
+                client.quest_bumbles_pet = None
+                client.bumbles_pet_pending = False
+                for member in getattr(client, 'quest_mainline_sync_members', [client]):
+                    member.quest_mainline_sync_state = None
+                return False
+            state['wizard_since'] = None
+            # Do not send wizard-body TP to a possibly controlled pet. Keep the
+            # existing task barrier and read progress while awaiting wizard mode.
+            client.bumbles_pet_pending = True
+            if changed and not state.get('compatibility_logged'):
+                logger.warning('自动任务：宠物步骤已变化，但仍处于宠物模式或状态不可读；暂停未确认兼容的普通 TP。')
+                state['compatibility_logged'] = True
+            return True
+        if not isinstance(state, dict) or state.get('snapshot') != stage[0]:
+            state = dict(snapshot=stage[0], goal_code=stage[1], quest_code=stage[2],
+                         attempted=False, confirmed=False, warned=False)
+            client.quest_bumbles_pet = state
+            logger.debug('{} 宠物任务识别：Quest ID={}，Quest Key={}，Goal ID={}，Goal Key={}',
+                         client.title, stage[0][0], stage[2], stage[0][1], stage[1])
+        client.bumbles_pet_pending = bool(state['attempted'] or mode is True)
+        if mode is True:
+            if not state['confirmed']:
+                logger.info('自动任务：宠物模式已开启，继续任务流程。')
+            state['confirmed'] = True
+            # This waypoint is completed by becoming a pet at the supplied
+            # position. Re-read it; no additional ordinary teleport is required.
+            await self._dungeon_quest_snapshot(client)
+            return True
+        if state['attempted']:
+            return True  # No entire-workflow retry, even after worker recreation.
+        if (getattr(client, 'refilling_potions', False)
+                or isinstance(getattr(client, 'quest_recovery_owner', None), str)
+                or getattr(client, 'quest_party_probe_pending', False)
+                or getattr(client, 'mainline_chain_retry_active', False)
+                or getattr(client, 'quest_party_battle_rescue_active', False)
+                or getattr(client, 'post_combat_movement_active', False)
+                or await client.is_loading() or await client.in_battle()
+                or await client.is_in_dialog() or not await is_free_leader_questing(client)):
+            return True
+        if await self._mainline_sync_blocks_movement(client):
+            return True
+        if not claim_quest_recovery(client, owner):
+            return True
+        client.bumbles_pet_pending = True
+        try:
+            async with automation_owner(client, 'bumbles-pet-stage'):
+                async with asyncio.timeout(30):
+                    async def ready():
+                        if (not client.questing_status or getattr(client, 'refilling_potions', False)
+                                or await client.is_loading() or await client.in_battle()
+                                or await client.is_in_dialog() or not await is_free_leader_questing(client)
+                                or await self._bumbles_pet_stage(client) != stage):
+                            raise RuntimeError('任务阶段变化或客户端进入忙碌状态')
+                    await ready()
+                    state['attempted'] = True
+                    logger.info('自动任务：检测到使用宠物模式寻找大黄蜂，开始特殊任务流程。')
+                    logger.debug('{} 宠物任务：Quest ID={}，Quest Key={}，Goal ID={}，Goal Key={}',
+                                 client.title, stage[0][0], stage[2], stage[0][1], stage[1])
+                    mode = await self._play_as_pet_state(client)
+                    if mode is None:
+                        raise RuntimeError('无法确定宠物模式状态，未执行 TP/点击')
+                    if mode is False:
+                        await client.teleport(self.BUMBLES_PET_POSITION)
+                        deadline = time.monotonic() + 10
+                        last = None
+                        stable_since = None
+                        while True:
+                            await ready()
+                            position = await client.body.position()
+                            if (calc_Distance(position, self.BUMBLES_PET_POSITION) > 100
+                                    or last is None or calc_Distance(position, last) > 2):
+                                stable_since = None
+                            elif stable_since is None:
+                                stable_since = time.monotonic()
+                            elif time.monotonic() - stable_since >= 1:
+                                break
+                            if time.monotonic() >= deadline:
+                                raise TimeoutError('指定位置未稳定，未点击扮演宠物')
+                            last = position
+                            await asyncio.sleep(.2)
+                        logger.info('自动任务：已到达指定位置，准备进入宠物模式。')
+                        for attempt in range(2):
+                            await ready()
+                            if await self._play_as_pet_state(client) is True:
+                                break
+                            button = await get_window_from_path(client.root_window, play_as_pet_button_path)
+                            if not button or not await button.is_visible():
+                                menu = await get_window_from_path(client.root_window, pet_system_button_path)
+                                if (not menu or not await menu.is_visible() or await menu.is_control_grayed()):
+                                    raise RuntimeError('宠物菜单不可操作')
+                                await click_window_by_path(client, pet_system_button_path)
+                                await asyncio.sleep(.4)
+                                await ready()
+                            button = await get_window_from_path(client.root_window, play_as_pet_button_path)
+                            if (not button or not await button.is_visible() or await button.is_control_grayed()):
+                                raise RuntimeError('扮演宠物按钮不可操作')
+                            # Re-check mode immediately before click; cancel is
+                            # the same button, so blindly retrying could undo it.
+                            if await self._play_as_pet_state(client) is not False:
+                                break
+                            await click_window_by_path(client, play_as_pet_button_path)
+                            deadline = time.monotonic() + 5
+                            stable_since = None
+                            while time.monotonic() < deadline:
+                                if (not client.questing_status or await client.is_loading()
+                                        or await client.in_battle() or await client.is_in_dialog()):
+                                    raise RuntimeError('模式切换期间进入 Loading/战斗/对话')
+                                if await self._play_as_pet_state(client) is True:
+                                    if stable_since is None:
+                                        stable_since = time.monotonic()
+                                    elif time.monotonic() - stable_since >= 1:
+                                        break
+                                else:
+                                    stable_since = None
+                                await asyncio.sleep(.2)
+                            if stable_since is not None and time.monotonic() - stable_since >= 1:
+                                break
+                            await asyncio.sleep(.5)
+                    if await self._play_as_pet_state(client) is not True:
+                        raise TimeoutError('两次点击后仍未确认宠物模式')
+                    state['confirmed'] = True
+                    await self._dungeon_quest_snapshot(client)
+                    self._krok_exit_watch.pop(id(client), None)
+                    self._trigger_reentry.pop(id(client), None)
+                    self._mainline_finder_observations.pop(id(client), None)
+                    logger.info('自动任务：宠物模式已开启，继续任务流程。')
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            current = await self._dungeon_quest_snapshot(client)
+            if current is not None and current != state['snapshot']:
+                logger.debug('{} 到达宠物任务点后阶段已推进，下一轮确认/取消宠物模式。', client.title)
+            elif not state['warned']:
+                logger.warning('自动任务：宠物模式切换失败。{}', exc)
+                state['warned'] = True
+        finally:
+            release_quest_recovery(client, owner)
+        return True
+
     def _bumbles_mind_task_matches(self, text) -> bool:
         objective, location = split_quest_location(text)
         objective = re.sub(r'\s+', '', objective).casefold()
@@ -3150,9 +3470,83 @@ class Quester():
             release_quest_recovery(client, owner)
         return True
 
+    async def _recover_dueling_tent(self, client, progress, interaction_pending):
+        """Called with quest recovery ownership; two bounded exit TP attempts."""
+        zone = self.DUELING_TENT_ZONE
+
+        async def can_move():
+            if (not client.questing_status or getattr(client, 'refilling_potions', False)
+                    or await client.is_loading() or await client.in_battle()
+                    or await client.is_in_dialog()
+                    or not await is_free_leader_questing(client)
+                    or await interaction_pending()):
+                raise RuntimeError('任务停止、正常交互或战斗/对话/Loading，停止特殊 TP')
+            snapshot = await self._dungeon_quest_snapshot(client)
+            if snapshot is None:
+                raise RuntimeError('当前任务状态不可读取')
+            return snapshot == progress
+
+        async with automation_owner(client, 'dueling-tent-recovery'):
+            async with asyncio.timeout(35):
+                for attempt in range(2):
+                    if await client.zone_name() != zone or await client.is_loading():
+                        break
+                    if not await can_move():
+                        client._xuanshu_dueling_tent_failed = None
+                        return  # Real quest progress; do not teleport again.
+                    logger.info('DuelingTent 任务 TP 受阻且无进展，前往指定切区点（{}/2）。', attempt + 1)
+                    await client.teleport(self.DUELING_TENT_EXIT)
+                    deadline = time.monotonic() + 10
+                    while await client.zone_name() == zone and not await client.is_loading():
+                        if not await can_move():
+                            client._xuanshu_dueling_tent_failed = None
+                            return
+                        if time.monotonic() >= deadline:
+                            break
+                        await asyncio.sleep(.2)
+                    if await client.zone_name() != zone or await client.is_loading():
+                        break
+                else:
+                    raise TimeoutError('两次特殊 TP 后未发生区域切换；本任务阶段不再重复 TP')
+
+                # Loading alone is not proof of a zone change. Require a stable,
+                # nonempty new zone and readable quest state before releasing TP.
+                arrival = None
+                stable_since = None
+                while True:
+                    if not client.questing_status:
+                        raise RuntimeError('等待切区期间自动任务已停止')
+                    current_zone = await client.zone_name()
+                    if (not current_zone or current_zone == zone or await client.is_loading()
+                            or await client.in_battle() or await client.is_in_dialog()
+                            or not await is_free_leader_questing(client)):
+                        stable_since = None
+                    elif current_zone != arrival or stable_since is None:
+                        arrival = current_zone
+                        stable_since = time.monotonic()
+                    elif time.monotonic() - stable_since >= self.PRIVATE_WING_STABLE_SECONDS:
+                        snapshot = await self._dungeon_quest_snapshot(client)
+                        if snapshot is not None:
+                            await get_quest_name(client)
+                            await client.quest_position.position()
+                            client._xuanshu_dueling_tent_failed = None
+                            client._dueling_tent_recovered_at = time.monotonic()
+                            for member in getattr(client, 'quest_mainline_sync_members', [client]):
+                                member.quest_mainline_sync_state = None
+                            client.quest_party_quest_worker_zone = arrival
+                            client.quest_party_probe_pending = bool(getattr(client, 'quest_party_hitters', []))
+                            self._trigger_reentry.pop(id(client), None)
+                            self._npc_retry_exhausted.pop(id(client), None)
+                            self._mainline_finder_observations.pop(id(client), None)
+                            logger.info('DuelingTent 区域切换完成，重置卡顿计时并恢复原有打手同步。')
+                            return
+                    await asyncio.sleep(.2)
+
     async def teleport_to_quest_target(self, client, xyz, leader_client=None):
+        if await self._maybe_handle_bumbles_pet(client):
+            return
         if (getattr(client, "refilling_potions", False) is True
-                or getattr(client, 'quest_recovery_owner', None) in ('gobblerton', 'lemuria_dungeon', 'sacred_yarn', 'tamarin_house', 'bumbles_mind', 'lemuria_navigation')
+                or getattr(client, 'quest_recovery_owner', None) in ('gobblerton', 'lemuria_dungeon', 'sacred_yarn', 'tamarin_house', 'bumbles_mind', 'lemuria_navigation', 'dueling_tent')
                 or isinstance(getattr(client, 'quest_lemuria_navigation_recovery', None), dict)
                 and client.quest_lemuria_navigation_recovery.get('holding')
                 or getattr(client, "questing_status", True) is False):
@@ -3162,6 +3556,14 @@ class Quester():
         zone = await client.zone_name()
         key = id(client)
         private_wing = zone == self.PRIVATE_WING_ZONE
+        dueling_tent = zone == self.DUELING_TENT_ZONE
+        if not dueling_tent:
+            client._xuanshu_dueling_tent_failed = None
+        elif (await client.is_in_dialog() or not await is_free_leader_questing(client)
+                or getattr(client, 'quest_party_status_session', None) is not None
+                or any(client in getattr(member, 'quest_party_hitters', []) for member in self.clients)):
+            self._krok_exit_watch.pop(key, None)
+            return
         gobblerton = zone == self.GOBBLERTON_ZONE
         lemuria = zone == self.LEMURIA_DUNGEON_ZONE
         sacred_yarn = zone == self.SACRED_YARN_ZONE
@@ -3170,8 +3572,8 @@ class Quester():
         if (sacred_yarn or bumbles) and (getattr(client, 'quest_party_status_session', None) is not None
                 or any(client in getattr(member, 'quest_party_hitters', []) for member in self.clients)):
             return
-        transition_exit = private_wing or gobblerton or lemuria or sacred_yarn or bumbles
-        failed_attr = ('_xuanshu_bumbles_mind_failed' if bumbles else
+        transition_exit = private_wing or gobblerton or lemuria or sacred_yarn or bumbles or dueling_tent
+        failed_attr = ('_xuanshu_dueling_tent_failed' if dueling_tent else '_xuanshu_bumbles_mind_failed' if bumbles else
                        '_xuanshu_sacred_yarn_failed' if sacred_yarn else
                        '_xuanshu_lemuria_dungeon_failed' if lemuria else
                        '_xuanshu_gobblerton_failed' if gobblerton else '_xuanshu_private_wing_failed')
@@ -3228,7 +3630,7 @@ class Quester():
         target = (xyz.x, xyz.y, xyz.z)
         before = await client.body.position()
         progress = await self._dungeon_quest_snapshot(client) if transition_exit else None
-        if (sacred_yarn or bumbles) and progress is None:
+        if (sacred_yarn or bumbles or dueling_tent) and progress is None:
             self._krok_exit_watch.pop(key, None)
             await self.move_until_quest_interaction(client, xyz, leader_client=leader_client)
             return
@@ -3240,7 +3642,7 @@ class Quester():
 
         state = self._krok_exit_watch.get(key)
         if (state is None or state.get('zone') != zone or state['objective'] != objective
-                or not (sacred_yarn or bumbles) and state['target'] != target
+                or not (sacred_yarn or bumbles or dueling_tent) and state['target'] != target
                 or transition_exit and progress is not None and state.get('progress') is not None
                 and progress_changed(progress, state['progress'])):
             state = dict(zone=zone, objective=objective, target=target, anchor=before,
@@ -3252,13 +3654,15 @@ class Quester():
             failed = getattr(client, failed_attr, None)
             if isinstance(failed, dict):
                 changed = (failed['zone'] != zone or failed['objective'] != objective
-                           or not (sacred_yarn or bumbles) and failed['target'] != target
+                           or not (sacred_yarn or bumbles or dueling_tent) and failed['target'] != target
                            or progress is not None and failed['progress'] is not None
                            and progress_changed(progress, failed['progress']))
                 if changed and objective:
                     setattr(client, failed_attr, None)
                 else:
                     state['end_sent'] = True
+                    if dueling_tent:
+                        return  # Exhausted same-stage attempts survive worker recreation.
 
         transition = [False]
         async def watch_transition():
@@ -3271,8 +3675,18 @@ class Quester():
 
         # Observe loading during the existing teleport, without adding a dwell sleep.
         watcher = asyncio.create_task(watch_transition())
+        rejections_before = getattr(client, '_collision_tp_rejections', 0)
+        path_blocked = False
         try:
-            await collision_tp(client, xyz, leader_client=leader_client)
+            if dueling_tent:
+                try:
+                    async with asyncio.timeout(15):
+                        await collision_tp(client, xyz, leader_client=leader_client)
+                except TimeoutError:
+                    path_blocked = True
+                    logger.debug('{} DuelingTent 普通任务寻路超时，纳入受阻观察。', client.title)
+            else:
+                await collision_tp(client, xyz, leader_client=leader_client)
         except BaseException:
             self._krok_exit_watch.pop(key, None)
             raise
@@ -3287,23 +3701,32 @@ class Quester():
                 or await interaction_pending() or not await is_free(client)):
             self._krok_exit_watch.pop(key, None)
             return
+        if dueling_tent and (await client.is_in_dialog() or not await is_free_leader_questing(client)):
+            self._krok_exit_watch.pop(key, None)
+            return
         current_objective = await get_quest_name(leader_client or client)
         if not current_objective:
             return
         if current_objective != objective:
             self._krok_exit_watch.pop(key, None)
             return
-        if (gobblerton or lemuria or sacred_yarn or bumbles) and progress_changed(await self._dungeon_quest_snapshot(client), progress):
+        if (gobblerton or lemuria or sacred_yarn or bumbles or dueling_tent) and progress_changed(await self._dungeon_quest_snapshot(client), progress):
             self._krok_exit_watch.pop(key, None)
             return
 
         after = await client.body.position()
+        if dueling_tent:
+            rejected = path_blocked or getattr(client, '_collision_tp_rejections', 0) > rejections_before
+            no_approach = calc_Distance(before, xyz) - calc_Distance(after, xyz) < 100
+            if not rejected and (not no_approach or calc_Distance(after, xyz) < self.TRIGGER_NEAR_DISTANCE):
+                state.update(anchor=after, since=time.monotonic(), attempts=0)
+                return  # Successful approach / normal arrival is not blocked navigation.
         if floating_exit and calc_Distance(after, stuck) > 150:
             self._krok_exit_watch.pop(key, None)
             return
         # Gobblerton tracks quest progress even when repeated TP moves the body.
         # Other exits retain their existing stationary-position requirement.
-        if not (gobblerton or sacred_yarn or bumbles) and max(calc_Distance(before, state['anchor']),
+        if not (gobblerton or sacred_yarn or bumbles or dueling_tent) and max(calc_Distance(before, state['anchor']),
                calc_Distance(after, state['anchor'])) > 100:
             state.update(anchor=after, since=time.monotonic(), attempts=0)
             return
@@ -3315,12 +3738,23 @@ class Quester():
         if not objective or state['end_sent'] or state['attempts'] < 3 or time.monotonic() - state['since'] < 10:
             return
 
-        recovery_owner = ('bumbles_mind' if bumbles else 'sacred_yarn' if sacred_yarn else 'lemuria_dungeon' if lemuria else
+        recovery_owner = ('dueling_tent' if dueling_tent else 'bumbles_mind' if bumbles else 'sacred_yarn' if sacred_yarn else 'lemuria_dungeon' if lemuria else
                           'gobblerton' if gobblerton else 'private_wing' if private_wing else 'special_zone')
         if not claim_quest_recovery(client, recovery_owner):
             return
         state['end_sent'] = True
         try:
+            if dueling_tent:
+                if (await client.zone_name() != zone or await self._dungeon_quest_snapshot(client) != progress
+                        or not client.questing_status or await client.is_loading() or await client.in_battle()
+                        or not await is_free_leader_questing(client) or await interaction_pending()):
+                    return
+                setattr(client, failed_attr, dict(zone=zone, objective=objective, target=target, progress=progress))
+                try:
+                    await self._recover_dueling_tent(client, progress, interaction_pending)
+                except Exception as exc:
+                    logger.error('DuelingTent 特殊恢复未完成，停止本任务阶段重复 TP：{}', exc)
+                return
             if bumbles:
                 if (progress_changed(await self._dungeon_quest_snapshot(client), progress)
                         or await client.zone_name() != zone
@@ -3519,9 +3953,9 @@ class Quester():
                 return
             self._krok_exit_watch.pop(key, None)
         finally:
-            if sacred_yarn or bumbles:
+            if sacred_yarn or bumbles or dueling_tent:
                 self._krok_exit_watch.pop(key, None)
-            if lemuria:
+            if lemuria or dueling_tent:
                 dungeon = getattr(client, 'quest_dungeon_recovery', None)
                 if isinstance(dungeon, dict):
                     dungeon.update(since=time.monotonic(), waiting_logged=False)
@@ -3938,6 +4372,8 @@ class Quester():
     # TODO: Slay the beast
     async def auto_quest_leader(self, questing_friend_tp: bool, gear_switching_in_solo_zones: bool, hitting_client, ignore_pet_level_up: bool, play_dance_game: bool):
         from src.mainline_progress import log_mainline_progress
+        if any(await gather_owned(*[self._maybe_handle_bumbles_pet(p) for p in self.clients])):
+            return
         if any(await gather_owned(*[self._maybe_recover_lemuria_navigation(p) for p in self.clients])):
             return
         if await self._maybe_handle_bumbles_mind(self.current_leader_client):
@@ -3996,6 +4432,8 @@ class Quester():
 
             # in case client(s) in combat and the questing loop continued anyway
             await gather_owned(*[self.leader_wait_for_free(p) for p in self.clients])
+            if any(await gather_owned(*[self._maybe_handle_bumbles_pet(p) for p in self.clients])):
+                continue
             if any(await gather_owned(*[self._maybe_recover_lemuria_navigation(p) for p in self.clients])):
                 continue
             if await self._mainline_sync_blocks_movement(self.current_leader_client):
@@ -4285,6 +4723,8 @@ class Quester():
         if getattr(self.client, "refilling_potions", False) is True:
             return
         if await self._quest_dialogue_blocks_movement(self.client):
+            return
+        if await self._maybe_handle_bumbles_pet(self.client):
             return
         if await close_npc_quest_menu(self.client):
             return

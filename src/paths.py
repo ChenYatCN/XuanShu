@@ -33,6 +33,8 @@ dialog_text_path = ['WorldView', 'wndDialogMain', 'txtArea', 'txtMessage']
 
 # Quest Objective Path
 quest_name_path = ["WorldView", "windowHUD", "QuestHelperHud", "ElementWindow", "", "txtGoalName"]
+pet_system_button_path = ['WorldView', 'windowHUD', 'PetSystemButton']
+play_as_pet_button_path = pet_system_button_path + ['PetButtonLayout', 'PlayAsPetButton']
 quest_helper_hud_path = ["WorldView", "windowHUD", "QuestHelperHud"]
 quest_helper_arrow_path = [*quest_helper_hud_path, "ElementWindow", "ArrowWindow"]
 quest_helper_distance_path = [*quest_helper_arrow_path, "txtDistance"]

@@ -89,6 +89,7 @@ class GUICommandType(Enum):
     UpdateEntityListData = auto() # Backend -> GUI, data = list of entity dicts
 
     ConfigureChatTranslation = auto()  # GUI -> Backend: enabled, selected_title, auto_reply
+    SendNearbyChatTest = auto()  # GUI -> Backend: title, text; one manual send
     ChatTranslationEvent = auto()      # Backend -> GUI: message, reply or hook status
 
     # Launcher

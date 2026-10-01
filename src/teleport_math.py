@@ -445,7 +445,10 @@ async def _teleport_once_verified(client: Client, dest: XYZ, anchor: XYZ,
     if not await is_free(client):
         return False
     await client.teleport(dest)
-    return await _arrived(client, dest, anchor, zone_before)
+    arrived = await _arrived(client, dest, anchor, zone_before)
+    if not arrived:
+        client._collision_tp_rejections = getattr(client, '_collision_tp_rejections', 0) + 1
+    return arrived
 
 
 async def _retreat_toward(client: Client, dest: XYZ, anchor: XYZ,

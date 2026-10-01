@@ -14,6 +14,34 @@ from src.gui.commands import GUICommandType
 
 
 class ChatTranslationUITests(unittest.TestCase):
+    def test_manual_sender_default_no_duplicate_or_fallback(self):
+        app = QApplication.instance() or QApplication([])
+        sent = queue.Queue()
+        ctx = SimpleNamespace(bg_color='#171721', alt_bg='#202030',
+                              text_color='#eeeeff', stroke_color='#78ddee',
+                              icon_btn_style='', titlebar_svg_icon=lambda *_args: QIcon())
+        dialog = ChatTranslationDialog(sent, ctx)
+        dialog.set_available_clients(['p2'])
+        self.assertEqual(dialog.sender.currentData(), 'p1')
+        self.assertFalse(dialog.send_button.isEnabled())
+        self.assertEqual(dialog.send_text.text(), 'hello')
+        self.assertFalse(dialog.auto_reply.isEnabled())
+        dialog.set_available_clients(['p1', 'p2'])
+        dialog.send_button.click()
+        dialog._send_once()
+        self.assertEqual(sent.qsize(), 1)
+        command = sent.get_nowait()
+        self.assertEqual(command.com_type, GUICommandType.SendNearbyChatTest)
+        self.assertEqual(command.data, {'title': 'p1', 'text': 'hello'})
+        self.assertFalse(dialog.send_button.isEnabled())
+        dialog.handle_event({'kind': 'manual_send', 'title': 'p1', 'done': True,
+                             'invoked': True, 'local_echo': False,
+                             'peer_receipts': ['p2'], 'listener_capture': ['p2']})
+        self.assertTrue(dialog.send_button.isEnabled())
+        self.assertIn('p2', dialog.send_status.text())
+        dialog.close()
+        app.processEvents()
+
     def test_window_is_independent_and_defaults_to_safe_receive_only(self):
         app = QApplication.instance() or QApplication([])
         sent = queue.Queue()
