@@ -3,6 +3,7 @@
 Usage: python scripts/build_mainline_index.py --quest-title-lang path/to/QuestTitle.lang
 The workbook supplies world/order/title; QuestTitle.lang supplies verified
 language keys and Chinese title variants. Neither source contains Quest IDs.
+Unchanged world/title rows retain the existing index's verified identities.
 """
 
 import argparse
@@ -16,7 +17,7 @@ from openpyxl import load_workbook
 
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKBOOK = ROOT / "W101 Mainline Quests (2).xlsx"
+WORKBOOK = ROOT / "W101 Mainline Quests.xlsx"
 OUTPUT = ROOT / "src" / "data" / "mainline_quests.json"
 
 
@@ -33,18 +34,20 @@ def split_title(value):
     return text, ""
 
 
-def workbook_rows():
-    sheet = load_workbook(WORKBOOK, read_only=True, data_only=True).active
-    cells = sheet.iter_rows(values_only=True)
-    next(cells)
-    headers = next(cells)
+def workbook_rows(workbook_path=WORKBOOK):
+    workbook = load_workbook(workbook_path, read_only=True, data_only=True)
+    try:
+        cells = list(workbook.active.iter_rows(values_only=True))
+    finally:
+        workbook.close()
+    headers = cells[1]
     worlds = []
     for column, header in enumerate(headers):
         match = re.fullmatch(r"\s*(.+?)\s*\((\d+)\)\s*", str(header or ""))
         if match:
             worlds.append((column, match[1].strip(), int(match[2])))
     rows = []
-    for cells in cells:
+    for cells in cells[2:]:
         for column, world, total in worlds:
             match = re.match(r"^\s*(\d+)\.\s*(.+)$", str(cells[column] or ""))
             if not match:
@@ -83,10 +86,26 @@ def language_titles(path):
     return by_title
 
 
-def build(lang_path):
+def build(lang_path, workbook_path=WORKBOOK, output=OUTPUT, previous_index=OUTPUT,
+          title_source='QuestTitle.lang bilingual snapshot'):
     titles = language_titles(lang_path)
-    rows, mismatches = workbook_rows()
+    rows, mismatches = workbook_rows(workbook_path)
+    previous = defaultdict(list)
+    if previous_index is not None and previous_index.exists():
+        for row in json.loads(previous_index.read_text(encoding='utf-8'))['rows']:
+            previous[(title_key(row['world']), title_key(row['english']))].append(row)
     for row in rows:
+        old_rows = previous[(title_key(row['world']), title_key(row['english']))]
+        if len(old_rows) > 1:
+            raise ValueError(f"{row['world']}: ambiguous existing title {row['english']!r}")
+        if old_rows:
+            old = old_rows[0]
+            for field in ('quest_ids', 'keys', 'chinese'):
+                row[field] = list(old.get(field, []))
+            row['aliases'] = list(dict.fromkeys([*row['aliases'], *old.get('aliases', [])]))
+            if old.get('quest_ids') and old.get('note'):
+                row['note'] = old['note']
+            continue
         found = []
         for title in [row["english"], *row["aliases"]]:
             found.extend(titles.get(title_key(title), []))
@@ -96,13 +115,13 @@ def build(lang_path):
             if re.search(r"[\u3400-\u9fff]", translation)
         ))
     data = {
-        "source": WORKBOOK.name,
-        "title_source": "QuestTitle.lang bilingual snapshot",
+        "source": workbook_path.name,
+        "title_source": title_source,
         "quest_id_source": "Neither source contains Quest IDs; verified IDs may be added later",
         "source_total_mismatches": mismatches,
         "rows": rows,
     }
-    OUTPUT.write_text(
+    output.write_text(
         "{\n" + ",\n".join(
             f'  "{key}": {json.dumps(value, ensure_ascii=False)}'
             for key, value in data.items() if key != "rows"
@@ -111,11 +130,16 @@ def build(lang_path):
         "\n  ]\n}\n", encoding="utf-8",
     )
     print(f"{len(rows)} rows; {sum(bool(r['keys']) for r in rows)} with language keys; "
-          f"{sum(bool(r['chinese']) for r in rows)} with Chinese titles; output {OUTPUT}")
+          f"{sum(bool(r['chinese']) for r in rows)} with Chinese titles; output {output}")
+    return data
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--quest-title-lang", required=True, type=Path)
+    parser.add_argument("--workbook", type=Path, default=WORKBOOK)
+    parser.add_argument("--output", type=Path, default=OUTPUT)
+    parser.add_argument("--previous-index", type=Path, default=OUTPUT)
+    parser.add_argument("--title-source", default='QuestTitle.lang bilingual snapshot')
     args = parser.parse_args()
-    build(args.quest_title_lang)
+    build(args.quest_title_lang, args.workbook, args.output, args.previous_index, args.title_source)

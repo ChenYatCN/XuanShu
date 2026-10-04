@@ -8,6 +8,15 @@ English source and translated display text are retained separately.
 # Additional exact-name records from GUI2, Items, WizardGameObjects,
 # ZoneLocName, WizardZone, Zone and quest/dialogue tables in the same archive.
 PORTAL_RECORDS = {
+    # Tamed Demox and its area labels, verified in installed GUI2/WizardZone
+    # language tables (English Root.wad + translated Locale_en-US-root.wad).
+    "GUI2_00002095": ["<center>Tamed Demox</center>", "<center>Tamed Demox</center>"],
+    "WizardZone_00001744": ["Graveholm", "墓都"],
+    "WizardZone_00001745": ["Mortal Plain", "凡人原野"],
+    "WizardZone_00001746": ["Outsiders Camp", "流亡者营地"],
+    "WizardZone_00001748": ["Black Lagoon", "黑湖"],
+    "WizardZone_00001751": ["Howling Lands", "啸狼荒原"],
+    "WizardZone_00001761": ["Scholomance", "斯科洛曼斯"],
     "GUI2_00000392": [
         "Aeriel",
         "爱丽儿(Aeriel)"

@@ -2,6 +2,7 @@
 
 import asyncio
 import ctypes
+from contextlib import asynccontextmanager
 from collections import Counter, deque
 import html
 import re
@@ -31,20 +32,50 @@ async def _chat_edit(client):
     return node
 
 
-async def _chat_ready(client):
+async def _chat_ready(client, allow_busy=False):
     if not client.is_running():
         raise RuntimeError('客户端已离线')
-    if any(getattr(client, attr, False) for attr in (
+    if not allow_busy and any(getattr(client, attr, False) for attr in (
             'questing_status', 'combat_status', 'sigil_status', 'is_fishing',
             'refilling_potions', 'auto_pet_status', 'feeding_pet_status', 'dance_hook_status')):
         raise RuntimeError('客户端有自动任务，请先暂停')
-    if await client.is_loading() or await client.in_battle() or await client.is_in_dialog():
-        raise RuntimeError('客户端正在加载、战斗或对话')
+    if await client.is_loading() or await client.is_in_dialog():
+        raise RuntimeError('客户端正在加载或 NPC 对话')
+    if not allow_busy and await client.in_battle():
+        raise RuntimeError('客户端正在战斗；可勾选允许战斗中聊天')
     zone = await client.zone_name()
-    gid = await client.game_client.player_gid()
-    if not zone or not gid:
-        raise RuntimeError('角色尚未就绪')
+    if not zone:
+        raise RuntimeError('当前区域读取为空，请等待场景加载完成')
+    try:
+        gid = await client.game_client.player_gid()
+    except Exception:
+        gid = None
+    if not isinstance(gid, int) or gid <= 0:
+        try:
+            gid = await client.client_object.global_id_full()
+        except Exception:
+            gid = None
+    if not isinstance(gid, int) or gid <= 0:
+        # GID identifies receipts, not the target window or editable chat UI.
+        gid = None
     return zone, gid
+
+
+@asynccontextmanager
+async def _manual_chat_owner(client, allow_busy):
+    ownership = get_client_automation_ownership(client)
+    if ownership.locked and not allow_busy:
+        raise RuntimeError(f'客户端正在被 {ownership.owner_label} 使用')
+    claim = automation_owner(client, 'manual-nearby-chat')
+    try:
+        async with asyncio.timeout(3):
+            await claim.__aenter__()
+    except TimeoutError:
+        raise RuntimeError('当前点击操作超过 3 秒未结束；本次未发送，请稍后再点') from None
+    try:
+        yield
+    finally:
+        await claim.__aexit__(None, None, None)
 
 
 async def _type_chat(client, text):
@@ -143,13 +174,14 @@ class ChatTranslationMonitor:
         self.observed = deque(maxlen=512)
         self.observation_counter = 0
 
-    def request_manual_send(self, clients, title, text, blocked=False):
+    def request_manual_send(self, clients, title, text, blocked=False, allow_busy=False):
         self.auto_reply = False
         if self.manual_task and not self.manual_task.done():
             return  # One transaction at a time; no delayed queued sends.
-        self.manual_task = asyncio.create_task(self._manual_send(list(clients), title, text, blocked))
+        self.manual_task = asyncio.create_task(self._manual_send(
+            list(clients), title, text, blocked, allow_busy=allow_busy))
 
-    async def _manual_send(self, clients, title, text, blocked=False, verify_seconds=10):
+    async def _manual_send(self, clients, title, text, blocked=False, verify_seconds=10, allow_busy=False):
         result = {'invoked': False, 'local_echo': False, 'peer_receipts': [],
                   'listener_capture': [], 'message': text}
         def event(status, done=False):
@@ -159,8 +191,10 @@ class ChatTranslationMonitor:
             logger.info('附近手动发送测试：{}', payload)
         event('开始检查；尚未发送')
         try:
-            if blocked or not self.enabled:
-                raise RuntimeError('监听未开启或脚本/自由镜头正在使用客户端')
+            if not self.enabled:
+                raise RuntimeError('聊天监听未开启')
+            if blocked:
+                raise RuntimeError(blocked if isinstance(blocked, str) else '脚本/自由镜头正在使用客户端')
             if not isinstance(text, str) or not text.strip() or len(text) > 80 or any(
                     ord(char) < 32 or ord(char) > 126 for char in text):
                 raise RuntimeError('临时测试只接受 1–80 个可打印英文字符')
@@ -168,16 +202,17 @@ class ChatTranslationMonitor:
             if len(selected) != 1:
                 raise RuntimeError('发送客户端不存在或名称不唯一')
             client = selected[0]
-            ownership = get_client_automation_ownership(client)
-            if ownership.locked:
-                raise RuntimeError(f'客户端正在被 {ownership.owner_label} 使用')
-            async with automation_owner(client, 'manual-nearby-chat'):
+            if allow_busy and get_client_automation_ownership(client).locked:
+                event('允许忙碌中聊天；等待当前点击完成（最多 3 秒）')
+            async with _manual_chat_owner(client, allow_busy):
                 async with asyncio.timeout(8):
-                    stage = await _chat_ready(client)
+                    stage = await _chat_ready(client, allow_busy=allow_busy)
                     edit = await _chat_edit(client)
                     if await read_control_text(edit):
                         raise RuntimeError('聊天框已有草稿，未覆盖、未发送')
                     event(f'角色/UI/空草稿检查通过；HWND={client.window_handle}，GID={stage[1]}，区域={stage[0]}')
+                    if stage[1] is None:
+                        event('角色 GID 暂不可读；允许本次手动发送，但不确认消息归属或接收回执')
                     baselines = {}
                     for peer in clients:
                         if peer.is_running():
@@ -203,7 +238,7 @@ class ChatTranslationMonitor:
                     if (await current_edit.read_base_address() != await edit.read_base_address()
                             or await read_control_text(current_edit) != wire_text):
                         raise RuntimeError('输入回读不一致，未按发送；请检查游戏聊天草稿')
-                    if await _chat_ready(client) != stage or not self.enabled:
+                    if await _chat_ready(client, allow_busy=allow_busy) != stage or not self.enabled:
                         raise RuntimeError('客户端状态发生变化，未发送')
                     event('所选窗口已输入 /s 文本；输入控件地址与全文回读一致，状态复查通过')
                     await client.send_hotkey([], Keycode.ENTER)
@@ -221,7 +256,7 @@ class ChatTranslationMonitor:
                         if channel != '附近' or message != text:
                             continue
                         # GID-less self labels are deliberately not assumed proof.
-                        if gid != stage[1]:
+                        if stage[1] is None or gid != stage[1]:
                             continue
                         if handle == client.window_handle:
                             result['local_echo'] = True
@@ -230,7 +265,7 @@ class ChatTranslationMonitor:
                 result['listener_capture'] = sorted({observed_title
                     for counter, observed_title, channel, gid, message in self.observed
                     if counter > start_counter and channel == '附近'
-                    and gid == stage[1] and message == text})
+                    and stage[1] is not None and gid == stage[1] and message == text})
                 await asyncio.sleep(.25)
             event('核验结束（未观察到不等于发送失败；不自动重发）', True)
         except asyncio.CancelledError:

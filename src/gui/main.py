@@ -46,7 +46,7 @@ from src.gui.helpers import (
 )
 from src.gui.ibao_dialog import TripleClickGate, build_ibao_dialog
 from src.gui.icon_manager import apply_app_icon, get_current_icon_path
-from src.gui.popups import show_entity_list_popup, show_ui_tree_popup
+from src.gui.popups import show_entity_list_popup, show_ui_tree_popup, show_license_popup
 from src.gui.tab_actions import build_bot_tab, build_combat_tab, build_flythrough_tab
 from src.gui.tab_camera import build_camera_tab
 from src.gui.tab_dev_utils import build_dev_utils_tab
@@ -581,24 +581,7 @@ def manage_gui(
     console_sink = logger.add(console_psg, colorize=True)
 
     # ==================== License Popup ====================
-    license_dialog = QDialog(window)
-    license_dialog.setWindowTitle(tl("license_title"))
-    license_dialog.setModal(True)
-    ld_layout = QVBoxLayout(license_dialog)
-    ld_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    license_label = QLabel(f"<b>{tl('license_text')}</b>")
-    license_label.setTextFormat(Qt.TextFormat.RichText)
-    license_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    license_label.setWordWrap(True)
-    ld_layout.addWidget(license_label)
-    ok_btn = QPushButton(tl("ok"))
-    ok_btn.clicked.connect(license_dialog.close)
-    ld_layout.addWidget(ok_btn, alignment=Qt.AlignmentFlag.AlignCenter)
-    license_dialog.adjustSize()
-    hint = license_dialog.sizeHint()
-    license_dialog.setFixedSize(max(int(hint.width() * 1.5), 350), hint.height())
-    license_dialog.show()
-    QTimer.singleShot(5000, license_dialog.close)
+    license_dialog = show_license_popup(ctx, theme_dict)
 
     # ==================== Close Handling ====================
     close_accepted = [False]
@@ -743,11 +726,8 @@ def manage_gui(
                             fishing_exports.get("set_running", lambda v: None)(
                                 value == "Enabled"
                             )
-                        elif tag == "QuestPartyRuntimeStatus":
-                            widget = widget_tags.get(tag)
-                            if widget is not None:
-                                widget.setText(str(value))
-                                widget.setVisible(bool(value))
+                        elif tag in ("QuestPartyRuntimeStatus", "QuestMainlineProgress"):
+                            hotkeys_exports["update_quest_status"](tag, value)
                         elif tag == "HotkeyClientStates":
                             hotkeys_exports["update_client_states"](value)
                         else:
@@ -814,6 +794,7 @@ def manage_gui(
                             tree_texts,
                             lambda cb: copy_icon_btn(ctx, cb),
                             tl=tl,
+                            ctx=ctx,
                         )
 
                     case GUICommandType.ShowEntityListPopup:
@@ -830,6 +811,7 @@ def manage_gui(
                             dev_tab,
                             camera_tab,
                             tl=tl,
+                            ctx=ctx,
                         )
 
                     case GUICommandType.UpdateEntityListData:
@@ -867,6 +849,11 @@ def manage_gui(
 
                     case GUICommandType.AccountActionError:
                         QMessageBox.warning(window, tl('update_account'), str(com.data))
+
+                    case GUICommandType.GameLanguageResult:
+                        result = launcher.get('game_language_result')
+                        if result:
+                            result(com.data)
 
                     case GUICommandType.UpdateHookedClients:
                         if com.data:

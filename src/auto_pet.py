@@ -306,7 +306,9 @@ async def _nomnom(client: Client, ignore_pet_level_up: bool, only_play_dance_gam
 
                 await asyncio.sleep(.5)
         else:
-            logger.info('Auto Pet - Client ' + client.title + ' is out of energy.')
+            client.auto_pet_status = False
+            logger.info('自动宠物：{} 剩余能量 {}，下一轮需要 {}；退出小游戏并停止该客户端自动宠物。',
+                        client.title, total_energy, energy_cost)
             finished_feeding = True
 
     # feed window may still be open, close it
@@ -389,6 +391,9 @@ async def won_game_leveled_up(client: Client, auto_pet_ignore_pet_level_up):
 
 
 async def auto_pet(client: Client, ignore_pet_level_up: bool, only_play_dance_game: bool, questing: bool = False):
+    if not client.auto_pet_status:
+        client.feeding_pet_status = False
+        return
     # we know we are on the pet sigil or going to it, activate and let nomnom deactivate when it is finished
     client.feeding_pet_status = True
 

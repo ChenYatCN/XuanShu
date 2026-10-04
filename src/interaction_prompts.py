@@ -124,6 +124,8 @@ def collect_object_name(value):
 
 
 def portal_kind(value):
+    if matches_text(value, "GUI2_00002095"):
+        return "tamed_demox"
     if matches_text(value, "GUI2_00000398", "GUI2_00000399"):
         return "streamportal"
     if matches_text(value, "GUI2_00001319", "GUI2_00001320"):
@@ -133,7 +135,7 @@ def portal_kind(value):
     return None
 
 
-def resolve_portal_destination(value, allowed):
+def resolve_portal_destination(value, allowed, *, exact=False):
     text = plain_text(value).casefold()
     if not text:
         return None
@@ -147,6 +149,10 @@ def resolve_portal_destination(value, allowed):
                 aliases.add(re.sub(r"[（(][^()（）]*[)）]", "", plain_text(translated)).strip().casefold())
         for alias in aliases:
             if not alias:
+                continue
+            if exact:
+                if text == alias:
+                    matches[destination] = len(alias)
                 continue
             pattern = re.escape(alias)
             if alias.isascii():

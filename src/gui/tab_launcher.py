@@ -1,17 +1,148 @@
+import html
 import os
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QCheckBox, QLineEdit, QListWidget, QListWidgetItem, QDialog,
-    QSizePolicy, QFileDialog,
+    QSizePolicy, QFileDialog, QComboBox,
 )
 from PyQt6.QtCore import Qt, QSize
 
 from src.gui.commands import GUICommand, GUICommandType
 from src.gui.helpers import (
-    centered_label, launcher_icon_btn, launcher_small_icon_btn,
+    add_dialog_titlebar, centered_label, launcher_icon_btn, launcher_small_icon_btn,
     spinning_loader_widget,
 )
+from src.game_language import PATCHES, installed_language_patches
+
+
+def show_launcher_settings_dialog(ctx, game_path_input):
+    tl = ctx.tl
+    dlg = QDialog(ctx.window)
+    dlg.setWindowTitle(tl('settings'))
+    dlg.setModal(True)
+    dlg.setMinimumWidth(470)
+    dlg_layout = QVBoxLayout(dlg)
+    dlg_layout.setSpacing(10)
+    add_dialog_titlebar(dlg, dlg_layout, ctx.settings.get_theme(), ctx.titlebar_svg_icon)
+    dlg_layout.addWidget(QLabel(tl('game_path')))
+    path_row = QHBoxLayout()
+    path_input = QLineEdit(game_path_input.text())
+    path_input.setReadOnly(True)
+    path_row.addWidget(path_input)
+
+    def pick():
+        path = QFileDialog.getExistingDirectory(dlg, tl('game_path'))
+        if path:
+            path = os.path.normpath(path)
+            path_input.setText(path)
+            game_path_input.setText(path)
+            ctx.settings.set_setting('game_path', path)
+            # A saved choice belongs to the previous install, not the new path.
+            ctx.settings.set_setting('game_language', None)
+            committed[0] = None
+            language.setCurrentIndex(0)
+            refresh_patches()
+            show_status('')
+
+    path_row.addWidget(launcher_icon_btn(ctx, ctx.svgs['folder'], tl('game_path'), pick))
+    dlg_layout.addLayout(path_row)
+    dlg_layout.addWidget(QLabel(tl('game_language')))
+    language = QComboBox()
+    language.setObjectName('gameLanguageChoice')
+    language.addItem(tl('game_language_keep'), None)
+    language.addItem(tl('game_language_english'), 'en')
+    language.addItem(tl('game_language_chinese'), 'zh')
+    saved = ctx.settings.get_setting('game_language')
+    committed = [saved]
+    language.setCurrentIndex(max(0, language.findData(saved)))
+    dlg_layout.addWidget(language)
+    dlg_layout.addWidget(QLabel(tl('game_language_patch')))
+    patches = QComboBox()
+    patches.setObjectName('gameLanguagePatch')
+    dlg_layout.addWidget(patches)
+
+    def refresh_patches():
+        patches.clear()
+        available = installed_language_patches(path_input.text()) if path_input.text() else []
+        saved_patch = ctx.settings.get_setting('game_language_patch')
+        for name in available:
+            patches.addItem(name, name)
+        # English can disable an overlay even when its Chinese source is absent.
+        if saved_patch in PATCHES and saved_patch not in available:
+            patches.addItem(saved_patch + ' (' + tl('game_language_missing') + ')', saved_patch)
+        if patches.count() == 0:
+            patches.addItem(PATCHES[0] + ' (' + tl('game_language_missing') + ')', PATCHES[0])
+        # With no explicit saved choice, prefer an actually installed patch.
+        patches.setCurrentIndex(max(0, patches.findData(saved_patch)) if committed[0] in ('en', 'zh') else 0)
+
+    refresh_patches()
+    note = QLabel()
+    note.setObjectName('gameLanguageNote')
+    note.setTextFormat(Qt.TextFormat.RichText)
+    note.setText('<p style="line-height:145%;">' + html.escape(tl('game_language_note')) + '</p>')
+    note.setStyleSheet('font-weight: normal; padding: 4px 0px;')
+    note.setWordWrap(True)
+    note.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
+    dlg_layout.addWidget(note)
+    status = QLabel('')
+    status.setObjectName('gameLanguageStatus')
+    status.setTextFormat(Qt.TextFormat.RichText)
+    status.setStyleSheet('font-weight: normal; padding: 4px 0px;')
+    status.setWordWrap(True)
+    status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
+    status.hide()
+    dlg_layout.addWidget(status)
+    apply = QPushButton(tl('game_language_apply'))
+    apply.setObjectName('gameLanguageApply')
+    apply.setStyleSheet(ctx.btn_style)
+    dlg_layout.addWidget(apply, alignment=Qt.AlignmentFlag.AlignCenter)
+    pending = [False]
+
+    def show_status(text):
+        wrapped = html.escape(text).replace('\n', '<br>').replace('\\', '\\&#8203;')
+        status.setText('<p style="line-height:145%;">' + wrapped + '</p>')
+        status.setToolTip(text)
+        status.setVisible(bool(text))
+        # Feedback and backup paths can add several lines after the dialog opens.
+        # Let the window grow instead of squeezing the wrapped labels together.
+        dlg.adjustSize()
+
+    def update_enabled():
+        apply.setEnabled(not pending[0] and
+                         (language.currentData() is not None or committed[0] is not None))
+
+    def request():
+        pending[0] = True
+        language.setEnabled(False)
+        patches.setEnabled(False)
+        path_row.itemAt(1).widget().setEnabled(False)
+        update_enabled()
+        show_status(tl('game_language_applying'))
+        ctx.send_queue.put(GUICommand(GUICommandType.SetGameLanguage, {
+            'game_path': path_input.text(), 'language': language.currentData(),
+            'patch_name': patches.currentData(),
+        }))
+
+    def result(data):
+        pending[0] = False
+        if data.get('ok'):
+            committed[0] = language.currentData()
+        language.setEnabled(True)
+        patches.setEnabled(True)
+        path_row.itemAt(1).widget().setEnabled(True)
+        update_enabled()
+        show_status(tl(data['message_key']) + ('\n' + data['detail'] if data.get('detail') else ''))
+
+    ctx.exports['launcher']['game_language_result'] = result
+    language.currentIndexChanged.connect(update_enabled)
+    apply.clicked.connect(request)
+    update_enabled()
+    try:
+        dlg.exec()
+    finally:
+        ctx.exports['launcher'].pop('game_language_result', None)
+        dlg.deleteLater()
 
 
 def update_account_selection_order(order: list[str], nickname: str, checked: bool):
@@ -510,29 +641,7 @@ def build_launcher_tab(ctx):
     ctx.widget_tags['GamePath'] = game_path_input
 
     def _show_settings_dialog():
-        dlg = QDialog(ctx.window)
-        dlg.setWindowTitle(tl('settings'))
-        dlg.setModal(True)
-        dlg_layout = QVBoxLayout(dlg)
-        dlg_layout.addWidget(QLabel(tl('game_path')))
-        path_row = QHBoxLayout()
-        path_input = QLineEdit(game_path_input.text())
-        path_input.setReadOnly(True)
-        path_row.addWidget(path_input)
-        def _pick():
-            path = QFileDialog.getExistingDirectory(ctx.window, tl('game_path'))
-            if path:
-            	# Qt returns forward slashes even on Windows; normalize to the
-                # platform's native separators before storing/handing to wizlaunch.
-                path = os.path.normpath(path)
-                path_input.setText(path)
-                game_path_input.setText(path)
-                if ctx.settings:
-                    ctx.settings.set_setting('game_path', path)
-        path_row.addWidget(launcher_icon_btn(ctx, svgs['folder'], tl('game_path'), _pick))
-        dlg_layout.addLayout(path_row)
-        dlg.adjustSize()
-        dlg.exec()
+        show_launcher_settings_dialog(ctx, game_path_input)
 
     launcher_action_row = QHBoxLayout()
     launcher_action_row.addStretch()

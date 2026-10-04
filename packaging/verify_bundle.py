@@ -8,6 +8,8 @@ import argparse
 import hashlib
 from pathlib import Path
 
+from verify_combat_backend import check_bundle_sources, check_compiled_backend, load_source_backend
+
 
 ROOT = Path(__file__).resolve().parent.parent
 ANALYSIS_TOC = ROOT / "build" / "XuanShu" / "Analysis-00.toc"
@@ -59,6 +61,7 @@ def main() -> None:
     args = parser.parse_args()
     entries = _load_entries(args.build_dir / 'Analysis-00.toc')
     package_entries = _load_entries(args.build_dir / 'PKG-00.toc')
+    check_bundle_sources(entries)
     compat_source = _norm(COMBAT_COMPAT)
     venv_source = _norm(VENV_PACKAGES)
     forbidden_source = _norm(FORBIDDEN_ROOT_PACKAGE)
@@ -148,8 +151,10 @@ def main() -> None:
     if not args.exe.exists() or args.exe.stat().st_size < 1_000_000:
         raise RuntimeError(f"成品 EXE 不存在或大小异常：{args.exe}")
 
+    load_source_backend()
+    check_compiled_backend(args.exe)
     compat_hash = hashlib.sha256(COMBAT_COMPAT.read_bytes()).hexdigest().upper()
-    print("[验证通过] wizwalker：.venv 最新版")
+    print("[验证通过] wizwalker：当前 .venv，未混入根目录旧版")
     print(f"[验证通过] SprintyCombat：兼容版 SHA256 {compat_hash}")
     print("[验证通过] Qt、wizlaunch、wizpatch、分辨率兼容模块和导航数据完整")
     print("[验证通过] 未混入 Codex/编辑器运行库")

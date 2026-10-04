@@ -43,7 +43,10 @@ class OpenSpiralDialogTests(unittest.IsolatedAsyncioTestCase):
         quester.handle_pending_dungeon_confirmation = AsyncMock(return_value=False)
         quester._quest_party_probe_blocks_movement = AsyncMock()
         quester.new_world_doors = AsyncMock(return_value=False)
+        quester._quest_dialogue_blocks_movement = AsyncMock(return_value=False)
         with (
+            patch('src.questing.close_npc_quest_menu', new=AsyncMock(return_value=False)),
+            patch('src.questing.close_automation_popup', new=AsyncMock(return_value=False)),
             patch('src.questing.is_spiral_door_open', new=AsyncMock(return_value=True)),
             patch('src.questing.spiral_door_with_quest', new=AsyncMock()) as enter,
             patch('src.questing.collision_tp', new=AsyncMock()) as move,

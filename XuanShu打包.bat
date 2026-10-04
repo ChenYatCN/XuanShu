@@ -49,7 +49,17 @@ if not exist "XuanShu.spec" (
     exit /b 1
 )
 
-echo [1/6] 检查 PyInstaller...
+echo [1/7] 检查新版战斗后端及双层附魔语法...
+".venv\Scripts\python.exe" -X utf8 "packaging\verify_combat_backend.py"
+if errorlevel 1 (
+    echo.
+    echo [错误] 战斗后端检测未通过，已停止打包。旧成品和缓存未清理。
+    pause
+    exit /b 1
+)
+
+echo.
+echo [2/7] 检查 PyInstaller...
 ".venv\Scripts\python.exe" -m pip show pyinstaller >nul 2>nul
 
 if errorlevel 1 (
@@ -66,7 +76,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo [2/6] 清理旧打包缓存...
+echo [3/7] 清理旧打包缓存...
 
 if exist "build" (
     rmdir /s /q "build"
@@ -83,7 +93,7 @@ if exist "__pycache__" (
 echo 清理完成。
 echo.
 
-echo [3/6] 开始使用虚拟环境打包...
+echo [4/7] 开始使用虚拟环境打包...
 echo.
 
 ".venv\Scripts\python.exe" -m PyInstaller "XuanShu.spec" --clean -y
@@ -99,9 +109,9 @@ if errorlevel 1 (
 )
 
 echo.
-echo [4/6] 检查依赖来源和成品内容...
+echo [5/7] 检查依赖来源、成品内容和编译后的战斗后端...
 
-".venv\Scripts\python.exe" "packaging\verify_bundle.py"
+".venv\Scripts\python.exe" -X utf8 "packaging\verify_bundle.py"
 
 if errorlevel 1 (
     echo.
@@ -116,7 +126,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo [5/6] 检查输出文件...
+echo [6/7] 检查输出文件...
 
 if exist "dist\XuanShu.exe" (
     echo.
@@ -136,7 +146,7 @@ if exist "dist\XuanShu.exe" (
     exit /b 1
 )
 
-echo [6/6] 完成。
+echo [7/7] 完成。
 echo.
 
 pause

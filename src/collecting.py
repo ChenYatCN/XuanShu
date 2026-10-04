@@ -7,13 +7,14 @@ from dataclasses import dataclass, field
 from loguru import logger
 from wizwalker import XYZ, Keycode
 
-from src.collect_matching import collect_names, parse_collect_goal, count_increased
+from src.collect_matching import collect_names, parse_collect_goal, count_increased, normalize_name
 from src.collect_catalog import installed_catalog
 from src.interaction_prompts import plain_text
 from src.paths import npc_range_path
 from src.utils import is_free, is_visible_by_path, get_popup_title
 from src.teleport_math import collision_tp, calc_Distance
 from src.task_lifecycle import gather_owned
+from src.automation_ownership import automation_owner
 
 
 _SKIP = {'basic positional', 'wisphealth', 'wispmana', 'kt_wisphealth', 'kt_wispmana',
@@ -47,6 +48,11 @@ class Candidate:
 
 
 class CollectSearch:
+    SELENOPOLIS_BOOK_STORAGE = 'Krokotopia/KT_Selenopolis/Interiors/KT_Z05I08_Storage_A_Int'
+    SELENOPOLIS_BOOK_MARKET = 'Krokotopia/KT_Selenopolis/KT_Z05_Market'
+    SELENOPOLIS_BOOK_EXIT = XYZ(7553.401, -9213.249, -365.059)
+    PROMPT_ALIGN_MAX_STEPS = 40
+
     def __init__(self, quester, client):
         self.quester = quester
         self.client = client
@@ -86,6 +92,61 @@ class CollectSearch:
         goal = await self.snapshot()
         return (goal is not None and goal.key == self.goal.key and goal.total == self.goal.total
                 and (goal.total is None or goal.current < goal.total))
+
+    async def leave_selenopolis_book_storage(self):
+        """This collect stage takes place outside the storage, in the market."""
+        key = (self.zone, self.quest_id, self.goal.key, self.goal.total, self.goal.current)
+        previous = getattr(self.client, '_selenopolis_book_exit', None)
+        if isinstance(previous, dict) and previous.get('key') == key:
+            if time.monotonic() < previous['retry_at']:
+                return False
+        state = None
+        try:
+            async with asyncio.timeout(30):
+                async with automation_owner(self.client, 'selenopolis-books-exit'):
+                    if (not await self.active() or not await self.same_goal()
+                            or not await is_free(self.client)
+                            or getattr(self.client, 'refilling_potions', False)
+                            or getattr(self.client, 'quest_recovery_owner', None)):
+                        return False
+                    state = {'key': key, 'retry_at': time.monotonic() + 30}
+                    self.client._selenopolis_book_exit = state
+                    logger.info('Client {}: 魔法书在 Marketplace of Ideas 收集，先前往仓库出口切区。',
+                                self.client.title)
+                    await self.client.teleport(self.SELENOPOLIS_BOOK_EXIT)
+                stable_reads = 0
+                for _ in range(150):
+                    if (not self.client.questing_status
+                            or getattr(self.client, 'refilling_potions', False)
+                            or getattr(self.client, 'quest_recovery_owner', None)):
+                        return False
+                    if await self.client.is_loading():
+                        stable_reads = 0
+                    else:
+                        zone = await self.client.zone_name()
+                        if zone not in (self.SELENOPOLIS_BOOK_STORAGE, self.SELENOPOLIS_BOOK_MARKET):
+                            logger.warning('Client {}: 魔法书出口到达非预期区域 {}，本轮停止采集。',
+                                           self.client.title, zone)
+                            return False
+                        if (not await is_free(self.client)
+                                or self.quest_id is not None and await self.read_quest_id() != self.quest_id
+                                or not await self.same_goal()):
+                            return False
+                        stable_reads = stable_reads + 1 if zone == self.SELENOPOLIS_BOOK_MARKET else 0
+                        if stable_reads >= 3:
+                            self.zone = zone
+                            self.client._selenopolis_book_exit = None
+                            logger.info('Client {}: 已确认进入市场，继续魔法书采集。', self.client.title)
+                            return True
+                    await asyncio.sleep(.2)
+                raise TimeoutError('仓库出口区域切换未确认')
+        except Exception as exc:
+            logger.warning('Client {}: 魔法书仓库出口切区未完成，本轮不搜索室内分区：{}',
+                           self.client.title, exc)
+            return False
+        finally:
+            if state is not None and getattr(self.client, '_selenopolis_book_exit', None) is state:
+                state['retry_at'] = time.monotonic() + 30
 
     async def loaded_entities(self):
         # Do not equate completion of teleport() with completion of scene loading.
@@ -183,6 +244,34 @@ class CollectSearch:
             watcher.cancel()
             await gather_owned(movement, watcher, return_exceptions=True)
 
+    async def align_collect_prompt(self, candidate):
+        """Turn only beside a confirmed entity, never interact with another prompt."""
+        async with automation_owner(self.client, 'collect-prompt-align'):
+            for step in range(self.PROMPT_ALIGN_MAX_STEPS + 1):
+                if (not await self.active() or not await self.same_goal()
+                        or not await is_free(self.client)
+                        or getattr(self.client, 'refilling_potions', False)
+                        or getattr(self.client, 'quest_recovery_owner', None)):
+                    return False
+                try:
+                    if not (calc_Distance(await self.client.body.position(), candidate.xyz) < 750
+                            and calc_Distance(await candidate.entity.location(), candidate.xyz) <= 100):
+                        return False
+                except Exception:
+                    return False
+                if await self.prompt_ready(candidate):
+                    return True
+                if step == self.PROMPT_ALIGN_MAX_STEPS:
+                    break
+                if step == 0:
+                    logger.debug('Client {}: 已到达采集实体，但交互框不匹配，按 A 转向寻找 {}。',
+                                 self.client.title, self.goal.target)
+                await self.client.send_key(Keycode.A, .1)
+                await asyncio.sleep(.1)
+        logger.debug('Client {}: 转向后仍未确认 {} 交互，跳过此候选，不按 X。',
+                     self.client.title, self.goal.target)
+        return False
+
     async def collect(self, candidate):
         if not await self.active() or not await self.same_goal():
             return False
@@ -207,6 +296,9 @@ class CollectSearch:
             if not await self.active():
                 return False
             await asyncio.sleep(.25)
+        else:
+            if not await self.align_collect_prompt(candidate):
+                return False
         before = await self.snapshot()
         before_text = self.last_text
         if before is None or before.key != self.goal.key:
@@ -285,6 +377,11 @@ class CollectSearch:
         self.catalog = installed_catalog(self.client)
         if self.catalog is not None:
             self.names = await self.catalog.get()
+        if (self.zone == self.SELENOPOLIS_BOOK_STORAGE and self.goal.total == 3
+                and normalize_name(self.goal.location) == normalize_name('Marketplace of Ideas')
+                and self.names.aliases(self.goal.target).intersection(self.names.aliases('魔法书'))):
+            if not await self.leave_selenopolis_book_storage():
+                return False
         key = (self.zone, self.quest_id, self.goal.key, self.goal.total)
         rotating_key = (key, self.goal.current)
         rotating_goal = self.goal.target.strip() == '旋转旋转'

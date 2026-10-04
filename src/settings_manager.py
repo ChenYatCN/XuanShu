@@ -56,6 +56,7 @@ DEFAULT_SETTINGS = {
     "kill_minions_first": False,
     "automatic_team_based_combat": False,
     "discard_duplicate_cards": True,
+    "fusion_result_side": "right",
     # [client]
     "client_resizing": True,
     # [launcher]
@@ -63,6 +64,9 @@ DEFAULT_SETTINGS = {
     "private_server_accounts": {},
     # Only contacts the official game patch service when explicitly enabled.
     "verify_patch_files": False,
+    # None preserves the existing install until the user explicitly applies a choice.
+    "game_language": None,
+    "game_language_patch": "Locale_en-US-root.wad.d",
 }
 
 RESTART_REQUIRED_KEYS = {"locale"}

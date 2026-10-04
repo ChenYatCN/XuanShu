@@ -69,6 +69,7 @@ async def log_mainline_progress(client):
     try:
         await _log_mainline_progress(client)
     except Exception as exc:
+        client._xuanshu_mainline_id = None
         logger.debug('{} 主线进度日志暂不可用：{}', client.title, exc)
 
 
@@ -76,9 +77,11 @@ async def _log_mainline_progress(client):
     try:
         quest_id = await client.quest_id()
     except Exception as exc:
+        client._xuanshu_mainline_id = None
         logger.debug('{} 主线 Quest ID 暂不可读：{}', client.title, exc)
         return
     if not isinstance(quest_id, int) or quest_id <= 0:
+        client._xuanshu_mainline_id = None
         return
 
     lock = getattr(client, '_xuanshu_mainline_log_lock', None)
@@ -122,10 +125,16 @@ async def _log_mainline_progress(client):
 
         if row:
             world, total = _world_total(row, rows)
+            client._xuanshu_mainline_progress = f'{client.title} · {world} 主线 {row["number"]}/{total}'
             display_title = next(iter(row.get('chinese', ())), '') or title or row['english']
             logger.info('{} 当前主线：{} 第 {}/{} 个 | {}',
                         client.title, world, row['number'], total, display_title)
+            client._xuanshu_mainline_id = quest_id
+            client._xuanshu_mainline_unmatched_id = None
         else:
+            # Retain the last confirmed UI value and retry unresolved identities.
+            # Log once while retrying so temporary read failures stay quiet.
             display_title = title or f'Quest ID: {quest_id}'
-            logger.info('{} 当前主线：未匹配 | {}', client.title, display_title)
-        client._xuanshu_mainline_id = quest_id
+            if getattr(client, '_xuanshu_mainline_unmatched_id', None) != quest_id:
+                logger.info('{} 当前主线：未匹配 | {}', client.title, display_title)
+                client._xuanshu_mainline_unmatched_id = quest_id

@@ -24,6 +24,8 @@ class QuestPartyBattleSyncTests(unittest.IsolatedAsyncioTestCase):
         )
         self.quester = SimpleNamespace(
             in_battle=AsyncMock(return_value=True),
+            is_loading=AsyncMock(return_value=False),
+            zone_name=AsyncMock(return_value='Dungeon/RoomA'),
             body=SimpleNamespace(position=AsyncMock(return_value=0)),
         )
         self.same_area = AsyncMock(return_value=True)

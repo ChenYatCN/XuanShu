@@ -67,6 +67,10 @@ nanavator_locations = [
     "candy corn farm",
     "gobblerton",
 ]
+tamed_demox_locations = [
+    "outsiders camp", "graveholm", "mortal plain", "howling lands",
+    "black lagoon", "scholomance",
+]
 
 
 def get_ui_tree_text(file_path):
@@ -297,57 +301,123 @@ async def go_to_new_world(p, destinationWorld, open_window: bool = True):
                             currentPage = pageCount.split("/", 1)[0]
 
 
-async def new_portals_cycle(client: Client, location: str):
+async def new_portals_cycle(client: Client, location: str, *, before_input=None):
     if not location:
         raise ValueError(
             "Cannot select a portal without a recognized quest destination"
         )
-    option_window = await client.root_window.get_windows_with_name("optionWindow")
-    assert len(option_window) == 1, str(option_window)
-    for child in await option_window[0].children():
-        if await child.name() == "pageCount":
-            pageCount = await child.maybe_text()
-            pageCount = pageCount[8:-9]
-            currentPage = pageCount.split("/", 1)[0]
-            maxPage = pageCount.split("/", 1)[1]
-            break
+    async def ready():
+        if (getattr(client, 'questing_status', True) is False
+                or getattr(client, 'refilling_potions', False) is True
+                or await client.is_loading() or await client.in_battle()):
+            raise RuntimeError('客户端已停止、补药、加载或进入战斗')
+        if before_input is not None and not await before_input():
+            raise RuntimeError('任务或客户端状态已改变，停止目的地选择')
+        button = await get_spiral_teleport_button(client)
+        if button is None:
+            raise RuntimeError('传送菜单已关闭')
+        container = await button.parent()
+        panels = [p for p in await container.get_windows_with_name('optionWindow')
+                  if await p.is_visible()]
+        if len(panels) != 1:
+            raise RuntimeError('无法唯一确定当前传送菜单')
+        children = {await c.name(): c for c in await panels[0].children() if await c.is_visible()}
+        page = plain_text(await read_control_text(children['pageCount']))
+        match = re.fullmatch(r'(\d+)\s*/\s*(\d+)', page)
+        if not match or not 1 <= int(match[1]) <= int(match[2]):
+            raise RuntimeError('目的地页码不可读')
+        return button, children, (int(match[1]), int(match[2]))
 
-    spiralGateName = location
+    async def turn(direction, old_page):
+        _, children, page = await ready()
+        if page != old_page:
+            raise RuntimeError('点击前目的地页面发生变化')
+        arrow = children.get(direction)
+        if arrow is None or await arrow.is_control_grayed():
+            raise RuntimeError('目的地翻页按钮不可用')
+        # Click once, then wait for actual page advancement, not a fixed delay.
+        await ready()
+        async with client.mouse_handler:
+            await client.mouse_handler.click_window(arrow)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            _, _, current = await ready()
+            if current != old_page:
+                step = 1 if direction == 'rightButton' else -1
+                if current != ((old_page[0] - 1 + step) % old_page[1] + 1, old_page[1]):
+                    raise RuntimeError('目的地页面未按预期推进')
+                return
+            await asyncio.sleep(.1)
+        raise TimeoutError('目的地翻页未确认，不重复盲点')
 
-    isChildFound = False
-
-    for _ in range(int(maxPage)):
-        for child in await option_window[0].children():
-            if await child.name() in ["opt0", "opt1", "opt2", "opt3"]:
-                name = await read_control_checkbox_text(child)
-                if resolve_portal_destination(name, [spiralGateName]) == spiralGateName:
-                    async with client.mouse_handler:
-                        await client.mouse_handler.click_window_with_name(
-                            await child.name()
-                        )
-                        await asyncio.sleep(0.4)
-                        await client.mouse_handler.click_window_with_name(
-                            "teleportButton"
-                        )
-                        await client.wait_for_zone_change()
-
-                    isChildFound = True
+    try:
+        async with asyncio.timeout(25):
+            _, _, first = await ready()
+            # Visit every page, so duplicate matching labels cannot be guessed.
+            for _ in range(first[0] - 1):
+                _, _, page = await ready()
+                await turn('leftButton', page)
+            matches = []
+            for index in range(1, first[1] + 1):
+                _, children, page = await ready()
+                if page != (index, first[1]):
+                    raise RuntimeError('目的地页码已改变')
+                for name in ('opt0', 'opt1', 'opt2', 'opt3'):
+                    option = children.get(name)
+                    if option is None:
+                        continue
+                    label = await read_control_checkbox_text(option)
+                    if resolve_portal_destination(label, [location], exact=True) == location:
+                        matches.append((index, name, plain_text(label)))
+                if index < first[1]:
+                    await turn('rightButton', page)
+            if len(matches) != 1:
+                raise RuntimeError('目的地不存在或匹配不唯一')
+            target_page, option_name, label = matches[0]
+            for _ in range(first[1] - target_page):
+                _, _, page = await ready()
+                await turn('leftButton', page)
+            _, children, page = await ready()
+            option = children.get(option_name)
+            if (page != (target_page, first[1]) or option is None
+                    or await option.is_control_grayed()
+                    or plain_text(await read_control_checkbox_text(option)) != label):
+                raise RuntimeError('目的地不可选或标签发生变化')
+            _, children, page = await ready()
+            option = children.get(option_name)
+            if (page != (target_page, first[1]) or option is None
+                    or await option.is_control_grayed()
+                    or plain_text(await read_control_checkbox_text(option)) != label):
+                raise RuntimeError('选择前目的地发生变化')
+            async with client.mouse_handler:
+                await client.mouse_handler.click_window(option)
+            deadline = time.monotonic() + 3
+            while True:
+                button, children, page = await ready()
+                option = children.get(option_name)
+                if (page != (target_page, first[1]) or option is None
+                        or plain_text(await read_control_checkbox_text(option)) != label):
+                    raise RuntimeError('选中期间目的地发生变化')
+                if await option.maybe_checked() and not await button.is_control_grayed():
                     break
-
-        # correct world was not found - check the next page
-        if not isChildFound:
-            previousPage = currentPage
-            loopCount = 0
-            while currentPage == previousPage and loopCount < 30:
-                loopCount += 1
-                async with client.mouse_handler:
-                    await client.mouse_handler.click_window_with_name("rightButton")
-                # ensure that wizwalker didn't misclick and that we actually changed pages
-                for child in await option_window[0].children():
-                    if await child.name() == "pageCount":
-                        pageCount = await child.maybe_text()
-                        pageCount = pageCount[8:-9]
-                        currentPage = pageCount.split("/", 1)[0]
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('未确认目的地选中或 TRAVEL 可用')
+                await asyncio.sleep(.1)
+            origin = await client.zone_name()
+            button, children, page = await ready()
+            option = children.get(option_name)
+            if (page != (target_page, first[1]) or option is None
+                    or not await option.is_visible() or not await option.maybe_checked()
+                    or await button.is_control_grayed()
+                    or plain_text(await read_control_checkbox_text(option)) != label):
+                raise RuntimeError('出发前选中状态已改变')
+            async with client.mouse_handler:
+                await client.mouse_handler.click_window(button)
+            await client.wait_for_zone_change(origin)
+            return True
+    except Exception as exc:
+        logger.warning('{} 目的地 {} 未完成选择/传送：{}', client.title, location, exc)
+        return False
 
 
 async def generate_tfc(client: Client):
@@ -420,8 +490,8 @@ async def exit_menus(c: Client, paths):
                     await c.mouse_handler.click_window(click_button)
 
 
-async def close_npc_quest_menu(client: Client) -> bool:
-    """Dismiss the NPC quest list using its own Exit button."""
+async def close_npc_quest_menu(client: Client, *, select_mainlines=True) -> bool:
+    """Let automation select indexed mainlines before dismissing a sidequest list."""
     if await client.is_loading() or await client.in_battle():
         return False
     if not await is_visible_by_path(client, cancel_multiple_quest_menu_path):
@@ -429,6 +499,13 @@ async def close_npc_quest_menu(client: Client) -> bool:
     # An active quest dialogue takes priority over the list behind it.
     if await is_visible_by_path(client, advance_dialog_path):
         return False
+    if select_mainlines and (getattr(client, 'questing_status', False) is True
+                             or getattr(client, 'auto_dialogue_running', False) is True):
+        # Runtime import keeps utils/questing module initialization acyclic.
+        from src.questing import Quester
+        if await Quester(client, [client], None)._select_npc_mainline_menu(client):
+            return True
+    client.npc_mainline_menu_selection = None
     await safe_click_window(client, cancel_multiple_quest_menu_path)
     await asyncio.sleep(0.2)
     return True
@@ -690,13 +767,49 @@ async def _party_area_token(client: Client):
 
 
 async def clients_share_live_area(first: Client, second: Client) -> bool:
-    """Use reciprocal entity evidence, or a validated red-button return proof."""
+    """Retain verified presence only while both clients' area tokens stay valid."""
     try:
+        await observe_party_area(first)
+        await observe_party_area(second)
         if await first.is_loading() or await second.is_loading():
             return False
         zone = await first.zone_name()
         if not zone or zone != await second.zone_name():
             return False
+
+        async def remember_area():
+            try:
+                tokens = (await _party_area_token(first), await _party_area_token(second))
+                if (await first.is_loading() or await second.is_loading()
+                        or await first.zone_name() != zone or await second.zone_name() != zone):
+                    return False
+                if any(type(token[1]) is not int or token[1] <= 0
+                       or type(token[2]) is not int or token[2] <= 0 for token in tokens):
+                    return True  # Unreadable addresses/IDs cannot preserve proof.
+                for observer, peer, pair in ((first, second, tokens),
+                                             (second, first, tokens[::-1])):
+                    proofs = getattr(observer, '_party_area_peers', None)
+                    if not isinstance(proofs, dict):
+                        proofs = observer._party_area_peers = {}
+                    proofs[id(peer)] = pair
+            except Exception:
+                pass  # Live presence remains proof even when it cannot be retained.
+            return True
+
+        proofs = getattr(first, '_party_area_peers', {})
+        retained = proofs.get(id(second)) if isinstance(proofs, dict) else None
+        if retained is not None:
+            try:
+                if (retained == (await _party_area_token(first), await _party_area_token(second))
+                        and not await first.is_loading() and not await second.is_loading()
+                        and await first.zone_name() == zone and await second.zone_name() == zone):
+                    return True
+            except Exception:
+                pass
+            proofs.pop(id(second), None)
+            peer_proofs = getattr(second, '_party_area_peers', {})
+            if isinstance(peer_proofs, dict):
+                peer_proofs.pop(id(first), None)
         for observer, peer in ((first, second), (second, first)):
             try:
                 peer_id = await peer.client_object.global_id_full()
@@ -706,11 +819,51 @@ async def clients_share_live_area(first: Client, second: Client) -> bool:
             for entity in entities:
                 try:
                     if await entity.global_id_full() == peer_id:
-                        return (not await first.is_loading() and not await second.is_loading()
+                        if (not await first.is_loading() and not await second.is_loading()
                                 and await first.zone_name() == zone
-                                and await second.zone_name() == zone)
+                                and await second.zone_name() == zone):
+                            return await remember_area()
+                        return False
                 except wizwalker.WizWalkerMemoryError:
                     continue
+        # Combat participants need not appear in the rendered entity tree.
+        # Use existing duel readers, not zone-name equality or cached members.
+        try:
+            if await first.in_battle() and await second.in_battle():
+                duel_id = await first.duel.duel_id_full()
+                if (type(duel_id) is int and duel_id > 0
+                        and duel_id == await second.duel.duel_id_full()):
+                    player_ids = (await first.client_object.global_id_full(),
+                                  await second.client_object.global_id_full())
+                    if (all(type(value) is int and value > 0 for value in player_ids)
+                            and player_ids[0] != player_ids[1]):
+                        shared_roster = True
+                        for observer in (first, second):
+                            owners = set()
+                            for participant in await observer.duel.participant_list():
+                                try:
+                                    if await participant.is_player():
+                                        owner = await participant.owner_id_full()
+                                        if type(owner) is int and owner > 0:
+                                            owners.add(owner)
+                                except wizwalker.WizWalkerMemoryError:
+                                    continue
+                            if not set(player_ids).issubset(owners):
+                                shared_roster = False
+                                break
+                        if shared_roster:
+                            if (not await first.is_loading() and not await second.is_loading()
+                                    and await first.zone_name() == zone
+                                    and await second.zone_name() == zone
+                                    and await first.in_battle() and await second.in_battle()
+                                    and await first.duel.duel_id_full() == duel_id
+                                    and await second.duel.duel_id_full() == duel_id):
+                                return await remember_area()
+                            return False
+        except Exception as exc:
+            # An unreadable combat roster must not discard independent return
+            # evidence. Cancellation still propagates to the caller.
+            logger.debug(f'同场战斗证据暂时不可读，继续检查返回证据：{exc}')
         for returned, peer in ((first, second), (second, first)):
             context = getattr(returned, 'potion_return_context', None)
             if not isinstance(context, dict) or not context.get('returned_snapshot'):
@@ -847,10 +1000,30 @@ async def return_to_dungeon_after_potions(client: Client, original_zone: str) ->
     return False
 
 
+async def _potion_refill_gold_allowed(client: Client) -> bool:
+    try:
+        gold = await client.stats.current_gold()
+        if not isinstance(gold, int) or gold < 0:
+            raise ValueError('金币读数无效')
+    except Exception:
+        if getattr(client, '_potion_gold_block', None) != 'unreadable':
+            logger.warning('自动补药水：{} 金币暂不可读，取消本次补购。', client.title)
+        client._potion_gold_block = 'unreadable'
+        return False
+    if gold < 50000:
+        if getattr(client, '_potion_gold_block', None) != 'low':
+            logger.info('自动补药水：{} 金币 {} 少于 50000，取消本次补购。', client.title, gold)
+        client._potion_gold_block = 'low'
+        return False
+    client._potion_gold_block = None
+    return True
+
+
 async def buy_potions(client: Client, recall: bool = True, original_zone=None, dungeon_return: bool = False):
     try:
         await asyncio.sleep(1.0)
         max_potions = await client.stats.potion_max()
+        purchase_cancelled = False
         # buy potions and close the potions menu, and recall if needed
         for i in range(2):
             original_potion_count = await client.stats.potion_charge()
@@ -861,6 +1034,9 @@ async def buy_potions(client: Client, recall: bool = True, original_zone=None, d
                 current_potion_count == original_potion_count
                 and current_potion_count < max_potions
             ):
+                if not await _potion_refill_gold_allowed(client):
+                    purchase_cancelled = True
+                    break
                 while not await is_visible_by_path(client, potion_shop_base_path):
                     await client.send_key(Keycode.X, 0.1)
                 await asyncio.sleep(0.5)
@@ -868,16 +1044,24 @@ async def buy_potions(client: Client, recall: bool = True, original_zone=None, d
                 await click_window_by_path(client, potion_fill_all_path, True)
                 await asyncio.sleep(0.25)
 
-                await click_window_by_path(client, potion_buy_path, True)
+                if await _potion_refill_gold_allowed(client):
+                    await click_window_by_path(client, potion_buy_path, True)
+                else:
+                    purchase_cancelled = True
                 await asyncio.sleep(0.25)
 
                 while await is_visible_by_path(client, potion_shop_base_path):
                     await click_window_by_path(client, potion_exit_path, True)
                     await asyncio.sleep(0.125)
 
+                if purchase_cancelled:
+                    break
+
                 current_potion_count = await client.stats.potion_charge()
                 await asyncio.sleep(0.5)
 
+            if purchase_cancelled:
+                break
             if i == 0:
                 if await client.stats.potion_charge() >= 1.0:
                     original_potion_count = await client.stats.potion_charge()
@@ -886,13 +1070,18 @@ async def buy_potions(client: Client, recall: bool = True, original_zone=None, d
                     await click_window_by_path(client, potion_usage_path, True)
                     await asyncio.sleep(3.0)
 
+        if purchase_cancelled:
+            while await is_visible_by_path(client, potion_shop_base_path):
+                await click_window_by_path(client, potion_exit_path, True)
+                await asyncio.sleep(0.125)
+
     except asyncio.CancelledError:
         raise
     except Exception:
         logger.exception(f"Client {client.title} - 购买药水失败")
         return False
 
-    # Return only after the recall key has caused a confirmed loading/zone change.
+    # Return only after a confirmed recall or validated dungeon-button return.
     if recall:
         current_zone = await client.zone_name()
 
@@ -905,19 +1094,24 @@ async def buy_potions(client: Client, recall: bool = True, original_zone=None, d
 
         # Only recall if we actually left the original zone.
         if original_zone != current_zone:
-            if dungeon_return:
-                logger.info(f"自动任务：{client.title} 药水补充完成，准备返回地牢。")
-                returned = await return_to_dungeon_after_potions(client, original_zone)
-                if not returned:
-                    client.questing_status = False
-                return returned
-            returned = await recall_to_teleport_mark(client, expected_zone=original_zone)
-            if not returned and getattr(client, '_xuanshu_dungeon_closed', False):
-                logger.warning(f'自动任务：{client.title} 标记指向的地下城已关闭，只尝试一次有效地牢返回入口。')
-                returned = await return_to_dungeon_after_potions(client, original_zone)
-                if not returned:
-                    client.questing_status = False
-            return returned
+            # Probe before the mark, then once more if the mark did not return.
+            # Resume availability is live evidence even for an unclassified map.
+            for attempt in range(2):
+                use_dungeon_return = dungeon_return or getattr(client, '_xuanshu_dungeon_closed', False)
+                if (not use_dungeon_return and hasattr(client, 'root_window')
+                        and not await client.is_loading() and not await client.in_battle()):
+                    button = await get_window_from_path(client.root_window, dungeon_recall_path)
+                    use_dungeon_return = bool(button and await button.is_visible()
+                                              and not await button.is_control_grayed())
+                if use_dungeon_return:
+                    logger.info(f"自动任务：{client.title} 药水补充完成，优先通过地牢返回按钮回传。")
+                    returned = await return_to_dungeon_after_potions(client, original_zone)
+                    if not returned:
+                        client.questing_status = False
+                    return returned
+                if attempt == 0 and await recall_to_teleport_mark(client, expected_zone=original_zone):
+                    return True
+            return False
 
     return True
 
@@ -1007,6 +1201,8 @@ async def auto_potions_force_buy(
 ):
     # If we have any missing potions, get potions
     if await client.stats.potion_charge() < await client.stats.potion_max():
+        if not await _potion_refill_gold_allowed(client):
+            return True  # A skipped purchase is not a travel/instance-return failure.
         original_zone = await client.zone_name()
         dungeon_return = potion_dungeon_return_required(client, original_zone)
         from src.questing import claim_quest_recovery, release_quest_recovery
@@ -1355,6 +1551,8 @@ async def refill_potions(
     dungeon_return: bool = False,
 ):
     if await client.stats.reference_level() >= 6:
+        if not await _potion_refill_gold_allowed(client):
+            return True
         starting_zone = await client.zone_name()
         if original_zone is None:
             original_zone = starting_zone
@@ -1469,22 +1667,38 @@ async def post_keys(client, keys):
         user32_dance.PostMessageW(client.window_handle, 0x101, ord(key), 0)
 
 
+def refresh_character_memory(client: Client):
+    """Drop addresses owned by the previous character/world, not live hooks."""
+    client._world_view_window = None
+    client._character_registry_addr = None
+    client._quest_client_manager_addr = None
+
+
 async def logout_and_in(client: Client):
     # Improved version of Major's logging out and in function
-    await client.send_key(Keycode.ESC, 0.1)
-    await wait_for_window_by_path(client, quit_button_path, True)
-    await asyncio.sleep(0.25)
-    if await is_visible_by_path(client, dungeon_warning_path):
-        await client.send_key(Keycode.ENTER, 0.1)
-    await wait_for_window_by_path(client, play_button_path, True)
-    # TODO: Find a better solution to waiting for load in screen to end
-    await asyncio.sleep(4)
-    if await client.is_loading():
-        await wait_for_loading_screen(client)
+    intentional = getattr(client, '_intentional_character_switch', False)
+    client._intentional_character_switch = True
+    try:
+        await client.send_key(Keycode.ESC, 0.1)
+        await wait_for_window_by_path(client, quit_button_path, True)
+        await asyncio.sleep(0.25)
+        if await is_visible_by_path(client, dungeon_warning_path):
+            await client.send_key(Keycode.ENTER, 0.1)
+        await wait_for_window_by_path(client, play_button_path, True)
+        refresh_character_memory(client)
+        # TODO: Find a better solution to waiting for load in screen to end
+        await asyncio.sleep(4)
+        if await client.is_loading():
+            await wait_for_loading_screen(client)
+    finally:
+        refresh_character_memory(client)
+        client._intentional_character_switch = intentional
 
 
 async def is_free(client: Client):
     # Returns True if not in combat, loading screen, or in dialogue.
+    if getattr(client, '_character_selection_active', False) is True:
+        return False
     return not any(
         [
             await client.is_loading(),

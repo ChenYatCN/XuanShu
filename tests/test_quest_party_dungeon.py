@@ -9,6 +9,10 @@ class QuestPartyDungeonTests(unittest.IsolatedAsyncioTestCase):
         quester_client = AsyncMock()
         hitter = AsyncMock()
         quester_client.quest_party_hitters = [hitter]
+        quester_client.refilling_potions = False
+        hitter.refilling_potions = False
+        quester_client.potion_dungeon_returned = None
+        hitter.potion_dungeon_returned = None
         quester_client.is_loading.return_value = False
         hitter.is_loading.return_value = False
         hitter.quest_party_confirmed_dungeon_transition = None

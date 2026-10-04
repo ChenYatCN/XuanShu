@@ -10,11 +10,35 @@ from PyQt6.QtWidgets import (
     QLineEdit, QListWidget, QListWidgetItem, QWidget, QMenu, QProgressBar,
     QComboBox, QPlainTextEdit, QFormLayout,
 )
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt, QSize, QTimer
 
 from src import bot_registry
 from src.gui.commands import GUICommand, GUICommandType
-from src.gui.helpers import launcher_small_icon_btn, spinning_loader_widget
+from src.gui.helpers import add_dialog_titlebar, launcher_small_icon_btn, spinning_loader_widget
+
+
+def show_license_popup(ctx, theme):
+    """The existing five-second startup declaration, with main-menu chrome."""
+    dialog = QDialog(ctx.window)
+    dialog.setWindowTitle(ctx.tl('license_title'))
+    dialog.setModal(True)
+    dialog.setMinimumWidth(350)
+    layout = QVBoxLayout(dialog)
+    add_dialog_titlebar(dialog, layout, theme, ctx.titlebar_svg_icon)
+    label = QLabel(ctx.tl('license_text'))
+    label.setTextFormat(Qt.TextFormat.PlainText)
+    label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    label.setWordWrap(True)
+    label.setStyleSheet('font-weight: bold;')
+    layout.addWidget(label)
+    ok = QPushButton(ctx.tl('ok'))
+    ok.setStyleSheet(ctx.btn_style)
+    ok.clicked.connect(dialog.close)
+    layout.addWidget(ok, alignment=Qt.AlignmentFlag.AlignCenter)
+    dialog.adjustSize()
+    dialog.show()
+    QTimer.singleShot(5000, dialog.close)
+    return dialog
 
 
 def show_update_dialog(parent, send_queue, version, notes_url, tool_name='XuanShu', tl=None):
@@ -325,7 +349,7 @@ def show_bot_publish_popup(ctx, bot_text):
     return dialog
 
 
-def show_ui_tree_popup(parent, send_queue, ui_tree_content, text_dict, copy_btn_factory, tl=None):
+def show_ui_tree_popup(parent, send_queue, ui_tree_content, text_dict, copy_btn_factory, tl=None, ctx=None):
     ui_tree_list = ui_tree_content.splitlines()
 
     path_dict = {}
@@ -354,6 +378,8 @@ def show_ui_tree_popup(parent, send_queue, ui_tree_content, text_dict, copy_btn_
     dialog.setWindowTitle(tl('ui_tree') if tl else "UI Tree")
     dialog.resize(700, 500)
     layout = QVBoxLayout(dialog)
+    if ctx is not None:
+        add_dialog_titlebar(dialog, layout, ctx.settings.get_theme(), ctx.titlebar_svg_icon)
 
     layout.addWidget(QLabel(tl('ui_tree_hint') if tl else "Click the path needed to copy it to clipboard."))
 
@@ -446,11 +472,13 @@ def show_ui_tree_popup(parent, send_queue, ui_tree_content, text_dict, copy_btn_
     dialog.show()
 
 
-def show_entity_list_popup(parent, send_queue, widget_tags, tabs, dev_tab, camera_tab, tl=None):
+def show_entity_list_popup(parent, send_queue, widget_tags, tabs, dev_tab, camera_tab, tl=None, ctx=None):
     dialog = QDialog(parent)
     dialog.setWindowTitle(tl('entity_list') if tl else "Entity List")
     dialog.resize(450, 400)
     layout = QVBoxLayout(dialog)
+    if ctx is not None:
+        add_dialog_titlebar(dialog, layout, ctx.settings.get_theme(), ctx.titlebar_svg_icon)
 
     layout.addWidget(QLabel(tl('entity_list_hint') if tl else "Click to copy. Right-click for TP / Camera options."))
 

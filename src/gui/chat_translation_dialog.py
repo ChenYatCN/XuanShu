@@ -76,6 +76,9 @@ class ChatTranslationDialog(RoundedIbaoDialog):
         self.send_button.clicked.connect(self._send_once)
         send_row.addWidget(self.send_button)
         layout.addLayout(send_row)
+        self.allow_busy_chat = QCheckBox('允许自动任务 / 战斗中聊天')
+        self.allow_busy_chat.setToolTip('放行自动任务、脚本和战斗；仍检查 Loading、NPC 对话、空草稿及输入回读。')
+        layout.addWidget(self.allow_busy_chat)
         self.send_status = QLabel('尚未发送；仅支持英文测试，不翻译、不自动回复。')
         self.send_status.setWordWrap(True)
         layout.addWidget(self.send_status)
@@ -230,6 +233,7 @@ class ChatTranslationDialog(RoundedIbaoDialog):
         self.send_status.setText('请求已提交；尚未证明游戏已发送。')
         self.send_queue.put(GUICommand(GUICommandType.SendNearbyChatTest, {
             'title': title, 'text': self.send_text.text(),
+            'allow_busy': self.allow_busy_chat.isChecked(),
         }))
 
     def _update_send_button(self, *_):

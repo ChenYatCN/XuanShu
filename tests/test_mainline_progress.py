@@ -8,6 +8,18 @@ from wizwalker import XYZ
 
 
 class MainlineTests(unittest.IsolatedAsyncioTestCase):
+    def test_live_novus_monkey_business_identity_is_unique(self):
+        rows = quest_rows()
+        for quest_id, code, title in (
+                (147211413153260846, '', ''),
+                (0, 'QuestTitle_17D615', 'Monkey Business'),
+                (0, 'QuestTitle_17D615', '猴子生意')):
+            row = match_quest(rows, quest_id, code, title)
+            self.assertEqual((row['world'], row['number']), ('novus', 56))
+        self.assertIsNone(match_quest(rows, 0, '', 'Monkey Business'))
+        for code in ('QuestTitle_155196', 'QuestTitle_AB2D5'):
+            self.assertIsNone(match_quest(rows, 0, code, 'Monkey Business'))
+
     def test_id_key_bilingual_notes_and_ambiguity(self):
         row = dict(world='celestia(100)', number=27, english='Example Quest (returns to previous)',
                    keys=['Quest_123'], quest_ids=[42], chinese=[], aliases=['Old Example'])
@@ -62,6 +74,7 @@ class MainlineTests(unittest.IsolatedAsyncioTestCase):
         with patch('src.mainline_progress.logger') as log:
             await log_mainline_progress(p1)
             await log_mainline_progress(p2)
+            self.assertEqual(p1._xuanshu_mainline_progress, 'p1 · 天国 主线 27/100')
             await log_mainline_progress(p1)
             self.assertEqual(log.info.call_count, 2)
             self.assertEqual(log.info.call_args_list[0].args,
@@ -73,6 +86,40 @@ class MainlineTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(log.info.call_count, 3)
             self.assertEqual(log.info.call_args_list[-1].args,
                              ('{} 当前主线：未匹配 | {}', 'p2', 'Quest ID: 43'))
+
+    async def test_confirmed_ui_progress_survives_gaps_until_new_identity_resolves(self):
+        quest = SimpleNamespace(mainline=AsyncMock(return_value=True),
+                                name_lang_key=AsyncMock(return_value='QuestTitle_00000149'))
+        manager = SimpleNamespace(quest_data=AsyncMock(return_value={42: quest}))
+        client = SimpleNamespace(title='p1', quest_id=AsyncMock(return_value=42),
+            quest_manager=AsyncMock(return_value=manager),
+            cache_handler=SimpleNamespace(get_langcode_name=AsyncMock(return_value='')))
+        with patch('src.mainline_progress.logger') as log:
+            await log_mainline_progress(client)
+            confirmed = client._xuanshu_mainline_progress
+            self.assertEqual(confirmed, 'p1 · 天国 主线 27/100')
+            client.quest_id.side_effect = RuntimeError('loading')
+            await log_mainline_progress(client)
+            self.assertEqual(client._xuanshu_mainline_progress, confirmed)
+            client.quest_id.side_effect = None
+            client.quest_id.return_value = 0
+            await log_mainline_progress(client)
+            self.assertEqual(client._xuanshu_mainline_progress, confirmed)
+            client.quest_id.return_value = 43
+            await log_mainline_progress(client)
+            await log_mainline_progress(client)
+            self.assertEqual(client._xuanshu_mainline_progress, confirmed)
+            self.assertEqual(log.info.call_count, 2)  # confirmed + one unresolved log
+            # The same ID becomes readable later; it must still be retried.
+            quest.name_lang_key.return_value = 'QuestTitle_17D615'
+            manager.quest_data.return_value = {43: quest}
+            await log_mainline_progress(client)
+            self.assertEqual(client._xuanshu_mainline_progress, 'p1 · novus 主线 56/88')
+            client.quest_id.return_value = 44
+            quest.mainline.return_value = False
+            manager.quest_data.return_value = {44: quest}
+            await log_mainline_progress(client)
+            self.assertEqual(client._xuanshu_mainline_progress, 'p1 · novus 主线 56/88')
 
     async def test_language_key_still_matches_when_title_lookup_fails(self):
         quest = SimpleNamespace(

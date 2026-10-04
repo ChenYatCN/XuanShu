@@ -1,5 +1,9 @@
 # ACTIVE: nearby manual chat send test
 
+## Latest busy-chat opt-out completed
+
+Window01a0f39a-432f-7f22-81a6-8d255fc2a48e. User asks disable interception to chat while fighting. Added checkbox 允许自动任务 / 战斗中聊天(defaultFalse) with allow_busy command option. When enabled, skip selected-client automatic-task and battle admission flags; Loading/NPCdialogue/offline/UItype/emptydraft/readback/GID+zone guards remain. Input ownership remains serialized: wait up to3sec for current combat click, then claim through send only (verification wait outside ownership); timeout means no send, no queued retry. Freecam still blocked, with separate reason; listener disabled also has separate reason. Backend script check now scopes to selected title and unfinished bot task, no unrelated-client global bot interception. Only changed chat_translation.py,dialog,XuanShu.py and2chat test files this turn; preserve all pet/DuelingTent work.30chat tests pass incloverridebattle/autoquest oneEnter,guardpreservation,ownershipwait,UIpayload. In-memory syntaxcheck andscopeddiffcheck pass. No build/liveinput/computer-use. Ready to deliver checkboxusage; user still owns packaging.
+
 ## COMPLETED source implementation (supersedes pending steps below)
 
 Current window 01a0f39a-432f-7f22-81a6-8d255fc2a48e. Added default p1 / hello sender selector and one-shot Nearby button, operation/status evidence logs; auto-reply UI disabled and application configure always False. Source files src/chat_translation.py, src/gui/chat_translation_dialog.py, src/gui/commands.py, XuanShu.py; tests new test_chat_manual_send.py and expanded test_chat_translation_ui.py. No computer-use, no agents, no build, no live game inputs.

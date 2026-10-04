@@ -93,9 +93,11 @@ class CollectWorkflowTests(unittest.IsolatedAsyncioTestCase):
     async def test_leyden_jar_does_not_interact_with_crystal_popup(self):
         self.leyden_jar_scene()
         self.target_title = 'Sea Foam Crystal'
+        self.client.send_key.side_effect = None
         with patch('src.collecting.collision_tp', AsyncMock()):
             self.assertFalse(await self.engine.run())
-        self.client.send_key.assert_not_awaited()
+        self.assertEqual(self.client.send_key.await_count, self.engine.PROMPT_ALIGN_MAX_STEPS)
+        self.assertTrue(all(call.args[0] == Keycode.A for call in self.client.send_key.await_args_list))
 
     async def test_installed_catalog_is_used_for_entity_and_popup(self):
         self.text = None
@@ -133,7 +135,8 @@ class CollectWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.client.get_base_entity_list.return_value = [self.entity()]
         with patch('src.collecting.collision_tp', AsyncMock()):
             self.assertFalse(await self.engine.run())
-        self.client.send_key.assert_not_awaited()
+        self.assertEqual(self.client.send_key.await_count, self.engine.PROMPT_ALIGN_MAX_STEPS)
+        self.assertTrue(all(call.args[0] == Keycode.A for call in self.client.send_key.await_args_list))
 
     async def test_delayed_entity_load_after_region_move(self):
         entity = self.entity()
@@ -294,3 +297,250 @@ class CollectWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.client.get_base_entity_list.side_effect = changed
         self.assertFalse(await CollectSearch(self.quester, self.client).run())
         self.client.teleport.assert_not_awaited()
+
+    async def test_wrong_popup_turns_a_until_matching_collect_then_x(self):
+        self.target_title = 'LEGEND OF SUTEKH'
+        self.client.get_base_entity_list.return_value = [self.entity()]
+        async def keypress(key, duration):
+            if key == Keycode.A:
+                if self.client.send_key.await_count == 2:
+                    self.target_title = 'Sea Foam Crystal'
+            elif key == Keycode.X:
+                self.assertEqual(self.target_title, 'Sea Foam Crystal')
+                self.count += 1
+        self.client.send_key.side_effect = keypress
+        with patch('src.collecting.collision_tp', AsyncMock()) as movement:
+            self.assertTrue(await self.engine.run())
+        movement.assert_awaited_once()
+        self.assertEqual([call.args[0] for call in self.client.send_key.await_args_list],
+                         [Keycode.A, Keycode.A, Keycode.X])
+        self.assertEqual(self.count, 1)
+        self.other.send_key.assert_not_awaited()
+
+    async def test_alignment_stops_on_task_or_client_state_change(self):
+        self.target_title = 'Wrong NPC'
+        self.engine.zone = 'Celestia/Beach'
+        self.engine.quest_id = 42
+        self.engine.goal = await self.engine.snapshot()
+        self.engine.state = SearchState(('alignment',))
+        candidate = Candidate(self.entity(), XYZ(10, 0, 0), '', 'Sea Foam Crystal', 'CL-SeaFoam-Crystal', 255, 100)
+        for mode in ('stop', 'zone', 'quest', 'goal', 'loading', 'battle', 'dialogue', 'potions', 'recovery', 'entity_move'):
+            with self.subTest(mode=mode):
+                self.client.questing_status = True
+                self.client.zone_name.return_value = 'Celestia/Beach'
+                self.client.quest_id.return_value = 42
+                self.client.is_loading.return_value = False
+                self.client.in_battle.return_value = False
+                self.client.refilling_potions = False
+                self.client.quest_recovery_owner = None
+                self.text = None
+                candidate.entity.location.return_value = XYZ(10, 0, 0)
+                free = AsyncMock(return_value=True)
+                async def changed(key, duration):
+                    self.assertEqual(key, Keycode.A)
+                    if mode == 'stop':
+                        self.client.questing_status = False
+                    elif mode == 'zone':
+                        self.client.zone_name.return_value = 'Another/Area'
+                    elif mode == 'quest':
+                        self.client.quest_id.return_value = 99
+                    elif mode == 'goal':
+                        self.text = '拜访 校长 地点：广场'
+                    elif mode == 'loading':
+                        self.client.is_loading.return_value = True
+                    elif mode == 'battle':
+                        self.client.in_battle.return_value = True
+                    elif mode == 'dialogue':
+                        free.return_value = False
+                    elif mode == 'potions':
+                        self.client.refilling_potions = True
+                    elif mode == 'recovery':
+                        self.client.quest_recovery_owner = 'other-recovery'
+                    else:
+                        candidate.entity.location.return_value = XYZ(1000, 0, 0)
+                self.client.send_key.reset_mock()
+                self.client.send_key.side_effect = changed
+                with patch('src.collecting.is_free', free):
+                    self.assertFalse(await self.engine.align_collect_prompt(candidate))
+                self.client.send_key.assert_awaited_once_with(Keycode.A, .1)
+
+    async def test_alignment_requires_actual_arrival_and_live_entity(self):
+        self.target_title = 'Wrong NPC'
+        self.engine.zone = 'Celestia/Beach'
+        self.engine.quest_id = 42
+        self.engine.goal = await self.engine.snapshot()
+        self.engine.state = SearchState(('alignment',))
+        candidate = Candidate(self.entity(), XYZ(1000, 0, 0), '', 'Sea Foam Crystal', 'CL-SeaFoam-Crystal', 255, 100)
+        self.assertFalse(await self.engine.align_collect_prompt(candidate))
+        self.client.send_key.assert_not_awaited()
+        candidate.xyz = XYZ(10, 0, 0)
+        self.position = XYZ(float('nan'), 0, 0)
+        self.assertFalse(await self.engine.align_collect_prompt(candidate))
+        self.client.send_key.assert_not_awaited()
+        self.position = XYZ(0, 0, 0)
+        candidate.entity.location.side_effect = ValueError('expired')
+        self.assertFalse(await self.engine.align_collect_prompt(candidate))
+        self.client.send_key.assert_not_awaited()
+
+    async def test_alignment_cancellation_releases_ownership_without_x(self):
+        from src.automation_ownership import get_client_automation_ownership
+        self.target_title = 'Dungeon Entrance'
+        self.client.get_base_entity_list.return_value = [self.entity()]
+        self.client.send_key.side_effect = asyncio.CancelledError()
+        with patch('src.collecting.collision_tp', AsyncMock()):
+            with self.assertRaises(asyncio.CancelledError):
+                await self.engine.run()
+        self.client.send_key.assert_awaited_once_with(Keycode.A, .1)
+        self.assertFalse(get_client_automation_ownership(self.client).locked)
+
+    def selenopolis_books(self):
+        self.client._selenopolis_book_exit = None
+        self.text = '寻找 魔法书 地点：Marketplace of Ideas (0 of 3)'
+        self.client.zone_name.return_value = CollectSearch.SELENOPOLIS_BOOK_STORAGE
+        self.target_title = '魔法书'
+        self.position = XYZ(1000, 2000, 0)
+        entity = self.entity()
+        entity.location.return_value = XYZ(1010, 2000, 0)
+        entity.object_template.return_value.object_name.return_value = 'KT-Books'
+        self.client.cache_handler.get_langcode_name.return_value = '魔法书'
+        self.client.get_base_entity_list.return_value = [entity]
+        async def exit_storage(point):
+            self.assertEqual((point.x, point.y, point.z), (7553.401, -9213.249, -365.059))
+            self.client.zone_name.return_value = CollectSearch.SELENOPOLIS_BOOK_MARKET
+        self.client.teleport.side_effect = exit_storage
+        async def pickup(key, duration):
+            self.assertEqual(key, Keycode.X)
+            self.count += 1
+            self.text = f'寻找 魔法书 地点：Marketplace of Ideas ({self.count} of 3)'
+        self.client.send_key.side_effect = pickup
+
+    async def test_book_exit_switches_to_market_before_entity_scan_and_resets_route(self):
+        self.selenopolis_books()
+        old = SearchState((CollectSearch.SELENOPOLIS_BOOK_STORAGE, 42,
+                           parse_collect_goal(self.text).key, 3), route=[XYZ(-9999, 0, 0)], cursor=8)
+        self.client._deimos_collect_search = old
+        entities = self.client.get_base_entity_list.return_value
+        async def market_entities():
+            self.assertEqual(self.engine.zone, CollectSearch.SELENOPOLIS_BOOK_MARKET)
+            self.assertEqual(await self.client.zone_name(), self.engine.zone)
+            return entities
+        self.client.get_base_entity_list.side_effect = market_entities
+        self.assertTrue(await self.engine.run())
+        self.client.teleport.assert_awaited_once_with(CollectSearch.SELENOPOLIS_BOOK_EXIT)
+        self.assertIsNot(self.engine.state, old)
+        self.assertEqual(self.engine.state.key[0], CollectSearch.SELENOPOLIS_BOOK_MARKET)
+        self.quester.get_zone_chunks.assert_not_awaited()
+        self.assertIsNone(self.client._selenopolis_book_exit)
+        self.client.send_key.assert_awaited_once_with(Keycode.X, .1)
+
+    async def test_book_exit_then_wrong_sigil_turns_to_book_and_finishes_two_of_three(self):
+        self.selenopolis_books()
+        self.count = 2
+        self.text = '寻找 魔法书 地点：Marketplace of Ideas (2 of 3)'
+        self.target_title = 'LEGEND OF SUTEKH'
+        async def interact(key, duration):
+            if key == Keycode.A:
+                self.target_title = '魔法书'
+            else:
+                self.assertEqual(key, Keycode.X)
+                self.assertEqual(self.target_title, '魔法书')
+                self.count += 1
+                self.text = '寻找 魔法书 地点：Marketplace of Ideas (3 of 3)'
+        self.client.send_key.side_effect = interact
+        with patch('src.collecting.collision_tp', AsyncMock()) as movement:
+            self.assertTrue(await self.engine.run())
+        self.client.teleport.assert_awaited_once_with(CollectSearch.SELENOPOLIS_BOOK_EXIT)
+        movement.assert_awaited_once()
+        self.assertEqual([call.args[0] for call in self.client.send_key.await_args_list],
+                         [Keycode.A, Keycode.X])
+        self.assertEqual(self.count, 3)
+        self.other.send_key.assert_not_awaited()
+
+    async def test_book_exit_waits_for_loading_and_stable_destination(self):
+        self.selenopolis_books()
+        loading_reads = [0]
+        async def loading():
+            if self.client.teleport.await_count:
+                loading_reads[0] += 1
+                self.client.get_base_entity_list.assert_not_awaited()
+                return loading_reads[0] < 3
+            return False
+        # Stop this special loading stub after the helper confirms the market;
+        # normal entity scan must not see any intermediate loading screen.
+        async def entities():
+            self.assertGreaterEqual(loading_reads[0], 5)
+            self.client.is_loading.side_effect = None
+            return self.client.get_base_entity_list.return_value
+        self.client.is_loading.side_effect = loading
+        self.client.get_base_entity_list.side_effect = entities
+        self.engine.scan = AsyncMock(return_value=True)
+        self.assertTrue(await self.engine.run())
+        self.client.teleport.assert_awaited_once()
+
+    async def test_book_exit_is_limited_to_supplied_stage(self):
+        for variant in ('zone', 'target', 'location', 'total', 'completed'):
+            with self.subTest(variant=variant):
+                self.selenopolis_books()
+                if variant == 'zone':
+                    self.client.zone_name.return_value = CollectSearch.SELENOPOLIS_BOOK_MARKET
+                elif variant == 'target':
+                    self.text = self.text.replace('魔法书', '另一个物品')
+                elif variant == 'location':
+                    self.text = self.text.replace('Marketplace of Ideas', 'Another Market')
+                elif variant == 'total':
+                    self.text = self.text.replace('of 3', 'of 4')
+                else:
+                    self.text = self.text.replace('(0 of 3)', '(3 of 3)')
+                engine = CollectSearch(self.quester, self.client)
+                engine.scan = AsyncMock(return_value=True)
+                engine.leave_selenopolis_book_storage = AsyncMock(return_value=True)
+                await engine.run()
+                engine.leave_selenopolis_book_storage.assert_not_awaited()
+
+    async def test_book_exit_timeout_never_scans_storage_and_has_retry_cooldown(self):
+        self.selenopolis_books()
+        self.client.teleport.side_effect = None
+        self.assertFalse(await self.engine.run())
+        self.client.get_base_entity_list.assert_not_awaited()
+        self.quester.get_zone_chunks.assert_not_awaited()
+        self.client.send_key.assert_not_awaited()
+        self.client.teleport.assert_awaited_once_with(CollectSearch.SELENOPOLIS_BOOK_EXIT)
+        self.assertFalse(await CollectSearch(self.quester, self.client).run())
+        self.client.teleport.assert_awaited_once()
+
+    async def test_book_exit_state_changes_abort_without_scan_or_pickup(self):
+        for mode in ('unexpected_zone', 'stop', 'quest', 'goal'):
+            with self.subTest(mode=mode):
+                self.selenopolis_books()
+                self.client.questing_status = True
+                self.client.quest_id.return_value = 42
+                self.client.teleport.reset_mock()
+                async def changed(*_):
+                    self.client.zone_name.return_value = CollectSearch.SELENOPOLIS_BOOK_MARKET
+                    if mode == 'unexpected_zone':
+                        self.client.zone_name.return_value = 'Krokotopia/AnotherZone'
+                    elif mode == 'stop':
+                        self.client.questing_status = False
+                    elif mode == 'quest':
+                        self.client.quest_id.return_value = 99
+                    else:
+                        self.text = '拜访 校长 地点：广场'
+                self.client.teleport.side_effect = changed
+                self.assertFalse(await CollectSearch(self.quester, self.client).run())
+                self.client.get_base_entity_list.assert_not_awaited()
+                self.client.send_key.assert_not_awaited()
+                self.client.teleport.assert_awaited_once()
+
+    async def test_book_exit_respects_existing_recovery_and_cancellation(self):
+        from src.automation_ownership import get_client_automation_ownership
+        self.selenopolis_books()
+        self.client.quest_recovery_owner = 'other-recovery'
+        self.assertFalse(await self.engine.run())
+        self.client.teleport.assert_not_awaited()
+        self.client.get_base_entity_list.assert_not_awaited()
+        self.client.quest_recovery_owner = None
+        self.client.teleport.side_effect = asyncio.CancelledError()
+        with self.assertRaises(asyncio.CancelledError):
+            await CollectSearch(self.quester, self.client).run()
+        self.assertFalse(get_client_automation_ownership(self.client).locked)
+        self.client.send_key.assert_not_awaited()

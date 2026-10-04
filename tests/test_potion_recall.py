@@ -10,8 +10,10 @@ from src import utils
 
 class PotionRecallTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        self.original_buy = utils.buy_potions
         self.client = SimpleNamespace(title='p1', zone_name=AsyncMock(return_value='Original'),
             stats=SimpleNamespace(reference_level=AsyncMock(return_value=50),
+                                  current_gold=AsyncMock(return_value=100000),
                                   potion_charge=AsyncMock(return_value=0), potion_max=AsyncMock(return_value=4)))
         stack = ExitStack()
         self.addCleanup(stack.close)
@@ -38,6 +40,51 @@ class PotionRecallTests(unittest.IsolatedAsyncioTestCase):
         self.mocks['buy_potions'].assert_awaited_once_with(
             self.client, True, original_zone='Original', dungeon_return=False)
         self.assertFalse(self.client.refilling_potions)
+
+    async def test_gold_below_fifty_thousand_cancels_both_departure_paths(self):
+        self.client.stats.current_gold.return_value = 49999
+        self.client.questing_status = True
+        self.assertTrue(await utils.refill_potions(self.client))
+        self.assertTrue(await utils.auto_potions_force_buy(self.client))
+        self.mocks['ensure_teleport_mark'].assert_not_awaited()
+        self.mocks['navigate_to_ravenwood'].assert_not_awaited()
+        self.mocks['buy_potions'].assert_not_awaited()
+        self.assertTrue(self.client.questing_status)
+        self.assertFalse(getattr(self.client, 'refilling_potions', False))
+
+    async def test_exactly_fifty_thousand_allows_refill(self):
+        self.client.stats.current_gold.return_value = 50000
+        self.assertTrue(await utils.refill_potions(self.client))
+        self.mocks['buy_potions'].assert_awaited_once()
+
+    async def test_low_gold_log_once_and_recovery_rearms_log(self):
+        self.client.stats.current_gold.return_value = 49999
+        with patch.object(utils, 'logger') as log:
+            for _ in range(3):
+                await utils.refill_potions(self.client)
+            log.info.assert_called_once()
+            self.client.stats.current_gold.return_value = 50000
+            self.assertTrue(await utils._potion_refill_gold_allowed(self.client))
+            self.client.stats.current_gold.return_value = 100
+            await utils.refill_potions(self.client)
+            self.assertEqual(log.info.call_count, 2)
+
+    async def test_gold_drop_at_shop_cancels_purchase_but_still_returns(self):
+        shop_open = [True]
+        self.client.stats.current_gold.side_effect = [50000, 49999]
+        async def click(client, path, *args):
+            if path == utils.potion_exit_path:
+                shop_open[0] = False
+        with patch.object(utils.asyncio, 'sleep', new=AsyncMock()), \
+             patch.object(utils, 'is_visible_by_path', new=AsyncMock(side_effect=lambda c, p: shop_open[0])), \
+             patch.object(utils, 'click_window_by_path', new=AsyncMock(side_effect=click)) as clicks, \
+             patch.object(utils, 'recall_to_teleport_mark', new=AsyncMock(return_value=True)) as recall:
+            # The fixture mocks the caller's purchase function; test its real implementation.
+            with patch.object(utils, 'buy_potions', self.original_buy):
+                self.assertTrue(await utils.buy_potions(self.client, original_zone='Before'))
+        self.assertNotIn(utils.potion_buy_path, [call.args[1] for call in clicks.await_args_list])
+        self.assertIn(utils.potion_exit_path, [call.args[1] for call in clicks.await_args_list])
+        recall.assert_awaited_once_with(self.client, expected_zone='Before')
 
     async def test_failed_mark_prevents_both_departure_paths(self):
         self.mocks['ensure_teleport_mark'].return_value = False
@@ -165,18 +212,121 @@ class PotionRecallTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DungeonReturnTests(unittest.IsolatedAsyncioTestCase):
-    async def test_normal_map_uses_mark_even_with_stale_resume_button(self):
+    async def test_normal_map_without_resume_button_uses_mark(self):
         client = SimpleNamespace(title='p1', questing_status=True,
             zone_name=AsyncMock(return_value='WizardCity/WC_Hub'),
+            root_window=object(), is_loading=AsyncMock(return_value=False),
+            in_battle=AsyncMock(return_value=False),
             stats=SimpleNamespace(potion_max=AsyncMock(return_value=0),
                                   potion_charge=AsyncMock(return_value=0)))
         with patch.object(utils.asyncio, 'sleep', new=AsyncMock()), \
              patch.object(utils, 'is_visible_by_path', new=AsyncMock(return_value=True)), \
+             patch.object(utils, 'get_window_from_path', new=AsyncMock(return_value=None)), \
              patch.object(utils, 'return_to_dungeon_after_potions', new=AsyncMock()) as dungeon_return, \
              patch.object(utils, 'recall_to_teleport_mark', new=AsyncMock(return_value=True)) as mark_return:
             self.assertTrue(await utils.buy_potions(client, original_zone='World/Street'))
         dungeon_return.assert_not_awaited()
         mark_return.assert_awaited_once_with(client, expected_zone='World/Street')
+
+    async def test_unclassified_dungeon_prefers_available_red_button(self):
+        client = SimpleNamespace(title='p1', questing_status=True,
+            zone_name=AsyncMock(return_value='WizardCity/WC_Hub'),
+            root_window=object(), is_loading=AsyncMock(return_value=False),
+            in_battle=AsyncMock(return_value=False),
+            stats=SimpleNamespace(potion_max=AsyncMock(return_value=0),
+                                  potion_charge=AsyncMock(return_value=0)))
+        button = SimpleNamespace(is_visible=AsyncMock(return_value=True),
+                                 is_control_grayed=AsyncMock(return_value=False))
+        with patch.object(utils.asyncio, 'sleep', new=AsyncMock()), \
+             patch.object(utils, 'get_window_from_path', new=AsyncMock(return_value=button)) as lookup, \
+             patch.object(utils, 'return_to_dungeon_after_potions', new=AsyncMock(return_value=True)) as dungeon_return, \
+             patch.object(utils, 'recall_to_teleport_mark', new=AsyncMock()) as mark_return:
+            self.assertTrue(await utils.buy_potions(client, original_zone='Dungeon/Unknown'))
+        lookup.assert_awaited_once_with(client.root_window, utils.dungeon_recall_path)
+        dungeon_return.assert_awaited_once_with(client, 'Dungeon/Unknown')
+        mark_return.assert_not_awaited()
+
+    async def test_mark_no_response_rechecks_newly_available_red_button(self):
+        client = SimpleNamespace(title='p1', questing_status=True,
+            zone_name=AsyncMock(return_value='WizardCity/WC_Hub'),
+            root_window=object(), is_loading=AsyncMock(return_value=False),
+            in_battle=AsyncMock(return_value=False),
+            stats=SimpleNamespace(potion_max=AsyncMock(return_value=0),
+                                  potion_charge=AsyncMock(return_value=0)))
+        button = SimpleNamespace(is_visible=AsyncMock(return_value=True),
+                                 is_control_grayed=AsyncMock(return_value=False))
+        events = []
+
+        async def mark(*args, **kwargs):
+            events.append('mark')
+            return False
+
+        async def resume(*args):
+            events.append('red')
+            return True
+
+        with patch.object(utils.asyncio, 'sleep', new=AsyncMock()), \
+             patch.object(utils, 'get_window_from_path', new=AsyncMock(side_effect=[None, button])) as lookup, \
+             patch.object(utils, 'return_to_dungeon_after_potions', new=AsyncMock(side_effect=resume)) as dungeon_return, \
+             patch.object(utils, 'recall_to_teleport_mark', new=AsyncMock(side_effect=mark)) as mark_return:
+            self.assertTrue(await utils.buy_potions(client, original_zone='Dungeon/Unknown'))
+        self.assertEqual(events, ['mark', 'red'])
+        self.assertEqual(lookup.await_count, 2)
+        dungeon_return.assert_awaited_once_with(client, 'Dungeon/Unknown')
+        mark_return.assert_awaited_once()
+        self.assertFalse(getattr(client, '_xuanshu_dungeon_closed', False))
+
+    async def test_unavailable_red_button_preserves_mark_route(self):
+        for state in ('hidden', 'disabled', 'loading', 'battle'):
+            with self.subTest(state=state):
+                client = SimpleNamespace(title='p1', questing_status=True,
+                    zone_name=AsyncMock(return_value='WizardCity/WC_Hub'), root_window=object(),
+                    is_loading=AsyncMock(return_value=state == 'loading'),
+                    in_battle=AsyncMock(return_value=state == 'battle'),
+                    stats=SimpleNamespace(potion_max=AsyncMock(return_value=0),
+                                          potion_charge=AsyncMock(return_value=0)))
+                button = SimpleNamespace(is_visible=AsyncMock(return_value=state != 'hidden'),
+                                         is_control_grayed=AsyncMock(return_value=state == 'disabled'))
+                with patch.object(utils.asyncio, 'sleep', new=AsyncMock()), \
+                     patch.object(utils, 'get_window_from_path', new=AsyncMock(return_value=button)), \
+                     patch.object(utils, 'return_to_dungeon_after_potions', new=AsyncMock()) as dungeon_return, \
+                     patch.object(utils, 'recall_to_teleport_mark', new=AsyncMock(return_value=True)) as mark_return:
+                    self.assertTrue(await utils.buy_potions(client, original_zone='World/Street'))
+                dungeon_return.assert_not_awaited()
+                mark_return.assert_awaited_once()
+
+    async def test_red_button_verification_failure_stops_unclassified_client(self):
+        client = SimpleNamespace(title='p1', questing_status=True,
+            zone_name=AsyncMock(return_value='WizardCity/WC_Hub'),
+            root_window=object(), is_loading=AsyncMock(return_value=False),
+            in_battle=AsyncMock(return_value=False),
+            stats=SimpleNamespace(potion_max=AsyncMock(return_value=0),
+                                  potion_charge=AsyncMock(return_value=0)))
+        button = SimpleNamespace(is_visible=AsyncMock(return_value=True),
+                                 is_control_grayed=AsyncMock(return_value=False))
+        with patch.object(utils.asyncio, 'sleep', new=AsyncMock()), \
+             patch.object(utils, 'get_window_from_path', new=AsyncMock(return_value=button)), \
+             patch.object(utils, 'return_to_dungeon_after_potions', new=AsyncMock(return_value=False)) as dungeon_return, \
+             patch.object(utils, 'recall_to_teleport_mark', new=AsyncMock()) as mark_return:
+            self.assertFalse(await utils.buy_potions(client, original_zone='Dungeon/Unknown'))
+        dungeon_return.assert_awaited_once()
+        mark_return.assert_not_awaited()
+        self.assertFalse(client.questing_status)
+
+    async def test_failed_mark_without_resume_button_is_not_retried(self):
+        client = SimpleNamespace(title='p1', questing_status=True,
+            zone_name=AsyncMock(return_value='WizardCity/WC_Hub'),
+            root_window=object(), is_loading=AsyncMock(return_value=False),
+            in_battle=AsyncMock(return_value=False),
+            stats=SimpleNamespace(potion_max=AsyncMock(return_value=0),
+                                  potion_charge=AsyncMock(return_value=0)))
+        with patch.object(utils.asyncio, 'sleep', new=AsyncMock()), \
+             patch.object(utils, 'get_window_from_path', new=AsyncMock(return_value=None)), \
+             patch.object(utils, 'return_to_dungeon_after_potions', new=AsyncMock()) as dungeon_return, \
+             patch.object(utils, 'recall_to_teleport_mark', new=AsyncMock(return_value=False)) as mark_return:
+            self.assertFalse(await utils.buy_potions(client, original_zone='World/Street'))
+        dungeon_return.assert_not_awaited()
+        mark_return.assert_awaited_once()
 
     async def test_dungeon_return_failure_never_falls_back_to_mark_or_friend_tp(self):
         client = SimpleNamespace(title='p2', questing_status=True,

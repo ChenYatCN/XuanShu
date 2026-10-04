@@ -50,6 +50,7 @@ from src.config_combat import (
 from src.deimoslang import vm
 from src.drop_logger import logging_loop
 from src.fishing_groups import FishingGroups
+from src.game_language import GameLanguageError, apply_game_language
 from src.gui import GUIKeys
 from src.gui_inputs import param_input, trunc
 from src.ibao_runtime import IbaoGroups
@@ -58,6 +59,7 @@ from src.paths import (
     decline_quest_path,
     friend_is_busy_and_dungeon_reset_path,
     play_button_path,
+    potion_usage_path,
     spiral_door_teleport_path,
 )
 from src.quest_party import (
@@ -96,6 +98,7 @@ from src.utils import (
     override_wiz_install_using_handle,
     read_webpage,
     refill_potions,
+    refresh_character_memory,
     set_wizard_name_from_character_screen,
     teleport_to_friend_from_list,
     to_world,
@@ -260,6 +263,9 @@ automatic_team_based_combat = _json_settings.get(
 discard_duplicate_cards = _json_settings.get(
     "discard_duplicate_cards", discard_duplicate_cards
 )
+fusion_result_side = _json_settings.get("fusion_result_side", "right")
+if fusion_result_side not in ("left", "right"):
+    fusion_result_side = "right"
 
 
 async def _apply_account_window_config(client, handle, nickname):
@@ -528,7 +534,7 @@ async def xyz_sync(
     turn_after: bool = True,
     debug: bool = False,
 ):
-    # syncs client XYZ up with the one in foreground, doesn't work across zones or realms
+    # Manual coordinate copying does not confirm or switch zones/instances.
     if background_clients:
         if debug:
             logger.debug("XYZ Sync hotkey pressed, syncing client locations.")
@@ -537,21 +543,29 @@ async def xyz_sync(
         for client in background_clients:
             if client is source:
                 continue
-            if (getattr(source, 'refilling_potions', False)
-                    or getattr(client, 'refilling_potions', False)
-                    or getattr(source, 'quest_recovery_owner', None)
-                    or getattr(client, 'quest_recovery_owner', None)
-                    or not await clients_share_live_area(source, client)):
-                logger.warning(f'XYZ 同步：{client.title} 尚未确认与来源同副本或正在恢复，跳过。')
+            blocked = next((peer for peer in (source, client)
+                            if getattr(peer, 'refilling_potions', False)), None)
+            if blocked is not None:
+                logger.warning(f'XYZ 同步：{blocked.title} 正在补药，跳过同步到 {client.title}。')
+                continue
+            blocked = next((peer for peer in (source, client)
+                            if getattr(peer, 'quest_recovery_owner', None)), None)
+            if blocked is not None:
+                logger.warning(f'XYZ 同步：{blocked.title} 正在执行恢复流程 '
+                               f'{blocked.quest_recovery_owner}，跳过同步到 {client.title}。')
                 continue
             source_zone = await source.zone_name()
             xyz = await source.body.position()
             yaw = await source.body.yaw()
             # Reading the coordinates also awaits memory: reject a transition
-            # that started after the live-area check, before issuing any input.
+            # that started while reading the source, before issuing any input.
             if (await source.is_loading() or await client.is_loading()
                     or await source.zone_name() != source_zone
-                    or await client.zone_name() != source_zone):
+                    or getattr(source, 'refilling_potions', False)
+                    or getattr(client, 'refilling_potions', False)
+                    or getattr(source, 'quest_recovery_owner', None)
+                    or getattr(client, 'quest_recovery_owner', None)):
+                logger.warning(f'XYZ 同步：读取坐标期间客户端状态变化，跳过 {client.title}。')
                 continue
             await client.teleport(xyz, yaw=yaw)
             safe_clients.append(client)
@@ -730,10 +744,17 @@ async def main():
     await asyncio.sleep(0)
     listener.start()
 
-    async def x_press_hotkey():
+    async def x_press_hotkey(passthrough: bool = False):
+        operated_client = foreground_client
+        if passthrough:
+            # The physical X already goes to this HWND, including WM_CHAR for
+            # chat. Do not replay it there or use the stale foreground fallback.
+            operated_client = next((c for c in walker.clients if c.is_foreground), None)
+            if operated_client is None:
+                return
         await mass_key_press(
-            foreground_client,
-            [c for c in walker.clients if c is not foreground_client],
+            None if passthrough else operated_client,
+            [c for c in walker.clients if c is not operated_client],
             "X Press",
             Keycode.X,
             duration=0.1,
@@ -1146,7 +1167,7 @@ async def main():
                 quester.quest_party_probe_pending = True
         return party
 
-    async def stop_questing_on_client_loss(title: str):
+    async def stop_questing_on_client_loss(title: str, reason="已断开或关闭"):
         """A lost client ends auto questing; reconnecting must not resume it."""
         global questing_status, questing_task
         nonlocal paused_task_names
@@ -1186,7 +1207,7 @@ async def main():
                 ("QuestPartyRuntimeStatus", ""),
             )
         )
-        logger.info("客户端 {} 已断开或关闭，自动任务已退出；需要手动重新启动。", title)
+        logger.info("客户端 {} {}，自动任务已退出；需要手动重新启动。", title, reason)
 
     async def toggle_questing_hotkey():
         global sigil_task
@@ -1293,11 +1314,11 @@ async def main():
         global auto_pet_status
 
         if not freecam_status:
-            auto_pet_status ^= True
+            auto_pet_status = not (auto_pet_task is not None and not auto_pet_task.done())
             for p in walker.clients:
-                p.auto_pet_status ^= True
+                p.auto_pet_status = auto_pet_status
 
-            if auto_pet_task is not None and not auto_pet_task.cancelled():
+            if not auto_pet_status:
                 logger.debug(f"Disabling auto pet.")
                 gui_send_queue.put(
                     xuanshu_gui.GUICommand(
@@ -1503,6 +1524,9 @@ async def main():
                     raise ValueError("不支持的分组快捷键")
         finally:
             for c, value in old_flags:
+                if action == "toggle_auto_pet" and getattr(c, flag, None) is False:
+                    # Energy exhaustion must not restore a previously enabled flag.
+                    continue
                 if value is None:
                     delattr(c, flag)
                 else:
@@ -1558,6 +1582,27 @@ async def main():
 
     _FREECAM_ACTIONS = {"toggle_freecam", "freecam_tp"}
 
+    def _is_passthrough_x(action_id, binding):
+        return (action_id == "x_press" and binding is not None
+                and binding.get("key") == "X" and not binding.get("modifiers"))
+
+    async def passthrough_x_loop():
+        # GetAsyncKeyState observes X without registering/consuming the key.
+        # Background send_key uses HWND messages, not physical keyboard input.
+        key_state = ctypes.windll.user32.GetAsyncKeyState
+        was_down = bool(key_state(Keycode.X.value) & 0x8000)
+        while True:
+            await asyncio.sleep(0.01)
+            down = bool(key_state(Keycode.X.value) & 0x8000)
+            pressed = down and not was_down
+            was_down = down
+            if (pressed and hotkey_status
+                    and _is_passthrough_x("x_press", _active_bindings.get("x_press"))):
+                try:
+                    await x_press_hotkey(passthrough=True)
+                except Exception as exc:
+                    logger.debug("后台 X 联动失败：{}", exc)
+
     async def enable_hotkeys(exclude_freecam: bool = False, debug: bool = False):
         global hotkey_status
         if not hotkey_status:
@@ -1570,6 +1615,9 @@ async def main():
                 if action_id == "kill_tool":
                     continue  # kill_tool registered separately, always bound
                 if exclude_freecam and action_id in _FREECAM_ACTIONS:
+                    continue
+                if _is_passthrough_x(action_id, binding):
+                    _active_bindings[action_id] = binding
                     continue
                 mods = ModifierKeys.NOREPEAT
                 for m in binding.get("modifiers", []):
@@ -1596,6 +1644,9 @@ async def main():
                 if exclude_kill and action_id == "kill_tool":
                     continue
                 if exclude_freecam and action_id in _FREECAM_ACTIONS:
+                    continue
+                if _is_passthrough_x(action_id, binding):
+                    del _active_bindings[action_id]
                     continue
                 mods = ModifierKeys.NOREPEAT
                 for m in binding.get("modifiers", []):
@@ -1665,6 +1716,10 @@ async def main():
             # 	await asyncio.sleep(0.1)
             while True:
                 # print(await client.game_client.is_freecam())
+                if getattr(client, '_character_selection_active', False) is True:
+                    client.in_combat = False
+                    await asyncio.sleep(0.25)
+                    continue
                 if not freecam_status:
                     client.in_combat = await client.in_battle()
                 await asyncio.sleep(0.1)
@@ -1711,10 +1766,15 @@ async def main():
             while True:
                 try:
                     await asyncio.sleep(1)
+                    if getattr(client, '_character_selection_active', False) is True:
+                        continue
                     if not freecam_status:
-                        while not await client.in_battle():
+                        while (getattr(client, '_character_selection_active', False) is not True
+                               and not await client.in_battle()):
                             await asyncio.sleep(1)
 
+                        if getattr(client, '_character_selection_active', False) is True:
+                            continue
                         if await client.in_battle():
                             logger.debug(
                                 f"Client {client.title} in combat, handling combat."
@@ -1765,6 +1825,12 @@ async def main():
             client.auto_dialogue_running = True
             try:
                 while True:
+                    if getattr(client, '_character_selection_active', False) is True:
+                        await asyncio.sleep(0.25)
+                        continue
+                    if Quester.overgrown_estate_paused(client, manual_only=True):
+                        await asyncio.sleep(0.25)
+                        continue
                     if not freecam_status:
                         recovery_owner = getattr(client, "quest_recovery_owner", None)
                         if (
@@ -1774,14 +1840,23 @@ async def main():
                             await asyncio.sleep(0.1)
                             continue
                         if recovery_owner in (
+                            "outback_story",
                             "mainline_finder",
                             "private_wing",
                             "gobblerton",
                             "sacred_yarn",
                             "tamarin_house",
+                            "panopticon_book",
                             "bumbles_mind",
+                            "callisto",
+                            "power_core",
+                            "final_act",
+                            "no_blood_hideout",
+                            "overgrown_estate",
                             "lemuria_navigation",
                             "dueling_tent",
+                            "easton_house",
+                            "darkmoor_cantrip",
                             "bumbles_pet",
                         ):
                             # Do not send dialogue keys while another recovery
@@ -1795,8 +1870,13 @@ async def main():
                         ):
                             client.mainline_finder_offer_guard = False
                         if await close_npc_quest_menu(client):
+                            await asyncio.sleep(.1)
                             continue
-                        if getattr(client, 'questing_status', False):
+                        if await Quester(client, [client], None)._handle_darkmoor_clue_confirmation(client):
+                            await asyncio.sleep(.1)
+                            continue
+                        if (getattr(client, 'questing_status', False)
+                                or isinstance(getattr(client, 'npc_mainline_menu_selection', None), dict)):
                             await Quester(client, [client], None)._advance_npc_dialogue(client)
                             await asyncio.sleep(.1)
                             continue
@@ -1827,7 +1907,7 @@ async def main():
                                 await asyncio.sleep(0.25)
                             else:
                                 await client.send_key(key=Keycode.SPACEBAR)
-                                await asyncio.sleep(0.25)
+                                await asyncio.sleep(0.3)
                             continue
                     await asyncio.sleep(0.05)
             finally:
@@ -2140,6 +2220,11 @@ async def main():
                         or not quester.questing_status
                     ):
                         return
+                    if Quester.overgrown_estate_paused(quester):
+                        update_party_status(hitter, quester, '庄园：等待玩家完成副本'
+                                            if Quester.overgrown_estate_paused(quester, manual_only=True)
+                                            else '庄园：正在处理对话/搜索线索')
+                        continue
                     if getattr(hitter, "refilling_potions", False):
                         await observe_party_area(quester)
                         update_party_status(hitter, quester, "正在补药，暂缓区域同步")
@@ -2150,9 +2235,24 @@ async def main():
                             hitter, quester, "任务客户端正在补药，暂缓区域同步"
                         )
                         continue
-                    if getattr(quester, 'quest_recovery_owner', None) == 'dueling_tent':
+                    if (getattr(quester, 'quest_party_target_sync_active', False)
+                            or getattr(hitter, 'quest_party_target_sync_active', False)):
+                        update_party_status(hitter, quester, '正在同步到任务目标')
+                        continue
+                    if getattr(quester, 'quest_recovery_owner', None) in ('dueling_tent', 'easton_house', 'darkmoor_cantrip'):
                         hitter.quest_party_battle_sync_state = None
-                        update_party_status(hitter, quester, '等待 DuelingTent 专属切区恢复')
+                        label = ('Darkmoor Cantrip' if quester.quest_recovery_owner == 'darkmoor_cantrip'
+                                 else 'EastonHouse' if quester.quest_recovery_owner == 'easton_house' else 'DuelingTent')
+                        if (quester.quest_recovery_owner in ('easton_house', 'darkmoor_cantrip')
+                                and getattr(quester, 'in_solo_zone', False)
+                                and getattr(quester, 'quest_party_quest_worker_zone', None)
+                                == getattr(quester, 'quest_party_observed_zone', None)
+                                and not getattr(quester, 'quest_party_probe_pending', False)):
+                            update_party_status(hitter, quester, '单人区域，任务端独立执行')
+                        else:
+                            update_party_status(hitter, quester, '等待 Darkmoor Cantrip 施法步骤'
+                                                if quester.quest_recovery_owner == 'darkmoor_cantrip'
+                                                else f'等待 {label} 专属切区恢复')
                         continue
                     if getattr(quester, 'bumbles_pet_pending', False) is True:
                         hitter.quest_party_battle_sync_state = None
@@ -2305,6 +2405,9 @@ async def main():
                             hitter, quester, "等待 PrivateWing 区域切换"
                         )
                         continue
+                    if recovery_owner == "no_blood_hideout":
+                        update_party_status(hitter, quester, "正在进入藏身处")
+                        continue
                     if recovery_owner == "gobblerton":
                         update_party_status(hitter, quester, "等待 Gobblerton 区域切换")
                         continue
@@ -2323,8 +2426,24 @@ async def main():
                             hitter, quester, "等待 TamarinHouse 两段 TP"
                         )
                         continue
+                    if recovery_owner == "panopticon_book":
+                        update_party_status(hitter, quester, "等待 Panopticon 书本交互与 NPC 对话")
+                        continue
                     if recovery_owner == "bumbles_mind":
                         update_party_status(hitter, quester, "等待 BumblesMind 任务端战斗恢复")
+                        continue
+                    if recovery_owner == "callisto":
+                        update_party_status(hitter, quester, "等待 Callisto 任务端触发战斗或罐子交互")
+                        continue
+                    if recovery_owner == "power_core":
+                        update_party_status(hitter, quester, "等待 PowerCore 出口区域切换")
+                        continue
+                    if recovery_owner == "final_act":
+                        update_party_status(hitter, quester, "等待最终一幕任务端触发对话")
+                        continue
+                    if getattr(quester, 'outback_story_pending', False) is True:
+                        hitter.quest_party_battle_sync_state = None
+                        update_party_status(hitter, quester, '等待 Outback 剧情对话与主线更新')
                         continue
                     dungeon_state = getattr(quester, "quest_dungeon_recovery", None)
                     dungeon_battle_pending = quester_in_battle and (
@@ -2341,7 +2460,11 @@ async def main():
                     if (
                         await hitter.is_loading()
                         or await hitter.in_battle()
-                        or hitter.entity_detect_combat_status
+                        or (
+                            hitter.entity_detect_combat_status
+                            and hitter.just_entered_combat is not None
+                            and time.time() < hitter.just_entered_combat + 7
+                        )
                         or getattr(hitter, "quest_party_battle_rescue_active", False)
                     ):
                         update_party_status(hitter, quester, "等待战斗或加载")
@@ -2477,7 +2600,7 @@ async def main():
                             # A coordinate cannot move a client between zones.
                             hitter.quest_party_battle_sync_state = "failed"
                             logger.info(
-                                "自动任务：打手坐标同步无效，继续使用任务传送。"
+                                "自动任务：打手不在任务端区域，重新检查副本；仅在未确认同副本时尝试好友传送。"
                             )
                         elif await hitter_near_quester(quester_zone):
                             hitter.quest_party_battle_sync_state = "success"
@@ -2507,7 +2630,7 @@ async def main():
                                 release_quest_recovery(hitter, "party_battle_sync")
                             if hitter.quest_party_battle_sync_state == "failed":
                                 logger.info(
-                                    "自动任务：打手坐标同步无效，继续使用任务传送。"
+                                    "自动任务：战斗坐标同步未完成；同副本内保持坐标跟随，不回退到好友传送。"
                                 )
                             if hitter.quest_party_battle_sync_state == "success":
                                 continue
@@ -2535,7 +2658,7 @@ async def main():
                             not in getattr(quester, "quest_party_realm_unsynced", set())
                         ) or await hitter_is_in_quester_area()
 
-                    if same_live_area and not battle_sync_failed:
+                    if same_live_area:
                         if id(hitter) in getattr(
                             quester, "quest_party_realm_unsynced", set()
                         ):
@@ -2678,7 +2801,7 @@ async def main():
                         if battle_sync_failed and not await hitter_near_quester(
                             quester_zone
                         ):
-                            raise RuntimeError("任务传送后打手仍未靠近任务客户端战斗")
+                            raise RuntimeError("好友传送后打手仍未靠近任务客户端战斗")
                         if (
                             id(hitter)
                             in getattr(quester, "quest_party_realm_unsynced", set())
@@ -2893,10 +3016,13 @@ async def main():
                 global questing_task
 
                 await asyncio.sleep(0.1)
-                if not freecam_status:
+                if (not freecam_status
+                        and getattr(client, '_character_selection_active', False) is not True):
                     observation_started = time.monotonic()
                     client_xyz = await client.body.position()
                     await asyncio.sleep(120)
+                    if getattr(client, '_character_selection_active', False) is True:
+                        continue
                     client_xyz_2 = await client.body.position()
                     distance_moved = calc_Distance(client_xyz, client_xyz_2)
                     if (
@@ -2927,12 +3053,20 @@ async def main():
 
                         if recovery_candidate and not await is_free(client):
                             recovery_candidate = False
-                        if recovery_candidate and any(getattr(p, 'bumbles_pet_pending', False) is True for p in walker.clients):
+                        if recovery_candidate and any(
+                            getattr(p, 'bumbles_pet_pending', False) is True
+                            or getattr(p, 'outback_story_pending', False) is True
+                            or Quester.overgrown_estate_paused(p)
+                            for p in walker.clients
+                        ):
                             recovery_candidate = False
                         if recovery_candidate and (
                             getattr(client, '_dueling_tent_recovered_at', -1) >= observation_started
+                            or getattr(client, '_easton_house_recovered_at', -1) >= observation_started
                             or isinstance(getattr(client, '_xuanshu_dueling_tent_failed', None), dict)
                             and await client.zone_name() == Quester.DUELING_TENT_ZONE
+                            or isinstance(getattr(client, '_xuanshu_easton_house_failed', None), dict)
+                            and await client.zone_name() == Quester.EASTON_HOUSE_ZONE
                         ):
                             # A completed transition resets this stationary window;
                             # exhausted same-stage recovery must not be restarted.
@@ -2963,10 +3097,19 @@ async def main():
                                 "lemuria_dungeon",
                                 "sacred_yarn",
                                 "tamarin_house",
+                                "panopticon_book",
                                 "bumbles_mind",
+                                "callisto",
+                                "power_core",
+                                "final_act",
+                                "no_blood_hideout",
+                                "overgrown_estate",
                                 "lemuria_navigation",
                                 "dueling_tent",
+                                "easton_house",
+                                "darkmoor_cantrip",
                                 "bumbles_pet",
+                                "outback_story",
                             )
                             for p in walker.clients
                         ):
@@ -3003,7 +3146,8 @@ async def main():
                                 ):
                                     continue
                                 if any(
-                                    getattr(p, "quest_recovery_owner", None)
+                                    Quester.overgrown_estate_paused(p)
+                                    or getattr(p, "quest_recovery_owner", None)
                                     in (
                                         "nightmare_krok",
                                         "rotating_realm",
@@ -3013,10 +3157,19 @@ async def main():
                                         "lemuria_dungeon",
                                         "sacred_yarn",
                                         "tamarin_house",
+                                        "panopticon_book",
                                         "bumbles_mind",
+                                        "callisto",
+                                        "power_core",
+                                        "final_act",
+                                        "no_blood_hideout",
+                                        "overgrown_estate",
                                         "lemuria_navigation",
                                         "dueling_tent",
+                                        "easton_house",
+                                        "darkmoor_cantrip",
                                         "bumbles_pet",
+                                        "outback_story",
                                     )
                                     for p in walker.clients
                                 ):
@@ -3047,9 +3200,10 @@ async def main():
 
     # logger.catch()
     async def auto_pet_loop(members=None):
+        global auto_pet_status
         # Auto questing on a per client basis.
         async def async_auto_pet(client: Client):
-            while True:
+            while client.auto_pet_status:
                 await asyncio.sleep(1)
 
                 if client in walker.clients and (
@@ -3067,6 +3221,7 @@ async def main():
                             "排除故障后关闭再开启自动宠物重试。"
                         )
                         return
+            client.feeding_pet_status = False
 
         await gather_owned(
             *[
@@ -3074,6 +3229,8 @@ async def main():
                 for p in (walker.clients if members is None else members)
             ]
         )
+        if members is None:
+            auto_pet_status = False
 
     async def auto_fish_loop():
         await fishing_groups.run()
@@ -3160,10 +3317,12 @@ async def main():
                 or quester.in_solo_zone
                 or getattr(quester, "quest_party_probe_pending", False)
                 or getattr(quester, 'bumbles_pet_pending', False) is True
+                or getattr(quester, 'outback_story_pending', False) is True
                 or getattr(quester, "refilling_potions", False)
+                or getattr(quester, "quest_party_target_sync_active", False)
                 or isinstance(getattr(quester, "potion_dungeon_returned", None), tuple)
                 or getattr(quester, "quest_recovery_owner", None)
-                in ("nightmare_krok", "rotating_realm", "mainline_finder", "sacred_yarn", "tamarin_house", "bumbles_mind", "lemuria_navigation", "dueling_tent")
+                in ("nightmare_krok", "rotating_realm", "mainline_finder", "sacred_yarn", "tamarin_house", "panopticon_book", "bumbles_mind", "lemuria_navigation", "dueling_tent", "easton_house", "darkmoor_cantrip")
             ):
                 quester.quest_party_battle_started_at = None
                 return
@@ -3203,6 +3362,7 @@ async def main():
                     or await hitter.in_battle()
                     or await hitter.is_loading()
                     or getattr(hitter, "quest_party_battle_rescue_active", False)
+                    or getattr(hitter, "quest_party_target_sync_active", False)
                     or getattr(hitter, "post_combat_movement_active", False)
                     or getattr(hitter, "refilling_potions", False)
                     or isinstance(
@@ -3215,8 +3375,11 @@ async def main():
                     or await hitter.zone_name() != quester_zone
                     or (
                         in_confirmed_dungeon
-                        and getattr(hitter, "quest_party_battle_sync_state", None)
-                        != "success"
+                        and (
+                            getattr(hitter, "quest_party_battle_sync_state", None)
+                            not in ("success", "failed")
+                            or not await clients_share_live_area(quester, hitter)
+                        )
                     )
                 ):
                     continue
@@ -3323,6 +3486,8 @@ async def main():
             while True:
                 await asyncio.sleep(0.25)
 
+                if getattr(p, '_character_selection_active', False) is True:
+                    continue
                 if p.questing_status:
                     if (
                         getattr(p, "quest_party_battle_rescue_active", False)
@@ -3336,13 +3501,30 @@ async def main():
                     combat_group = combat_group_for(p)
                     other_clients = [c for c in combat_group if c != p]
                     if p.just_entered_combat is not None:
-                        # 5 seconds have passed since the client entered combat
+                        # 7 seconds have passed since the client requested entry.
                         if time.time() >= (p.just_entered_combat + 7):
                             # we are actually in combat
                             if await p.in_battle():
                                 p.just_entered_combat = None
                             # if we aren't in combat after 7 seconds, something went wrong - duel circle is likely not joinable
                             else:
+                                helped = p.client_being_helped
+                                if (quest_party_enabled and helped is not None
+                                        and helped in current_quest_party().questers):
+                                    # A join request is not proof of battle entry.
+                                    # Release stale flags so follow/sync can retry.
+                                    p.just_entered_combat = None
+                                    p.entity_detect_combat_status = False
+                                    p.client_being_helped = None
+                                    if p.quest_party_battle_sync_state != "trying":
+                                        p.quest_party_battle_sync_state = None
+                                    if p in helped.helper_clients:
+                                        helped.helper_clients.remove(p)
+                                    original_client_locations.pop(p.process_id, None)
+                                    logger.warning(
+                                        f"打手 {p.title} 入战等待超过 7 秒仍未进入战斗；"
+                                        "已清理临时标记，继续跟随与入战恢复。"
+                                    )
                                 # client_being_helped is None when you are the client that is being helped
                                 if p.client_being_helped is not None and not (
                                     quest_party_enabled
@@ -3360,6 +3542,12 @@ async def main():
                                     # 	is_circle_joinable = d.result()
 
                                     if not is_circle_joinable:
+                                        # The joinability check waits; battle may
+                                        # have started while it was running.
+                                        if await p.in_battle():
+                                            p.just_entered_combat = None
+                                            p.entity_detect_combat_status = True
+                                            continue
                                         p.client_being_helped.duel_circle_joinable = (
                                             False
                                         )
@@ -3369,7 +3557,22 @@ async def main():
                                             + " - "
                                             + "Duel circle not joinable - teleports halted."
                                         )
+                                        p.just_entered_combat = None
+                                        p.entity_detect_combat_status = False
                                         p.client_being_helped = None
+                                        p.original_location_before_combat = None
+                                        if p in helped.helper_clients:
+                                            helped.helper_clients.remove(p)
+                                        original_client_locations.pop(p.process_id, None)
+                                        continue
+                                elif helped is None:
+                                    # Recover old failed entries whose support
+                                    # pointer was already cleared.
+                                    p.just_entered_combat = None
+                                    p.entity_detect_combat_status = False
+                                    p.original_location_before_combat = None
+                                    original_client_locations.pop(p.process_id, None)
+                                    continue
 
                     if p.just_entered_combat is None:
                         if True:
@@ -3400,6 +3603,7 @@ async def main():
                                         if (
                                             not c.questing_status
                                             or getattr(c, "refilling_potions", False)
+                                            or getattr(c, "quest_party_target_sync_active", False)
                                             or isinstance(
                                                 getattr(
                                                     c, "potion_dungeon_returned", None
@@ -3552,7 +3756,12 @@ async def main():
                                                             # just_entered_combat = True
                                                         except ValueError:
                                                             c.just_entered_combat = None
-                                                            pass
+                                                            c.entity_detect_combat_status = False
+                                                            c.client_being_helped = None
+                                                            c.original_location_before_combat = None
+                                                            if c in p.helper_clients:
+                                                                p.helper_clients.remove(c)
+                                                            original_client_locations.pop(c.process_id, None)
                                 helper_clients = []
 
                             else:
@@ -3675,9 +3884,12 @@ async def main():
                 global questing_task
 
                 await asyncio.sleep(0.1)
-                if not freecam_status:
+                if (not freecam_status
+                        and getattr(client, '_character_selection_active', False) is not True):
                     client_xyz = await client.body.position()
                     await asyncio.sleep(350)
+                    if getattr(client, '_character_selection_active', False) is True:
+                        continue
                     client_xyz_2 = await client.body.position()
                     distance_moved = calc_Distance(client_xyz, client_xyz_2)
                     if (
@@ -3777,6 +3989,94 @@ async def main():
             )
         )
 
+    async def maintain_client_character_session(client):
+        """Stop unexpected selection-screen input; rebuild caches after re-entry."""
+        if (client not in walker.clients or client.window_handle in _hooking_in_progress
+                or getattr(client, '_intentional_character_switch', False) is True
+                or getattr(client, 'is_ibao', False) is True):
+            return
+        selecting = await is_visible_by_path(client, play_button_path)
+        paused = getattr(client, '_character_selection_active', False) is True
+        if selecting:
+            client._character_session_ready_since = None
+        if selecting or (paused and not getattr(client, '_character_session_cleanup_done', False)):
+            if paused and getattr(client, '_character_session_cleanup_done', False):
+                return
+            # Set the gate before cancellation so other workers cannot begin
+            # another operation while group cleanup yields to the event loop.
+            client._character_selection_active = True
+            client._character_session_cleanup_done = False
+            await stop_questing_on_client_loss(str(client.title), reason="已返回选角色界面")
+            for key, (members, _) in list(hotkey_groups.groups.items()):
+                if any(member is client for member in members):
+                    await hotkey_groups.stop(key)
+            await fishing_groups.stop((str(client.title),))
+            stopping = []
+            for key in overlapping_bot_groups(bot_tasks.keys(), (str(client.title),)):
+                task = bot_tasks.pop(key, None)
+                if task is not None and not task.done():
+                    task.cancel()
+                    stopping.append(task)
+            await asyncio.gather(*stopping, return_exceptions=True)
+            if stopping:
+                groups = [list(key) for key, task in bot_tasks.items() if not task.done()]
+                for tag, value in (("BotGroups", groups), ("BotStatus", "Enabled" if groups else "Disabled")):
+                    gui_send_queue.put(xuanshu_gui.GUICommand(xuanshu_gui.GUICommandType.UpdateWindow, (tag, value)))
+            client.combat_status = False
+            client.entity_detect_combat_status = False
+            client.in_combat = False
+            refresh_character_memory(client)
+            client._character_session_cleanup_done = True
+            logger.warning("{} 已返回选角：已暂停相关自动化，等待手动进入角色。", client.title)
+            return
+        if not paused:
+            return
+        # A hidden Play button alone does not prove loading has finished. Never
+        # reuse WorldView/registry addresses allocated by the previous character.
+        refresh_character_memory(client)
+        if (not await is_visible_by_path(client, potion_usage_path[:-1])
+                or await client.is_loading()):
+            client._character_session_ready_since = None
+            return
+        level = await client.stats.reference_level()
+        zone = await client.zone_name()
+        quest_id = await client.quest_id()
+        if (not isinstance(level, int) or level <= 0 or not zone or '/' not in zone
+                or not isinstance(quest_id, int) or quest_id < 0):
+            client._character_session_ready_since = None
+            return
+        now = time.monotonic()
+        stable_since = getattr(client, '_character_session_ready_since', None)
+        if stable_since is None:
+            client._character_session_ready_since = now
+            return
+        if now - stable_since < 0.5:
+            return
+        combat_config = client.combat_config
+        try:
+            await _init_client_attrs(client)
+        finally:
+            client.combat_config = combat_config
+        client._character_selection_active = False
+        client._character_session_ready_since = None
+        _restart_always_on_tasks()
+        logger.info("{} 角色已重新进入，读取状态已刷新；请手动重新开启所需自动化。", client.title)
+
+    async def client_character_session_loop():
+        while True:
+            for client in list(walker.clients):
+                try:
+                    await maintain_client_character_session(client)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    client._character_session_ready_since = None
+                    now = time.monotonic()
+                    if now >= getattr(client, '_character_session_log_at', 0.0):
+                        logger.debug("{} 角色状态暂不可读，稍后重试：{}", client.title, exc)
+                        client._character_session_log_at = now + 30.0
+            await asyncio.sleep(0.5)
+
     async def _init_client_attrs(client):
         """Initialize all per-client attributes. Called once per client after hooking."""
         client_speeds[client.process_id] = await client.client_object.speed_multiplier()
@@ -3823,6 +4123,7 @@ async def main():
         client.wizard_name = None
         client.character_level = await client.stats.reference_level()
         client.discard_duplicate_cards = discard_duplicate_cards
+        client.fusion_result_side = fusion_result_side
         client.kill_minions_first = kill_minions_first
         client.automatic_team_based_combat = automatic_team_based_combat
         client.latest_drops = ""
@@ -4306,6 +4607,7 @@ async def main():
         # Track total wizard handle count to detect when unmanaged clients appear/disappear
         last_known_handle_count = 0
         last_hotkey_status_snapshot = None
+        last_mainline_progress_snapshot = None
 
         while True:
             lost_client = any(
@@ -5201,12 +5503,13 @@ async def main():
                                 old_mods = ModifierKeys.NOREPEAT
                                 for m in old_binding.get("modifiers", []):
                                     old_mods |= ModifierKeys[m]
-                                try:
-                                    await listener.remove_hotkey(
-                                        Keycode[old_binding["key"]], modifiers=old_mods
-                                    )
-                                except Exception:
-                                    pass
+                                if not _is_passthrough_x(action_id, old_binding):
+                                    try:
+                                        await listener.remove_hotkey(
+                                            Keycode[old_binding["key"]], modifiers=old_mods
+                                        )
+                                    except Exception:
+                                        pass
                                 del _active_bindings[action_id]
                             # Register new binding
                             if new_key:
@@ -5220,9 +5523,11 @@ async def main():
                                     for m in new_mods:
                                         mods |= ModifierKeys[m]
                                     try:
-                                        await listener.add_hotkey(
-                                            Keycode[new_key], callback, modifiers=mods
-                                        )
+                                        new_binding = {"key": new_key, "modifiers": new_mods}
+                                        if not _is_passthrough_x(action_id, new_binding):
+                                            await listener.add_hotkey(
+                                                Keycode[new_key], callback, modifiers=mods
+                                            )
                                         _active_bindings[action_id] = {
                                             "key": new_key,
                                             "modifiers": new_mods,
@@ -5635,9 +5940,17 @@ async def main():
 
                         case xuanshu_gui.GUICommandType.SendNearbyChatTest:
                             options = com.data or {}
+                            allow_busy = options.get('allow_busy') is True
+                            selected_bot_running = any(
+                                options.get('title') in key and not task.done()
+                                for key, task in bot_tasks.items()
+                            )
                             chat_monitor.request_manual_send(
                                 walker.clients, options.get('title'), options.get('text'),
-                                blocked=bool(freecam_status or bot_tasks),
+                                blocked=('自由镜头已开启，请先关闭自由镜头' if freecam_status else
+                                         '所选客户端脚本正在运行；可勾选允许自动任务 / 战斗中聊天'
+                                         if selected_bot_running and not allow_busy else False),
+                                allow_busy=allow_busy,
                             )
 
                         case xuanshu_gui.GUICommandType.StartIbaoGroup:
@@ -5963,7 +6276,7 @@ async def main():
                             restarted = await restart_combat_task_if_running()
                             logger.info(
                                 f"战斗风格已应用到：{', '.join(applied_titles)}；"
-                                f"自动战斗{'已刷新' if restarted else '当前未开启'}。"
+                                f"自动战斗{'已刷新' if restarted else '已开启（新风格在下次战斗生效）' if hotkey_groups.active('toggle_combat') else '当前未开启'}。"
                             )
                         case xuanshu_gui.GUICommandType.ResetPlaystyles:
                             requested_titles = None
@@ -5999,7 +6312,7 @@ async def main():
                             logger.info(
                                 f"已重置为默认战斗风格；"
                                 f"已应用到：{', '.join(reset_titles)}，"
-                                f"自动战斗{'已刷新' if restarted else '当前未开启'}。"
+                                f"自动战斗{'已刷新' if restarted else '已开启（新风格在下次战斗生效）' if hotkey_groups.active('toggle_combat') else '当前未开启'}。"
                             )
                         case xuanshu_gui.GUICommandType.SetScale:
                             if not walker.clients:
@@ -6176,6 +6489,34 @@ async def main():
                                 )
                             )
 
+                        case xuanshu_gui.GUICommandType.SetGameLanguage:
+                            try:
+                                data = com.data
+                                backup = None
+                                if data['language'] is not None:
+                                    if utils.get_all_wizard_handles():
+                                        raise GameLanguageError('game_language_close_clients')
+                                    backup = await asyncio.to_thread(
+                                        apply_game_language, data['game_path'], data['language'],
+                                        data['patch_name'], utils.get_all_wizard_handles,
+                                    )
+                                settings.set_settings({
+                                    'game_language': data['language'],
+                                    'game_language_patch': data['patch_name'],
+                                    'game_language_path': os.path.normcase(os.path.abspath(data['game_path'])),
+                                })
+                                result = {'ok': True, 'message_key': 'game_language_applied' if data['language']
+                                          else 'game_language_preserved',
+                                          'detail': backup or ''}
+                                logger.info(f"Game language applied: {data['language']}; backup: {backup or 'none needed'}")
+                            except Exception as error:
+                                key = str(error) if isinstance(error, GameLanguageError) else 'game_language_failed'
+                                result = {'ok': False, 'message_key': key,
+                                          'detail': '' if isinstance(error, GameLanguageError) else str(error)}
+                                logger.warning(f"Game language switch failed: {error}")
+                            gui_send_queue.put(xuanshu_gui.GUICommand(
+                                xuanshu_gui.GUICommandType.GameLanguageResult, result))
+
                         case xuanshu_gui.GUICommandType.LaunchInstance:
                             nicknames, game_path = com.data
                             if not game_path:
@@ -6201,6 +6542,14 @@ async def main():
                                 logger.info(
                                     f"Launching {len(nicknames)} instance(s)..."
                                 )
+                                language = settings.get_setting('game_language')
+                                language_path = settings.get_setting('game_language_path')
+                                use_language = (language in ('en', 'zh') and
+                                    language_path == os.path.normcase(os.path.abspath(game_path)))
+                                if (use_language and settings.get_setting('verify_patch_files')
+                                        and utils.get_all_wizard_handles()):
+                                    logger.warning('Close all game clients before verifying files with a saved language choice.')
+                                    continue
                                 if settings.get_setting("verify_patch_files"):
                                     logger.info(
                                         "Verifying official game files before launch..."
@@ -6213,6 +6562,23 @@ async def main():
                                             "Game-file verification did not finish successfully; "
                                             "continuing with account launch."
                                         )
+                                if use_language:
+                                    try:
+                                        # Official verification may replace the active overlay.
+                                        # Restore the explicit language choice AFTER it completes.
+                                        await asyncio.to_thread(
+                                            apply_game_language, game_path, language,
+                                            settings.get_setting('game_language_patch'),
+                                            utils.get_all_wizard_handles,
+                                        )
+                                    except Exception as error:
+                                        logger.warning(f'Launch cancelled: game language could not be applied: {error}')
+                                        gui_send_queue.put(xuanshu_gui.GUICommand(
+                                            xuanshu_gui.GUICommandType.GameLanguageResult,
+                                            {'ok': False, 'message_key': str(error) if isinstance(error, GameLanguageError)
+                                                else 'game_language_failed', 'detail': str(error)},
+                                        ))
+                                        continue
                             # Clear any released handles so newly launched clients get auto-hooked
                             released_handles.clear()
                             gui_send_queue.put(
@@ -6433,6 +6799,7 @@ async def main():
                             global fish_chest_only, fish_school, fish_rank, fish_id
                             global fish_size_min, fish_size_max
                             global kill_minions_first, automatic_team_based_combat, discard_duplicate_cards
+                            global fusion_result_side
                             settings_dict = com.data
                             quest_party_changed = False
                             for key, value in settings_dict.items():
@@ -6517,6 +6884,10 @@ async def main():
                                         automatic_team_based_combat = value
                                     case "discard_duplicate_cards":
                                         discard_duplicate_cards = value
+                                    case "fusion_result_side":
+                                        fusion_result_side = value if value in ("left", "right") else "right"
+                                        for client in walker.clients:
+                                            client.fusion_result_side = fusion_result_side
                             logger.debug(
                                 f"Settings updated: {list(settings_dict.keys())}"
                             )
@@ -6656,6 +7027,16 @@ async def main():
                     )
                 )
                 last_hotkey_status_snapshot = snapshot
+
+            progress = '\n'.join(
+                getattr(c, '_xuanshu_mainline_progress', '') or f'{c.title} · 主线进度待确认'
+                for c in current_quest_party(live_clients).questers
+                if snapshot.get('toggle_questing', {}).get(c.title)
+            )
+            if progress != last_mainline_progress_snapshot:
+                gui_send_queue.put(xuanshu_gui.GUICommand(
+                    xuanshu_gui.GUICommandType.UpdateWindow, ("QuestMainlineProgress", progress)))
+                last_mainline_progress_snapshot = progress
 
             await chat_monitor.sync(walker.clients)
             await asyncio.sleep(0.1)
@@ -7034,12 +7415,14 @@ async def main():
             )
 
     try:
+        all_tasks["client_character_session_loop"] = asyncio.create_task(client_character_session_loop())
         all_tasks["foreground_client_switching"] = asyncio.create_task(
             foreground_client_switching()
         )
         all_tasks["assign_foreground_clients"] = asyncio.create_task(
             assign_foreground_clients()
         )
+        all_tasks["passthrough_x_loop"] = asyncio.create_task(passthrough_x_loop())
         all_tasks["anti_afk_loop"] = asyncio.create_task(anti_afk_loop())
         all_tasks["is_client_in_combat_loop"] = asyncio.create_task(
             is_client_in_combat_loop()

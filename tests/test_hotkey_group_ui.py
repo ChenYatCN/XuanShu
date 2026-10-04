@@ -39,6 +39,24 @@ class HotkeyGroupUITests(unittest.TestCase):
     def checks(self):
         return {c.text(): c for c in self.tab.findChildren(QCheckBox)}
 
+    def test_combined_quest_status_wraps_and_preserves_other_section(self):
+        self.tab.resize(680, 520)
+        self.tab.show()
+        update = self.api['update_quest_status']
+        update('QuestMainlineProgress', 'p1 · Novus 主线 56/88')
+        update('QuestPartyRuntimeStatus', 'p2 → p1｜正在好友传送，等待任务客户端完成区域同步')
+        self.app.processEvents()
+        label = self.ctx.widget_tags['QuestPartyRuntimeStatus']
+        self.assertTrue(label.isVisible())
+        self.assertTrue(label.wordWrap())
+        self.assertEqual(label.width(), 230)
+        self.assertGreaterEqual(label.height(), label.heightForWidth(label.width()))
+        self.assertIn('56/88', label.text())
+        update('QuestPartyRuntimeStatus', '')
+        self.assertEqual(label.text(), 'p1 · Novus 主线 56/88')
+        update('QuestMainlineProgress', '')
+        self.assertFalse(label.isVisible())
+
     def test_default_all_and_no_per_row_dropdowns(self):
         self.api['set_available_clients'](['p2', 'p1'])
         self.assertEqual(self.api['selected_clients'](), ['p1', 'p2'])

@@ -75,6 +75,26 @@ class PotionInstanceSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await utils.return_to_dungeon_after_potions(self.client, 'Dungeon/Room'))
         self.client.mouse_handler.click_window.assert_not_awaited()
 
+    async def test_unclassified_buy_uses_verified_red_return(self):
+        self.client.stats = SimpleNamespace(potion_max=AsyncMock(return_value=0),
+                                           potion_charge=AsyncMock(return_value=0))
+        with patch.object(utils, 'recall_to_teleport_mark', AsyncMock()) as mark:
+            self.assertTrue(await utils.buy_potions(self.client, original_zone='Dungeon/Room'))
+        mark.assert_not_awaited()
+        self.client.mouse_handler.click_window.assert_awaited_once_with(self.button)
+        self.assertEqual(self.client.potion_return_context['returned_snapshot'], (42, 8, 'Next'))
+        self.assertTrue(self.client.questing_status)
+
+    async def test_unclassified_buy_rejects_wrong_instance_without_mark_fallback(self):
+        self.client.stats = SimpleNamespace(potion_max=AsyncMock(return_value=0),
+                                           potion_charge=AsyncMock(return_value=0))
+        self.zone_id.return_value = 999
+        with patch.object(utils, 'recall_to_teleport_mark', AsyncMock()) as mark:
+            self.assertFalse(await utils.buy_potions(self.client, original_zone='Dungeon/Room'))
+        mark.assert_not_awaited()
+        self.assertFalse(self.client.questing_status)
+        self.assertNotIn('returned_snapshot', self.client.potion_return_context)
+
     async def test_solo_return_does_not_wait_for_unreachable_hitter(self):
         self.client.in_solo_zone = True
         self.client.quest_party_hitters = [SimpleNamespace(questing_status=True)]
@@ -87,7 +107,8 @@ class PotionRoutingSafetyTests(unittest.IsolatedAsyncioTestCase):
         zone = 'Lemuria/Interiors/LM_Z07_BumblesMind'
         client = SimpleNamespace(title='p1', questing_status=True,
             zone_name=AsyncMock(return_value=zone),
-            stats=SimpleNamespace(reference_level=AsyncMock(return_value=100)))
+            stats=SimpleNamespace(reference_level=AsyncMock(return_value=100),
+                                  current_gold=AsyncMock(return_value=100000)))
         with ExitStack() as stack:
             prepare = stack.enter_context(patch.object(utils, 'prepare_potion_dungeon_return', AsyncMock(return_value=True)))
             mark = stack.enter_context(patch.object(utils, 'ensure_teleport_mark', AsyncMock()))
@@ -105,7 +126,8 @@ class PotionRoutingSafetyTests(unittest.IsolatedAsyncioTestCase):
         zone = 'Dungeon/Room'
         client = SimpleNamespace(title='p1', questing_status=True,
             quest_party_group_dungeon_zone=zone, zone_name=AsyncMock(return_value=zone),
-            stats=SimpleNamespace(reference_level=AsyncMock(return_value=100)))
+            stats=SimpleNamespace(reference_level=AsyncMock(return_value=100),
+                                  current_gold=AsyncMock(return_value=100000)))
         with patch.object(utils, 'potion_quest_snapshot', AsyncMock(return_value=None)), \
              patch.object(utils, 'navigate_to_ravenwood', AsyncMock()) as travel:
             self.assertFalse(await utils.refill_potions(client))

@@ -3,7 +3,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from src.chat_translation import ChatTranslationMonitor, _chat_edit, _chat_ready
+from src.chat_translation import ChatTranslationMonitor, _chat_edit, _chat_ready, _manual_chat_owner
 from src.automation_ownership import automation_owner
 from tests.test_chat_translation import chat_line
 
@@ -28,7 +28,7 @@ def client(title='p1', handle=1):
 
 
 class ManualSendTests(unittest.IsolatedAsyncioTestCase):
-    async def run_send(self, first=None, peers=None, draft='', mismatch=False, rows=None):
+    async def run_send(self, first=None, peers=None, draft='', mismatch=False, rows=None, allow_busy=False):
         first = first or client()
         peers = peers or [first]
         events = []
@@ -64,7 +64,7 @@ class ManualSendTests(unittest.IsolatedAsyncioTestCase):
              patch('src.chat_translation.read_control_text', read), \
              patch('src.chat_translation._type_chat', type_text), \
              patch('src.chat_translation._chat_texts', logs):
-            await monitor._manual_send(peers, 'p1', 'hello', verify_seconds=.03)
+            await monitor._manual_send(peers, 'p1', 'hello', verify_seconds=.03, allow_busy=allow_busy)
         return first, events[-1]
 
     async def test_once_p1_only_and_three_evidence_levels(self):
@@ -83,6 +83,31 @@ class ManualSendTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(final['invoked'])
         self.assertFalse(final['local_echo'])
         self.assertEqual(final['listener_capture'], [])
+
+    async def test_missing_player_gid_uses_character_gid(self):
+        first = client()
+        first.game_client.player_gid.return_value = 0
+        first.client_object = SimpleNamespace(global_id_full=AsyncMock(return_value=31))
+        first, final = await self.run_send(first, rows=chat_line('hello'))
+        first.send_hotkey.assert_awaited_once()
+        self.assertTrue(final['local_echo'])
+
+    async def test_unavailable_gid_allows_manual_send_without_receipt_claim(self):
+        first = client()
+        first.game_client.player_gid.side_effect = RuntimeError('unavailable')
+        first, final = await self.run_send(first, rows=chat_line('hello'))
+        first.send_hotkey.assert_awaited_once()
+        self.assertTrue(final['invoked'])
+        self.assertFalse(final['local_echo'])
+        self.assertEqual(final['peer_receipts'], [])
+        self.assertEqual(final['listener_capture'], [])
+
+    async def test_missing_zone_still_blocks_send_with_specific_reason(self):
+        first = client()
+        first.zone_name.return_value = None
+        first, final = await self.run_send(first)
+        first.send_hotkey.assert_not_awaited()
+        self.assertIn('区域读取为空', final['status'])
 
     async def test_wrong_gid_and_wrong_channel_not_proof(self):
         for row in (chat_line('hello', gid=99), chat_line('hello', icon='Group')):
@@ -133,4 +158,43 @@ class ManualSendTests(unittest.IsolatedAsyncioTestCase):
             self.assertIs(task, monitor.manual_task)
             self.assertFalse(monitor.auto_reply)
             await monitor.stop()
+
+    async def test_override_allows_battle_and_automatic_quest_send_once(self):
+        first = client()
+        first.questing_status = True
+        first.combat_status = True
+        first.in_battle.return_value = True
+        first, final = await self.run_send(first, allow_busy=True)
+        first.send_hotkey.assert_awaited_once()
+        self.assertTrue(final['invoked'])
+
+    async def test_override_keeps_loading_dialogue_draft_and_readback_guards(self):
+        for attr in ('is_loading', 'is_in_dialog'):
+            first = client()
+            getattr(first, attr).return_value = True
+            first, final = await self.run_send(first, allow_busy=True)
+            self.assertFalse(final['invoked'])
+            first.send_hotkey.assert_not_awaited()
+        for options in ({'draft': 'existing'}, {'mismatch': True}):
+            first, final = await self.run_send(allow_busy=True, **options)
+            first.send_hotkey.assert_not_awaited()
+
+    async def test_override_waits_for_combat_click_and_keeps_exclusive_ownership(self):
+        first = client()
+        acquired = asyncio.Event()
+        release = asyncio.Event()
+        async def combat():
+            async with automation_owner(first, 'combat-click'):
+                acquired.set()
+                await release.wait()
+        task = asyncio.create_task(combat())
+        await acquired.wait()
+        async def unlock():
+            await asyncio.sleep(.01)
+            release.set()
+        unlock_task = asyncio.create_task(unlock())
+        async with _manual_chat_owner(first, True):
+            from src.automation_ownership import get_client_automation_ownership
+            self.assertEqual(get_client_automation_ownership(first).owner_label, 'manual-nearby-chat')
+        await asyncio.gather(task, unlock_task)
 

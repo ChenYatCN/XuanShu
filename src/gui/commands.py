@@ -94,6 +94,8 @@ class GUICommandType(Enum):
 
     # Launcher
     LaunchInstance = auto()
+    SetGameLanguage = auto()  # GUI -> Backend: game_path, language, patch_name
+    GameLanguageResult = auto()  # Backend -> GUI: ok, message_key, detail
     SaveAccount = auto()       # GUI -> Backend: data = (nickname, steam: bool, private: bool)
     UpdateAccount = auto()     # GUI -> Backend: data = (old_nickname, new_nickname, steam: bool, private: bool)
     UpdateAccountCredentials = auto()  # GUI -> Backend: data = nickname

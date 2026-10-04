@@ -10,9 +10,15 @@ from src.teleport_math import _teleport_once_verified
 
 
 class DuelingTentRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    source_zone = Quester.DUELING_TENT_ZONE
+    owner = 'dueling_tent'
+    exit_xyz = (16.146, -1194.045, -4.171)
+    failed_attr = '_xuanshu_dueling_tent_failed'
+    recovered_attr = '_dueling_tent_recovered_at'
+
     def setUp(self):
         self.now = 0.
-        self.zone = Quester.DUELING_TENT_ZONE
+        self.zone = self.source_zone
         self.progress = (123, 1, 'Go to the exit')
         self.client = SimpleNamespace(title='p1', questing_status=True, quest_recovery_owner=None,
             zone_name=AsyncMock(side_effect=lambda: self.zone),
@@ -47,8 +53,8 @@ class DuelingTentRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
     def transition(self):
         async def teleport(target):
-            self.assertEqual((target.x, target.y, target.z), (16.146, -1194.045, -4.171))
-            self.assertEqual(self.client.quest_recovery_owner, 'dueling_tent')
+            self.assertEqual((target.x, target.y, target.z), self.exit_xyz)
+            self.assertEqual(self.client.quest_recovery_owner, self.owner)
             self.assertFalse(claim_quest_recovery(self.client, 'trigger_reentry'))
             self.zone = 'Novus/NV_Z01'
         self.client.teleport.side_effect = teleport
@@ -60,10 +66,10 @@ class DuelingTentRecoveryTests(unittest.IsolatedAsyncioTestCase):
         await self.move(11)
         self.client.teleport.assert_awaited_once()
         self.assertIsNone(self.client.quest_recovery_owner)
-        self.assertIsNone(self.client._xuanshu_dueling_tent_failed)
+        self.assertIsNone(getattr(self.client, self.failed_attr))
         self.assertTrue(self.client.quest_party_probe_pending)
         self.assertEqual(self.client.quest_party_quest_worker_zone, self.zone)
-        self.assertGreaterEqual(self.client._dueling_tent_recovered_at, 11)
+        self.assertGreaterEqual(getattr(self.client, self.recovered_attr), 11)
         self.assertNotIn(id(self.client), self.quester._krok_exit_watch)
         self.client.quest_position.position.assert_awaited_once()
 
@@ -80,7 +86,7 @@ class DuelingTentRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.collision.await_count, collision_count)
         self.progress = (123, 2, 'Go to the exit')
         await self.move(70, quester=restarted)
-        self.assertIsNone(self.client._xuanshu_dueling_tent_failed)
+        self.assertIsNone(getattr(self.client, self.failed_attr))
         self.assertEqual(self.collision.await_count, collision_count + 1)
 
     async def test_other_map_cannot_trigger(self):
@@ -169,7 +175,7 @@ class DuelingTentRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.client.teleport.side_effect = teleport
         await self.move(0, 4, 8, 11)
         self.client.teleport.assert_awaited_once()
-        self.assertIsNone(self.client._xuanshu_dueling_tent_failed)
+        self.assertIsNone(getattr(self.client, self.failed_attr))
 
     async def test_battle_after_first_special_tp_stops_retry(self):
         async def teleport(target):
@@ -220,11 +226,11 @@ class DuelingTentRecoveryTests(unittest.IsolatedAsyncioTestCase):
             await self.move(0, 4, 8, 11)
         self.client.teleport.assert_awaited_once()
         self.client.quest_position.position.assert_not_awaited()
-        self.assertIsNotNone(self.client._xuanshu_dueling_tent_failed)
+        self.assertIsNotNone(getattr(self.client, self.failed_attr))
         self.assertIsNone(self.client.quest_recovery_owner)
 
     async def test_special_recovery_blocks_hub_and_friend_tp(self):
-        self.client.quest_recovery_owner = 'dueling_tent'
+        self.client.quest_recovery_owner = self.owner
         self.quester.followers_in_correct_zone = AsyncMock()
         await self.quester.zone_recorrect_hub()
         self.quester.followers_in_correct_zone.assert_not_awaited()

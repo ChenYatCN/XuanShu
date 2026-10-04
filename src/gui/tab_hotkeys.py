@@ -849,6 +849,16 @@ def build_hotkeys_tab(ctx):
     )
     ctx.widget_tags["QuestPartyRuntimeStatus"] = quest_party_status
 
+    quest_status_parts = {"QuestMainlineProgress": "", "QuestPartyRuntimeStatus": ""}
+
+    def update_quest_status(tag, value):
+        quest_status_parts[tag] = str(value or '')
+        text = '\n'.join(part for part in quest_status_parts.values() if part)
+        quest_party_status.setText(text)
+        quest_party_status.setMinimumHeight(max(58, quest_party_status.heightForWidth(230)))
+        quest_party_status.setVisible(bool(text))
+        quest_party_status.updateGeometry()
+
     info_layout.addStretch()
     hotkeys_body.addWidget(info_widget)
     hotkeys_layout.addLayout(hotkeys_body, 1)
@@ -889,6 +899,7 @@ def build_hotkeys_tab(ctx):
         "static_ids": static_ids,
         "set_available_clients": set_available_clients,
         "update_client_states": update_client_states,
+        "update_quest_status": update_quest_status,
         "selected_clients": selected_clients,
         "update_multi_client_state": _update_multi_client_state,
         "retheme": _retheme,

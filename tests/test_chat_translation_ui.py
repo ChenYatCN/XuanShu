@@ -26,13 +26,15 @@ class ChatTranslationUITests(unittest.TestCase):
         self.assertFalse(dialog.send_button.isEnabled())
         self.assertEqual(dialog.send_text.text(), 'hello')
         self.assertFalse(dialog.auto_reply.isEnabled())
+        self.assertFalse(dialog.allow_busy_chat.isChecked())
+        dialog.allow_busy_chat.setChecked(True)
         dialog.set_available_clients(['p1', 'p2'])
         dialog.send_button.click()
         dialog._send_once()
         self.assertEqual(sent.qsize(), 1)
         command = sent.get_nowait()
         self.assertEqual(command.com_type, GUICommandType.SendNearbyChatTest)
-        self.assertEqual(command.data, {'title': 'p1', 'text': 'hello'})
+        self.assertEqual(command.data, {'title': 'p1', 'text': 'hello', 'allow_busy': True})
         self.assertFalse(dialog.send_button.isEnabled())
         dialog.handle_event({'kind': 'manual_send', 'title': 'p1', 'done': True,
                              'invoked': True, 'local_echo': False,

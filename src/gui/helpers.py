@@ -3,6 +3,7 @@ import os
 import sys
 import webbrowser
 import ctypes
+import ctypes.wintypes
 import re
 from functools import lru_cache
 from threading import Thread
@@ -65,6 +66,73 @@ def configure_titlebar_button(button, icon_factory, color, close=False):
     button.setIcon(icon_factory(titlebar_control_svg(color, close), 24))
     button.setStyleSheet(titlebar_button_style(close))
     button.setCursor(Qt.CursorShape.PointingHandCursor)
+
+
+def add_dialog_titlebar(dialog, layout, theme, icon_factory, on_close=None):
+    """Use the main window's title and controls for themed utility dialogs."""
+    dialog.setWindowFlags(dialog.windowFlags() | Qt.WindowType.FramelessWindowHint)
+    dialog.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+    # Match the main menu's Windows 11 system-rounded window corners.
+    try:
+        corner_preference = ctypes.c_int(2)  # DWMWCP_ROUND
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            ctypes.wintypes.HWND(int(dialog.winId())),
+            33,  # DWMWA_WINDOW_CORNER_PREFERENCE
+            ctypes.byref(corner_preference),
+            ctypes.sizeof(corner_preference),
+        )
+    except Exception:
+        pass
+    titlebar = QWidget()
+    titlebar.setObjectName('dialogTitleBar')
+    titlebar.setFixedHeight(32)
+    row = QHBoxLayout(titlebar)
+    row.setContentsMargins(4, 0, 4, 0)
+    row.setSpacing(0)
+    row.addSpacing(32)
+    row.addStretch()
+    icon = QLabel()
+    icon.setFixedSize(24, 24)
+    icon.setPixmap(dialog.parentWidget().windowIcon().pixmap(20, 20))
+    icon.setStyleSheet('background: transparent;')
+    icon.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    row.addWidget(icon)
+    row.addSpacing(6)
+    title = QLabel(dialog.windowTitle())
+    title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    row.addWidget(title)
+    row.addStretch()
+    close = QPushButton()
+    close.setObjectName('dialogTitleClose')
+    close.setAutoDefault(False)
+    close.clicked.connect(on_close or dialog.close)
+    row.addWidget(close)
+
+    def refresh():
+        titlebar.setStyleSheet(f'QWidget {{ background-color: {theme["titlebar_bg"]}; }}')
+        title.setStyleSheet(
+            f'QLabel {{ color: {theme["text_color"]}; font-weight: bold; background: transparent; }}')
+        configure_titlebar_button(close, icon_factory, theme['stroke_color'], close=True)
+
+    refresh()
+    drag_pos = [None]
+
+    def press(event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            drag_pos[0] = event.globalPosition().toPoint() - dialog.frameGeometry().topLeft()
+
+    def move(event):
+        if drag_pos[0] is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            dialog.move(event.globalPosition().toPoint() - drag_pos[0])
+
+    def release(event):
+        drag_pos[0] = None
+
+    titlebar.mousePressEvent = press
+    titlebar.mouseMoveEvent = move
+    titlebar.mouseReleaseEvent = release
+    layout.addWidget(titlebar)
+    return refresh
 
 
 def terminate_thread(thread: Thread):

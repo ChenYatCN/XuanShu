@@ -6,6 +6,8 @@ from src.bot_targeting import resolve_bot_clients
 
 def client_available(client, clients):
     try:
+        if getattr(client, '_character_selection_active', False) is True:
+            return False
         return any(c is client for c in clients) and getattr(client, 'is_running', lambda: True)()
     except Exception:
         return False

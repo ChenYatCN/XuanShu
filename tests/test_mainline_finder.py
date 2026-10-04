@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from src.mainline_progress import quest_rows
-from src.paths import quest_buttons_parent_path
+from src.paths import quest_buttons_parent_path, all_quests_sort_button_path
 from src.questing import Quester
 from wizwalker import Keycode
 
@@ -49,6 +49,25 @@ class MainlineFinderTests(unittest.IsolatedAsyncioTestCase):
         self.quester._run_mainline_finder = AsyncMock()
         self.assertFalse(await self.quester._maybe_recover_mainline(self.client))
         self.quester._run_mainline_finder.assert_not_awaited()
+
+    async def test_unindexed_mainline_runs_finder_after_stable_wait(self):
+        for flag in (True, None):
+            self.quester._mainline_identity = AsyncMock(
+                return_value=(142707813505353448, 'QuestTitle_71CCD', 'Of Unknown Origin', None, flag))
+            self.quester._run_mainline_finder = AsyncMock(return_value=True)
+            self.quester._mainline_finder_blocked = AsyncMock(return_value=False)
+            now = [0.0]
+            with (patch('src.questing.time.monotonic', side_effect=lambda: now[0]),
+                  patch('src.questing.is_visible_by_path', new=AsyncMock(return_value=False))):
+                for point in (0.0, 0.4):
+                    now[0] = point
+                    self.assertTrue(await self.quester._maybe_recover_mainline(self.client))
+                    self.quester._run_mainline_finder.assert_not_awaited()
+                now[0] = 3.1
+                self.assertTrue(await self.quester._maybe_recover_mainline(self.client))
+            self.quester._run_mainline_finder.assert_awaited_once_with(self.client)
+            self.assertIsNone(self.client.quest_recovery_owner)
+
 
     async def test_known_cave_without_entry_prompt_uses_dungeon_recovery(self):
         self.client.zone_name.return_value = 'Lemuria/Interiors/LM_Z05_I02_Cave'
@@ -180,6 +199,27 @@ class MainlineFinderTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(next_page[0], right)
         self.assertEqual(list(next_page[1]), [*quest_buttons_parent_path, 'QuestLogRightButton'])
 
+    async def test_questbook_only_matches_visible_starred_cards(self):
+        menu, first, second, title1, title2, star = (window() for _ in range(6))
+        title1.maybe_text.return_value = 'Monkey Business'
+        title2.maybe_text.return_value = 'Side Quest'
+        first_path = (*quest_buttons_parent_path, 'wndQuestInfo3')
+        second_path = (*quest_buttons_parent_path, 'wndQuestInfo1')
+        nodes = [(menu, tuple(quest_buttons_parent_path)),
+                 (first, first_path), (title1, (*first_path, 'txtTitle')),
+                 (second, second_path), (title2, (*second_path, 'txtTitle'))]
+        with patch('src.questing.get_window_from_path', new=AsyncMock(return_value=menu)):
+            for name in ('LeftMainline', 'RightMainline'):
+                self.quester._visible_window_nodes = AsyncMock(return_value=nodes + [
+                    (star, (*first_path, 'questInfoWindow', 'wndQuestInfo', name))])
+                cards = []
+                await self.quester._questbook_page(self.client, mainlines=cards)
+                self.assertEqual([title for title, _ in cards], ['Monkey Business'])
+            self.quester._visible_window_nodes.return_value = nodes
+            cards = []
+            await self.quester._questbook_page(self.client, mainlines=cards)
+            self.assertEqual(cards, [])
+
     async def test_questbook_refuses_ambiguous_right_button(self):
         menu, card, title, first, second = (window() for _ in range(5))
         title.maybe_text.return_value = '普通任务'
@@ -200,12 +240,15 @@ class MainlineFinderTests(unittest.IsolatedAsyncioTestCase):
         page = [0]
         selected = [False]
         right, finder = object(), object()
+        all_quests_click = AsyncMock()
 
-        async def scan(_client):
+        async def scan(_client, *, backwards=False):
+            all_quests_click.assert_awaited_once_with(_client, all_quests_sort_button_path)
+            self.assertTrue(backwards)
             return ((f'page {page[0]}',),
                     (finder, ('WorldView', 'DeckConfiguration', 'wndQuestList', 'wndQuestInfo1'))
                     if page[0] == 2 else None,
-                    (right, ('WorldView', 'DeckConfiguration', 'wndQuestList', 'btnRight')))
+                    (right, ('WorldView', 'DeckConfiguration', 'wndQuestList', 'btnPrevPage')))
 
         async def click(_client, target):
             if target is right:
@@ -214,12 +257,13 @@ class MainlineFinderTests(unittest.IsolatedAsyncioTestCase):
                 selected[0] = True
 
         async def identity(_client):
-            return (99, 'Quest Finder', '', None, False) if selected[0] else None
+            return (60216001, '任务搜寻', '', None, False) if selected[0] else None
 
         self.quester._questbook_page = scan
         self.quester._click_ui_window = click
         self.quester._mainline_identity = identity
-        with patch('src.questing.is_visible_by_path', new=AsyncMock(return_value=True)):
+        with (patch('src.questing.is_visible_by_path', new=AsyncMock(return_value=True)),
+              patch('src.questing.click_window_by_path', new=all_quests_click)):
             self.assertTrue(await self.quester._select_quest_finder(self.client))
         self.assertEqual(page[0], 2)
         self.assertTrue(selected[0])
@@ -232,11 +276,100 @@ class MainlineFinderTests(unittest.IsolatedAsyncioTestCase):
         self.quester._questbook_page = AsyncMock(
             side_effect=(first, second, second, first, first))
         self.quester._click_ui_window = AsyncMock()
-        with patch('src.questing.is_visible_by_path', new=AsyncMock(return_value=True)):
+        with (patch('src.questing.is_visible_by_path', new=AsyncMock(return_value=True)),
+              patch('src.questing.click_window_by_path', new=AsyncMock()) as all_quests_click):
             with self.assertRaisesRegex(RuntimeError, '循环'):
                 await self.quester._select_quest_finder(self.client)
+        all_quests_click.assert_awaited_once_with(self.client, all_quests_sort_button_path)
         self.assertEqual(self.quester._click_ui_window.await_count, 2)
         self.assertEqual(self.client.send_key.await_count, 2)
+
+    async def test_missing_all_quests_button_stops_finder_before_scan(self):
+        self.quester._questbook_page = AsyncMock()
+        ticks = iter(range(20))
+        with (patch('src.questing.time', SimpleNamespace(monotonic=lambda: next(ticks))),
+              patch('src.questing.asyncio.sleep', new=AsyncMock()),
+              patch('src.questing.is_visible_by_path', new=AsyncMock(
+                  side_effect=lambda client, path: path == quest_buttons_parent_path)),
+              patch('src.questing.click_window_by_path', new=AsyncMock()) as all_quests_click):
+            with self.assertRaisesRegex(RuntimeError, '任务菜单未稳定打开'):
+                await self.quester._select_quest_finder(self.client)
+        all_quests_click.assert_not_awaited()
+        self.quester._questbook_page.assert_not_awaited()
+        self.quester._close_questbook.assert_awaited_once_with(self.client)
+
+    async def test_finder_scan_uses_left_button_and_ignores_card_children(self):
+        menu, card, title, left, right, star = (window() for _ in range(6))
+        title.maybe_text.return_value = '普通任务'
+        card_path = (*quest_buttons_parent_path, 'wndQuestInfo1')
+        self.quester._visible_window_nodes = AsyncMock(return_value=[
+            (menu, tuple(quest_buttons_parent_path)), (card, card_path),
+            (title, (*card_path, 'txtTitle')), (star, (*card_path, 'LeftMainline')),
+            (left, (*quest_buttons_parent_path, 'btnPrevPage')),
+            (right, (*quest_buttons_parent_path, 'btnNextPage')),
+        ])
+        with patch('src.questing.get_window_from_path', new=AsyncMock(return_value=menu)):
+            _, _, previous = await self.quester._questbook_page(self.client, backwards=True)
+            _, _, following = await self.quester._questbook_page(self.client)
+        self.assertIs(previous[0], left)
+        self.assertIs(following[0], right)
+
+    async def test_known_page_buttons_take_priority_over_backgrounds_and_arrow_children(self):
+        menu, card, left, right = (window() for _ in range(4))
+        card_path = (*quest_buttons_parent_path, 'wndQuestInfo1')
+        self.quester._visible_window_nodes = AsyncMock(return_value=[
+            (menu, tuple(quest_buttons_parent_path)), (card, card_path),
+            (left, (*quest_buttons_parent_path, 'btnPrevPage')),
+            (right, (*quest_buttons_parent_path, 'btnNextPage')),
+            (window(), (*quest_buttons_parent_path, 'LogToggleButtonBackground')),
+            (window(), (*quest_buttons_parent_path, 'QuestLogButtonsBackground')),
+            (window(), (*quest_buttons_parent_path, 'RightPageBackground')),
+            (window(), (*quest_buttons_parent_path, 'btnPrevPage', 'LeftArrow')),
+            (window(), (*quest_buttons_parent_path, 'btnNextPage', 'RightArrow')),
+        ])
+        with patch('src.questing.get_window_from_path', new=AsyncMock(return_value=menu)):
+            _, _, previous = await self.quester._questbook_page(self.client, backwards=True)
+            _, _, following = await self.quester._questbook_page(self.client)
+        self.assertIsNotNone(previous)
+        self.assertIsNotNone(following)
+        self.assertIs(previous[0], left)
+        self.assertIs(following[0], right)
+
+    async def test_fallback_page_button_ignores_backgrounds(self):
+        menu, card, left = (window() for _ in range(3))
+        self.quester._visible_window_nodes = AsyncMock(return_value=[
+            (menu, tuple(quest_buttons_parent_path)),
+            (card, (*quest_buttons_parent_path, 'wndQuestInfo1')),
+            (left, (*quest_buttons_parent_path, 'btnBack')),
+            (window(), (*quest_buttons_parent_path, 'QuestLogButtonsBackground')),
+        ])
+        with patch('src.questing.get_window_from_path', new=AsyncMock(return_value=menu)):
+            _, _, previous = await self.quester._questbook_page(self.client, backwards=True)
+        self.assertIsNotNone(previous)
+        self.assertIs(previous[0], left)
+
+    async def test_background_alone_is_not_a_page_button(self):
+        menu, card = window(), window()
+        self.quester._visible_window_nodes = AsyncMock(return_value=[
+            (menu, tuple(quest_buttons_parent_path)),
+            (card, (*quest_buttons_parent_path, 'wndQuestInfo1')),
+            (window(), (*quest_buttons_parent_path, 'QuestLogButtonsBackground')),
+        ])
+        with patch('src.questing.get_window_from_path', new=AsyncMock(return_value=menu)):
+            _, _, previous = await self.quester._questbook_page(self.client, backwards=True)
+        self.assertIsNone(previous)
+
+    async def test_ambiguous_real_page_buttons_are_still_rejected(self):
+        menu, card = window(), window()
+        self.quester._visible_window_nodes = AsyncMock(return_value=[
+            (menu, tuple(quest_buttons_parent_path)),
+            (card, (*quest_buttons_parent_path, 'wndQuestInfo1')),
+            (window(), (*quest_buttons_parent_path, 'btnPrevPage')),
+            (window(), (*quest_buttons_parent_path, 'OtherPanel', 'btnPrevPage')),
+        ])
+        with patch('src.questing.get_window_from_path', new=AsyncMock(return_value=menu)):
+            _, _, previous = await self.quester._questbook_page(self.client, backwards=True)
+        self.assertIsNone(previous)
 
     async def test_offer_requires_title_and_verified_mainline_quest_data(self):
         dialog, title = window(), window('额外生命')
@@ -291,7 +424,8 @@ class MainlineFinderTests(unittest.IsolatedAsyncioTestCase):
         accepted = [False]
         self.quester._mainline_identity = AsyncMock(side_effect=lambda _client: (
             (42, 'QuestTitle_162472', 'Extra Life', row, True)
-            if accepted[0] else (99, 'Quest Finder', '', None, False)))
+            if accepted[0] else (60216001, '任务搜寻', '', None, False)))
+        self.quester._select_quest_finder = AsyncMock(return_value=False)
         self.quester._mainline_offer_candidate = AsyncMock(return_value=(42, row))
         async def visible(_client, path):
             return path[-1] == 'btnLeft' and not accepted[0]
@@ -302,7 +436,58 @@ class MainlineFinderTests(unittest.IsolatedAsyncioTestCase):
               patch('src.mainline_progress.log_mainline_progress', new=AsyncMock()) as progress):
             self.assertTrue(await self.quester._run_mainline_finder(self.client))
         progress.assert_awaited_once_with(self.client)
+        self.quester._select_quest_finder.assert_not_awaited()
         self.assertIsNone(self.client._xuanshu_mainline_id)
+
+    async def test_finder_guided_npc_can_offer_quest_not_yet_owned(self):
+        from wizwalker import XYZ
+        from src.paths import npc_range_path, advance_dialog_path, decline_quest_path
+        row = next(r for r in quest_rows() if r['english'] == 'Extra Life')
+        stage = [-1]
+        async def select(c):
+            self.quester._restore_owned_mainline.assert_awaited_once_with(c, expected_id=None)
+            stage[0] = 0
+            return True
+        self.quester._select_quest_finder = AsyncMock(side_effect=select)
+        self.client.quest_position = SimpleNamespace(position=AsyncMock(return_value=XYZ(100, 100, 0)))
+        self.client.body = SimpleNamespace(position=AsyncMock(return_value=XYZ(100, 100, 0)))
+        self.quester.read_popup = AsyncMock(return_value='talk')
+        self.quester._mainline_identity = AsyncMock(side_effect=lambda c:
+            (42, 'QuestTitle_162472', 'Extra Life', row, True) if stage[0] == 3
+            else (100, 'SideQuest', '', None, False) if stage[0] == -1
+            else (60216001, '任务搜寻', '', None, False))
+        self.quester._mainline_offer_candidate = AsyncMock(return_value=None)
+        async def key(key, *args):
+            self.assertEqual(key, Keycode.X)
+            stage[0] = 1
+        self.client.send_key.side_effect = key
+        async def visible(c, path):
+            return (path == npc_range_path and stage[0] == 0
+                    or path == advance_dialog_path and stage[0] in (1, 2)
+                    or path == decline_quest_path and stage[0] == 2)
+        async def click(c, path):
+            self.assertEqual(path, advance_dialog_path)
+            stage[0] += 1
+        with (patch('src.questing.is_visible_by_path', side_effect=visible),
+              patch('src.questing.is_free_leader_questing', new=AsyncMock(return_value=True)),
+              patch('src.questing.interaction_kind', return_value='talk'),
+              patch('src.questing.click_window_by_path', side_effect=click),
+              patch('src.questing.asyncio.sleep', new=AsyncMock()),
+              patch('src.mainline_progress.log_mainline_progress', new=AsyncMock())):
+            self.assertTrue(await self.quester._run_mainline_finder(self.client))
+        self.assertEqual(stage[0], 3)
+        self.quester._select_quest_finder.assert_awaited_once_with(self.client)
+
+    async def test_owned_matching_mainline_skips_finder_and_acceptance(self):
+        self.quester._mainline_identity = AsyncMock(
+            return_value=(100, 'SideQuest', '', None, False))
+        self.quester._restore_owned_mainline.return_value = True
+        self.quester._select_quest_finder = AsyncMock()
+        self.quester._mainline_offer_candidate = AsyncMock()
+        self.assertTrue(await self.quester._run_mainline_finder(self.client))
+        self.quester._select_quest_finder.assert_not_awaited()
+        self.quester._mainline_offer_candidate.assert_not_awaited()
+        self.client.send_key.assert_not_awaited()
 
 
 if __name__ == '__main__':

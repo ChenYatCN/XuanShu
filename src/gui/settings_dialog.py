@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
 )
 
 from src.gui.commands import GUICommand, GUICommandType
+from src.gui.helpers import add_dialog_titlebar
 from src.gui.icon_manager import (
     choose_custom_icon,
     reset_custom_icon,
@@ -104,6 +105,9 @@ def show_settings_dialog(ctx):
     )
 
     outer_layout = QVBoxLayout(dialog)
+
+    _style_titlebar = add_dialog_titlebar(
+        dialog, outer_layout, theme_edits, ctx.titlebar_svg_icon, lambda: _on_cancel())
 
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
@@ -207,6 +211,7 @@ def show_settings_dialog(ctx):
         swatches[key].setStyleSheet(
             f"background-color: {theme_edits[key]}; border: 1px solid rgba(255,255,255,60); border-radius: 3px;"
         )
+        _style_titlebar()
 
     def _make_color_row(key, label_key):
         hex_val = theme_edits[key]
@@ -682,6 +687,16 @@ def show_settings_dialog(ctx):
     )
     _add_checkbox(combat_form, "discard_duplicate_cards", "setting_discard_duplicates")
 
+    fusion_side = _NoScrollComboBox()
+    fusion_side.setObjectName("fusionResultSide")
+    fusion_side.addItem(tl("setting_fusion_left"), "left")
+    fusion_side.addItem(tl("setting_fusion_right"), "right")
+    saved_side = current.get("fusion_result_side", "right")
+    fusion_side.setCurrentIndex(fusion_side.findData(saved_side if saved_side in ("left", "right") else "right"))
+    fusion_side.setToolTip(tl("setting_fusion_result_note"))
+    combat_form.addRow(tl("setting_fusion_result_side"), fusion_side)
+    widgets["fusion_result_side"] = fusion_side
+
     layout.addWidget(combat_group)
 
     # ---- Client ----
@@ -740,7 +755,7 @@ def show_settings_dialog(ctx):
                 values[key] = w.value()
             elif isinstance(w, QComboBox):
                 text = w.currentText()
-                if key == "quest_hitter_assignment_mode":
+                if key in ("quest_hitter_assignment_mode", "fusion_result_side"):
                     values[key] = w.currentData()
                 elif key in ("client_to_follow", "client_to_boost", "hitter_client"):
                     values[key] = None if text == "None" else text
