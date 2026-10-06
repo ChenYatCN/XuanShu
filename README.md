@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="XuanShu-logo.png" width="128" alt="玄枢图标">
+</p>
+
 # 玄枢 XuanShu
 
 基于 Deimos-Wizard101 的修改版本，使用 GPL-3.0-only。原作者及贡献者保留各自版权，详见 [NOTICE.md](NOTICE.md) 和 [LICENSE](LICENSE)。
