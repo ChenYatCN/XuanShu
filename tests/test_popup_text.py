@@ -15,9 +15,9 @@ class PopupTextTests(unittest.IsolatedAsyncioTestCase):
         address = 1000 + (712 if kind in ('ControlText', 'ControlList') else 736)
         encoded = text.encode('utf-16-le')
         async def typed(at, primitive):
-            return {address + 16: len(encoded)//2, address + 24: capacity}[at]
+            return {address: 0x40000, address + 16: len(encoded)//2, address + 24: capacity}[at]
         async def read(at, size):
-            self.assertEqual(at, address)
+            self.assertEqual(at, address if capacity == 7 else 0x40000)
             self.assertEqual(size, len(encoded))
             return encoded
         window.read_typed.side_effect = typed
@@ -32,11 +32,11 @@ class PopupTextTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(await read_control_text(window), title)
                 window.maybe_text.assert_not_awaited()
 
-    async def test_heap_text_uses_existing_reader(self):
+    async def test_heap_text_uses_same_verified_layout(self):
         window = self.window('Configuration Station', capacity=31)
         self.assertEqual(await read_control_text(window), 'Configuration Station')
-        window.maybe_text.assert_awaited_once()
-        window.read_bytes.assert_not_awaited()
+        window.maybe_text.assert_not_awaited()
+        window.read_bytes.assert_awaited_once()
 
     async def test_prompt_read_failure_does_not_restart_worker(self):
         client = AsyncMock()

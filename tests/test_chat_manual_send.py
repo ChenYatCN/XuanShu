@@ -1,7 +1,7 @@
 import asyncio
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from src.chat_translation import ChatTranslationMonitor, _chat_edit, _chat_ready, _manual_chat_owner
 from src.automation_ownership import automation_owner
@@ -28,16 +28,43 @@ def client(title='p1', handle=1):
 
 
 class ManualSendTests(unittest.IsolatedAsyncioTestCase):
-    async def run_send(self, first=None, peers=None, draft='', mismatch=False, rows=None, allow_busy=False):
+    async def test_verified_self_lines_keep_original_and_other_same_body_is_not_suppressed(self):
+        events = []
+        monitor = ChatTranslationMonitor(events.append)
+        monitor.enabled = True
+        monitor.translation_api = Mock()
+        self_line = {'kind': 'message', 'source': 'chat_log', 'handle': 1,
+                     'title': 'p1', 'sender_gid': 0, 'sender_name': '你', 'message': 'hello'}
+        monitor._publish_message(self_line)
+        self.assertEqual(events[0]['message'], 'hello')
+        self.assertTrue(monitor.translation_queue.empty())
+        monitor.translation_api.translate.assert_not_called()
+        monitor._publish_message({**self_line, 'sender_gid': 42, 'sender_name': 'Other'})
+        self.assertEqual(monitor.translation_queue.qsize(), 1)
+        monitor.translation_task.cancel()
+        await asyncio.gather(monitor.translation_task, return_exceptions=True)
+
+    async def run_send(self, first=None, peers=None, draft='', mismatch=False, rows=None, allow_busy=False,
+                       input_text='hello', api=None, consumed_command=False, own_echo=False):
         first = first or client()
         peers = peers or [first]
         events = []
         monitor = ChatTranslationMonitor(events.append)
         monitor.enabled = True
+        monitor.translation_api = api
+        monitor.translation_clients = {peer.window_handle: peer for peer in peers}
         monitor.auto_reply = True
         edit = SimpleNamespace(read_base_address=AsyncMock(return_value=100))
         text = ''
         reads = 0
+
+        async def echo(*args):
+            monitor._publish_message({'kind': 'message', 'source': 'chat_log',
+                'handle': first.window_handle, 'title': first.title, 'channel': '附近',
+                'sender_gid': 0, 'sender_name': '你', 'message': 'hello'})
+            await asyncio.sleep(0)
+        if own_echo:
+            first.send_hotkey.side_effect = echo
 
         async def read(_edit):
             return draft or text
@@ -45,7 +72,7 @@ class ManualSendTests(unittest.IsolatedAsyncioTestCase):
         async def type_text(target, wire):
             nonlocal text
             self.assertIs(target, first)
-            self.assertEqual(wire, '/s hello')
+            self.assertEqual(wire, 'hello')
             text = 'wrong' if mismatch else wire
 
         async def logs(peer):
@@ -64,23 +91,119 @@ class ManualSendTests(unittest.IsolatedAsyncioTestCase):
              patch('src.chat_translation.read_control_text', read), \
              patch('src.chat_translation._type_chat', type_text), \
              patch('src.chat_translation._chat_texts', logs):
-            await monitor._manual_send(peers, 'p1', 'hello', verify_seconds=.03, allow_busy=allow_busy)
-        return first, events[-1]
+            await monitor._manual_send(peers, 'p1', input_text, verify_seconds=.03, allow_busy=allow_busy)
+            final = events[-1]
+            if own_echo and final['filled']:
+                await echo()  # User confirms the retained English draft later.
+            if monitor.translation_task:
+                await monitor.translation_task
+        return first, final
 
-    async def test_once_p1_only_and_three_evidence_levels(self):
+    async def test_translated_send_and_manual_confirm_echo_never_translate_twice(self):
+        for consumed in (False, True):
+            api = Mock(translate=Mock(return_value='hello'))
+            first, final = await self.run_send(input_text='你好', api=api,
+                                               consumed_command=consumed, own_echo=True)
+            api.translate.assert_called_once_with('你好', target_language='en')
+            self.assertTrue(final['filled'])
+            self.assertFalse(final['invoked'])
+            first.send_hotkey.assert_not_awaited()
+
+    async def test_chinese_is_translated_before_input_without_send_or_receipt_claim(self):
+        api = Mock(translate=Mock(return_value='hello'))
+        first, final = await self.run_send(input_text='你好', api=api, rows=chat_line('hello'))
+        api.translate.assert_called_once_with('你好', target_language='en')
+        self.assertEqual(final['source_message'], '你好')
+        self.assertEqual(final['message'], 'hello')
+        self.assertTrue(final['filled'])
+        self.assertFalse(final['local_echo'])
+        first.send_hotkey.assert_not_awaited()
+
+    async def test_english_is_not_translated_back_to_chinese(self):
+        api = Mock()
+        first, final = await self.run_send(api=api)
+        api.translate.assert_not_called()
+        self.assertEqual(final['message'], 'hello')
+        self.assertTrue(final['filled'])
+        first.send_hotkey.assert_not_awaited()
+
+    async def test_missing_or_failed_translation_never_inputs_original_chinese(self):
+        from src.chat_translation_api import TranslationError
+        for api in (None, Mock(translate=Mock(side_effect=TranslationError('接口超时'))),
+                    Mock(translate=Mock(side_effect=RuntimeError('secret transport details')))):
+            first, final = await self.run_send(input_text='你好', api=api)
+            first.mouse_handler.click_window.assert_not_awaited()
+            first.send_hotkey.assert_not_awaited()
+            self.assertFalse(final['invoked'])
+            self.assertNotIn('secret transport details', final['status'])
+
+    async def test_invalid_or_too_long_english_translation_never_inputs(self):
+        for translated in ('', None, 'x' * 81, '仍是中文', 'hello\nworld', '😀'):
+            api = Mock(translate=Mock(return_value=translated))
+            first, final = await self.run_send(input_text='你好', api=api)
+            first.mouse_handler.click_window.assert_not_awaited()
+            first.send_hotkey.assert_not_awaited()
+            self.assertFalse(final['invoked'])
+
+    async def test_translated_draft_with_unknown_channel_requires_manual_confirmation(self):
+        api = Mock(translate=Mock(return_value='hello'))
+        first, final = await self.run_send(input_text='你好', api=api, consumed_command=True)
+        self.assertTrue(final['filled'])
+        self.assertFalse(final['invoked'])
+        self.assertEqual(final['message'], 'hello')
+        first.send_hotkey.assert_not_awaited()
+
+    async def test_fallback_still_preserves_existing_draft_and_rejects_mismatch(self):
+        for options in ({'draft': 'existing'}, {'mismatch': True}):
+            first, final = await self.run_send(**options)
+            first.send_hotkey.assert_not_awaited()
+            self.assertFalse(final['filled'])
+
+    async def test_translation_configuration_change_aborts_before_game_input(self):
+        events = []
+        monitor = ChatTranslationMonitor(events.append)
+        monitor.enabled = True
+        monitor.translation_api = Mock()
+        first = client()
+        async def translate(*args, **kwargs):
+            monitor._reset_translation()
+            return 'hello'
+        with patch('src.chat_translation.asyncio.to_thread', AsyncMock(side_effect=translate)), \
+             patch('src.chat_translation._type_chat', AsyncMock()) as typed:
+            await monitor._manual_send([first], 'p1', '你好', verify_seconds=0)
+        typed.assert_not_awaited()
+        first.send_hotkey.assert_not_awaited()
+        self.assertIn('配置已变化', events[-1]['error'])
+
+    async def test_cancellation_during_translation_never_inputs_or_sends(self):
+        monitor = ChatTranslationMonitor(lambda event: None)
+        monitor.enabled = True
+        monitor.translation_api = Mock()
+        first = client()
+        with patch('src.chat_translation.asyncio.to_thread', AsyncMock(side_effect=asyncio.CancelledError)), \
+             patch('src.chat_translation._type_chat', AsyncMock()) as typed:
+            with self.assertRaises(asyncio.CancelledError):
+                await monitor._manual_send([first], 'p1', '你好', verify_seconds=0)
+        typed.assert_not_awaited()
+        first.send_hotkey.assert_not_awaited()
+
+    async def test_only_p1_is_filled_and_no_send_receipts_are_claimed(self):
         first, second = client(), client('p2', 2)
         first, final = await self.run_send(first, [first, second], rows=chat_line('hello'))
-        first.send_hotkey.assert_awaited_once()
+        first.send_hotkey.assert_not_awaited()
+        first.mouse_handler.click_window.assert_awaited_once()
         second.send_hotkey.assert_not_awaited()
         second.mouse_handler.click_window.assert_not_awaited()
-        self.assertTrue(final['invoked'])
-        self.assertTrue(final['local_echo'])
-        self.assertEqual(final['peer_receipts'], ['p2'])
-        self.assertEqual(final['listener_capture'], ['p1', 'p2'])
+        self.assertTrue(final['filled'])
+        self.assertFalse(final['invoked'])
+        self.assertFalse(final['local_echo'])
+        self.assertEqual(final['peer_receipts'], [])
+        self.assertEqual(final['listener_capture'], [])
 
     async def test_old_hello_not_proof(self):
         _, final = await self.run_send()
-        self.assertTrue(final['invoked'])
+        self.assertTrue(final['filled'])
+        self.assertFalse(final['invoked'])
         self.assertFalse(final['local_echo'])
         self.assertEqual(final['listener_capture'], [])
 
@@ -89,15 +212,17 @@ class ManualSendTests(unittest.IsolatedAsyncioTestCase):
         first.game_client.player_gid.return_value = 0
         first.client_object = SimpleNamespace(global_id_full=AsyncMock(return_value=31))
         first, final = await self.run_send(first, rows=chat_line('hello'))
-        first.send_hotkey.assert_awaited_once()
-        self.assertTrue(final['local_echo'])
+        first.send_hotkey.assert_not_awaited()
+        self.assertTrue(final['filled'])
+        self.assertFalse(final['local_echo'])
 
     async def test_unavailable_gid_allows_manual_send_without_receipt_claim(self):
         first = client()
         first.game_client.player_gid.side_effect = RuntimeError('unavailable')
         first, final = await self.run_send(first, rows=chat_line('hello'))
-        first.send_hotkey.assert_awaited_once()
-        self.assertTrue(final['invoked'])
+        first.send_hotkey.assert_not_awaited()
+        self.assertTrue(final['filled'])
+        self.assertFalse(final['invoked'])
         self.assertFalse(final['local_echo'])
         self.assertEqual(final['peer_receipts'], [])
         self.assertEqual(final['listener_capture'], [])
@@ -159,14 +284,15 @@ class ManualSendTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(monitor.auto_reply)
             await monitor.stop()
 
-    async def test_override_allows_battle_and_automatic_quest_send_once(self):
+    async def test_override_allows_battle_and_automatic_quest_fill_once(self):
         first = client()
         first.questing_status = True
         first.combat_status = True
         first.in_battle.return_value = True
         first, final = await self.run_send(first, allow_busy=True)
-        first.send_hotkey.assert_awaited_once()
-        self.assertTrue(final['invoked'])
+        first.send_hotkey.assert_not_awaited()
+        self.assertTrue(final['filled'])
+        self.assertFalse(final['invoked'])
 
     async def test_override_keeps_loading_dialogue_draft_and_readback_guards(self):
         for attr in ('is_loading', 'is_in_dialog'):

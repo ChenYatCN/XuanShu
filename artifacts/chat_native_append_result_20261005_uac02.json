@@ -1,0 +1,35 @@
+{
+  "pid": 13420,
+  "chat_sent": false,
+  "injected": false,
+  "allocated": false,
+  "append_verified": true,
+  "header": 1597967500536,
+  "pointer": 1596081626256,
+  "old_length": 252,
+  "new_length": 287,
+  "capacity": 924,
+  "original_header_hex": "90dce09d730100007401000008cf740dfc000000000000009c03000000000000",
+  "original_tail_hex": "00006f006c006f0072003e000000e06555742b7d346c76663c002f0063006f006c006f0072003e000a003c0063006f006c006f0072003b003000300046004600300030003e003c00",
+  "expected_text": "<color;FFFFFF><image;Art/Art_Chat_Say.dds;24;24;FFFFFFFF> [你] 我 </color>\n<color;00FF00><image;Art/Art_Chat_System.dds;24;24;FFFFFFFF> <image;Reagent> 猫尾巴草</color>\n<color;00FF00><image;Art/Art_Chat_System.dds;24;24;FFFFFFFF> <image;Reagent> 猫尾巴草</color>\n<color;FFFF00>[测试] 译文显示测试</color>\n",
+  "ui_nodes_visited": 538,
+  "protected_section_seconds": 0.0003842000005533919,
+  "post_resume_samples": [
+    {
+      "after_delay_seconds": 0,
+      "test_present": true,
+      "exact_test_text": true
+    },
+    {
+      "after_delay_seconds": 1,
+      "test_present": true,
+      "exact_test_text": true
+    },
+    {
+      "after_delay_seconds": 3,
+      "test_present": true,
+      "exact_test_text": true
+    }
+  ],
+  "visual_display_verified": false
+}

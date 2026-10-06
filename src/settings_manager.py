@@ -67,6 +67,10 @@ DEFAULT_SETTINGS = {
     # None preserves the existing install until the user explicitly applies a choice.
     "game_language": None,
     "game_language_patch": "Locale_en-US-root.wad.d",
+    "chat_translation_enabled": False,
+    "chat_translation_api_url": "https://api.deepseek.com",
+    "chat_translation_model": "deepseek-flash",
+    "chat_translation_api_key_protected": "",
 }
 
 RESTART_REQUIRED_KEYS = {"locale"}

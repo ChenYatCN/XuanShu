@@ -11,6 +11,11 @@ from wizwalker import Client, XYZ
 from wizwalker.constants import Keycode
 from wizwalker.memory import Window
 from loguru import logger
+
+
+class CharacterSelectionError(RuntimeError):
+    """Selection could not be verified; never enter an arbitrary character."""
+
 class clientInfo:
 
     def __init__(self, username: str, password: str, handle, title: str, wizLst: list, totalAzothCollected: int, timeSinceBotAction: int):
@@ -458,7 +463,7 @@ async def azothFarmer(p, listPosition):
                     await asyncio.sleep(0.2)
                     if not keepWizard:
                         needSwitch = True
-                    await logout_and_in(p, nextWizard, needSwitch, activeClients[listPosition].title)
+                    await logout_and_in(p, nextWizard if needSwitch else wizard, needSwitch, activeClients[listPosition].title)
                     if not keepWizard:
                         break
                     print('------------------------------------------------------')
@@ -521,35 +526,55 @@ async def logout_and_in(client, nextWizard, needSwitch, title):
         await asyncio.sleep(0.1)
     if needSwitch:
         print(f'[{title}] 正在切换魔法师到: {nextWizard}')
-    start_time = asyncio.get_event_loop().time()
-    switch = True
-    while switch and needSwitch:
-        await asyncio.sleep(0.02)
-        await client.send_key(Keycode.TAB, min(0.1, character_switch_delay))
-        await asyncio.sleep(max(0, character_switch_delay - 0.1))
-        try:
-            wizard = wizardInfo(await (await window_from_path(client.root_window, txtName)).maybe_text(), await (await window_from_path(client.root_window, txtLevel)).maybe_text(), await (await window_from_path(client.root_window, txtLocation)).maybe_text(), 0, 0, 0)
-            if enable_page_turning:
-                if await is_visible_by_path(client.root_window, rightClassRoomButton):
-                    if wizard != nextWizard:
-                        await click_window_until_gone(client, rightClassRoomButton)
-                elif await is_visible_by_path(client.root_window, leftClassRoomButton):
-                    if wizard != nextWizard:
-                        await click_window_until_gone(client, leftClassRoomButton)
-        except Exception as e:
-            logger.debug(f'获取角色信息时出错: {e}')
-            pass
-        if asyncio.get_event_loop().time() - start_time > 4:
-            logger.debug('角色切换超时，尝试恢复')
-            if enable_page_turning and await is_visible_by_path(client.root_window, leftClassRoomButton):
-                await click_window_until_gone(client, leftClassRoomButton)
+    async def selected_wizard():
+        name = await (await window_from_path(client.root_window, txtName)).maybe_text()
+        level = await (await window_from_path(client.root_window, txtLevel)).maybe_text()
+        location = await (await window_from_path(client.root_window, txtLocation)).maybe_text()
+        if not removeTags(name).strip() or not removeTags(level).strip():
+            raise ValueError('选角信息尚未就绪')
+        return wizardInfo(name, level, location, 0, 0, 0)
+
+    entered = False
+    # Retry locally before escalation. The deadline scales with the user's
+    # Tab interval instead of expiring after 4 seconds during a slow key press.
+    for attempt in range(3):
+        deadline = asyncio.get_running_loop().time() + max(4, character_switch_delay * 8 + 1)
+        seen = set()
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                wizard = await selected_wizard()
+                if wizard == nextWizard:
+                    # Fresh read immediately before Play; no stale match after
+                    # a page turn or failed read, and no second Play call below.
+                    if await selected_wizard() == nextWizard:
+                        await click_window_until_gone(client, playButton)
+                        entered = True
+                        break
+                if not needSwitch:
+                    break  # Same-character reload must also verify its target.
+                right = enable_page_turning and await is_visible_by_path(client.root_window, rightClassRoomButton)
+                left = enable_page_turning and await is_visible_by_path(client.root_window, leftClassRoomButton)
+                page = 1 if left and not right else 0
+                key = (page, wizard.Name, wizard.Level)
+                if key in seen:
+                    other_page = 1 - page
+                    if (right or left) and not any(item[0] == other_page for item in seen):
+                        await click_window_until_gone(client, rightClassRoomButton if right else leftClassRoomButton)
+                        await asyncio.sleep(character_switch_delay)
+                        continue
+                    break  # A complete cycle without the target; rescan.
+                seen.add(key)
+                await client.send_key(Keycode.TAB, min(.1, character_switch_delay))
+                await asyncio.sleep(max(0, character_switch_delay - .1))
+            except Exception as exc:
+                logger.debug('ibao {} 选角信息暂不可用：{}', title, exc)
+                await asyncio.sleep(max(.1, character_switch_delay))
+        if entered:
             break
-        if wizard == nextWizard:
-            switch = False
-        if wizard == nextWizard:
-            await asyncio.sleep(0.5)
-            await click_window_until_gone(client, playButton)
-    await click_window_until_gone(client, playButton)
+        logger.warning('ibao {} 选角未确认，自动重新扫描（{}/3）：{}', title, attempt + 1, nextWizard)
+        await asyncio.sleep(character_switch_delay)
+    if not entered:
+        raise CharacterSelectionError(f'{title} 未确认目标角色 {nextWizard}；未点击进入，自动恢复')
     await client.wait_for_zone_change()
     await asyncio.sleep(0.5)
     if await is_visible_by_path(client.root_window, quitButton):

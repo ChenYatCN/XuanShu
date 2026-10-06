@@ -1,0 +1,11 @@
+{
+  "read_only": true,
+  "pid": 13420,
+  "existing_hook_reused": true,
+  "ui_nodes_visited": 19,
+  "samples": [
+    [],
+    []
+  ],
+  "write_or_refresh_test_performed": false
+}

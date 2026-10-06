@@ -412,6 +412,8 @@ WORLD_RECORDS = {
 }
 
 TEXT_RECORDS = {
+    # Verified in installed Chat.lang (Root.wad and Locale_en-US-root.wad).
+    "Chat_HeaderSay": ["Say:", "说:"],
     "GUI_00000002": [
         "Press &InputBindings_NPCInteract& or &Icons_LeftMouseClick& to Collect",
         "按&Icons_XKey& 或&Icons_LeftMouseClick& 收集"

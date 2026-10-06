@@ -43,6 +43,8 @@ from src.gui.helpers import (
     resource_path,
     titlebar_button_style,
     titlebar_control_svg,
+    settings_control_svg,
+    translation_control_svg,
 )
 from src.gui.ibao_dialog import TripleClickGate, build_ibao_dialog
 from src.gui.icon_manager import apply_app_icon, get_current_icon_path
@@ -237,7 +239,7 @@ def manage_gui(
     titlebar_layout.addWidget(pin_btn)
 
     # Gear button (settings) — callback uses late-binding since ctx doesn't exist yet
-    _gear_svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="{_sc}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>'
+    _gear_svg = settings_control_svg(_sc)
     gear_btn = QPushButton()
     gear_btn.setIcon(_titlebar_svg_icon(_gear_svg))
     gear_btn.setFixedSize(32, 24)
@@ -530,11 +532,7 @@ def manage_gui(
     paths_btn.clicked.connect(copy_callback(send_queue, GUIKeys.copy_ui_tree))
     ctx.tracked_icon_buttons.append((paths_btn, _window_svg, 16))
 
-    _translation_icon_path = resource_path(
-        "assets/icon/game-icon-pack-v1.4-svg-zh/无间距/11-符号/字母ABC.svg"
-    )
-    with open(_translation_icon_path, encoding="utf-8") as icon_file:
-        _translation_svg = icon_file.read().replace("currentColor", _stroke_color)
+    _translation_svg = translation_control_svg(_stroke_color)
     translation_dialog = ChatTranslationDialog(send_queue, ctx)
     ctx.exports['chat_translation'] = {'retheme': translation_dialog.retheme}
     translation_btn = QPushButton()

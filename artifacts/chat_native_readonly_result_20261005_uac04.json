@@ -1,0 +1,57 @@
+{
+  "read_only": true,
+  "pid": 13420,
+  "existing_hook_reused": true,
+  "ui_nodes_visited": 537,
+  "samples": [
+    [
+      {
+        "name": "chatLog",
+        "kind": "ControlText",
+        "address": "0x1739da22608",
+        "length": 1966,
+        "capacity": 2115,
+        "spare_utf16_units": 149,
+        "inline": false,
+        "text_preview": "[WARN] Texture was not loaded correctly</color>\n[ERRO] Texture::LoadTexture(Reagent) FAILED!</color>\n[WARN] Texture was not loaded correctly</color>\n[ERRO] Text",
+        "text_matches_length": true
+      },
+      {
+        "name": "chatLog",
+        "kind": "ControlText",
+        "address": "0x1740e4904f8",
+        "length": 252,
+        "capacity": 924,
+        "spare_utf16_units": 672,
+        "inline": false,
+        "text_preview": "<color;FFFFFF><image;Art/Art_Chat_Say.dds;24;24;FFFFFFFF> [你] 我 </color>\n<color;00FF00><image;Art/Art_Chat_System.dds;24;24;FFFFFFFF> <image;Reagent> 猫尾巴草</colo",
+        "text_matches_length": true
+      }
+    ],
+    [
+      {
+        "name": "chatLog",
+        "kind": "ControlText",
+        "address": "0x1739da22608",
+        "length": 1966,
+        "capacity": 2115,
+        "spare_utf16_units": 149,
+        "inline": false,
+        "text_preview": "[WARN] Texture was not loaded correctly</color>\n[ERRO] Texture::LoadTexture(Reagent) FAILED!</color>\n[WARN] Texture was not loaded correctly</color>\n[ERRO] Text",
+        "text_matches_length": true
+      },
+      {
+        "name": "chatLog",
+        "kind": "ControlText",
+        "address": "0x1740e4904f8",
+        "length": 252,
+        "capacity": 924,
+        "spare_utf16_units": 672,
+        "inline": false,
+        "text_preview": "<color;FFFFFF><image;Art/Art_Chat_Say.dds;24;24;FFFFFFFF> [你] 我 </color>\n<color;00FF00><image;Art/Art_Chat_System.dds;24;24;FFFFFFFF> <image;Reagent> 猫尾巴草</colo",
+        "text_matches_length": true
+      }
+    ]
+  ],
+  "write_or_refresh_test_performed": false
+}

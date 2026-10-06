@@ -13,6 +13,8 @@ from src.script_popups import run_with_automation_ui_guard
 
 
 IBAO_INACTIVITY_TIMEOUT = 180.0
+IBAO_RECOVERY_BACKOFF = 5.0
+IBAO_RECOVERY_RETRY_DELAY = 30.0
 
 
 async def complete_before_cancel(task, on_cancel=None):
@@ -343,6 +345,7 @@ class IbaoGroups:
             )
             group['_worker_task'] = worker_task
             try:
+                selection_failed = False
                 while not worker_task.done():
                     if not getattr(current_client, 'is_running', lambda: True)():
                         raise HookNotActive('Client')
@@ -381,14 +384,19 @@ class IbaoGroups:
                         raise error
                     if error is None or self.recovery is None:
                         return await worker_task
-                    logger.warning('ibao {} 采集异常，等待无操作超时后恢复: {}', current_client.title, error)
-                    await asyncio.sleep(max(0, self.inactivity_timeout - (self.clock() - last_activity)))
+                    selection_failed = isinstance(error, ibao_core.CharacterSelectionError)
+                    if selection_failed:
+                        logger.warning('ibao {} 本地选角重找失败，直接自动恢复：{}', current_client.title, error)
+                    else:
+                        logger.warning('ibao {} 采集异常，等待无操作超时后恢复: {}', current_client.title, error)
+                        await asyncio.sleep(max(0, self.inactivity_timeout - (self.clock() - last_activity)))
 
-                logger.warning(
-                    'ibao {} 超过 {} 秒无采集、角色、地图或冷却进展，准备恢复',
-                    current_client.title,
-                    round(self.inactivity_timeout),
-                )
+                if selection_failed:
+                    logger.warning('ibao {} 开始自动选角恢复', current_client.title)
+                else:
+                    logger.warning(
+                        'ibao {} 超过 {} 秒无采集、角色、地图或冷却进展，准备恢复',
+                        current_client.title, round(self.inactivity_timeout))
                 attempt_active[0] = False
                 worker_task.cancel()
                 await complete_before_cancel(asyncio.gather(worker_task, return_exceptions=True))
@@ -396,22 +404,34 @@ class IbaoGroups:
                     raise asyncio.CancelledError
                 if self.recovery is None:
                     raise RuntimeError('未配置 ibao 客户端自动重启接口')
-                if group['consecutive_restarts'] >= 3:
-                    raise RuntimeError('连续 3 次重启后仍无收集，已暂停；请检查地点、宠物能力和零食后手动启动')
-                group['consecutive_restarts'] += 1
-                group['restarts'] += 1
-
                 group['recovering'] = True
                 self.notify()
                 old_client = current_client
                 try:
-                    current_client = await self.recovery(
-                        old_client, deepcopy(settings)
-                    )
+                    if group['consecutive_restarts'] >= 3:
+                        delay = min(IBAO_RECOVERY_RETRY_DELAY,
+                                    IBAO_RECOVERY_BACKOFF * (group['consecutive_restarts'] - 2))
+                        logger.warning('ibao {} 连续恢复后仍无采集，{} 秒后继续自动恢复', current_client.title, delay)
+                        await asyncio.sleep(delay)
+                    group['consecutive_restarts'] += 1
+                    group['restarts'] += 1
+                    while True:
+                        if group.get('stopping'):
+                            raise asyncio.CancelledError
+                        try:
+                            replacement = await self.recovery(old_client, deepcopy(settings))
+                            if replacement is None:
+                                raise RuntimeError('自动重启没有返回新客户端')
+                            current_client = replacement
+                            break
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:
+                            logger.warning('ibao {} 自动恢复暂未完成，{} 秒后重试：{}',
+                                           old_client.title, IBAO_RECOVERY_RETRY_DELAY, exc)
+                            await asyncio.sleep(IBAO_RECOVERY_RETRY_DELAY)
                 finally:
                     group['recovering'] = False
-                if current_client is None:
-                    raise RuntimeError('ibao 客户端自动重启没有返回新客户端')
 
                 old_client.is_ibao = False
                 self._replace_group_client(

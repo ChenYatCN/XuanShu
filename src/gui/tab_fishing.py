@@ -44,11 +44,11 @@ def _icon_toggle_style(ctx):
 
 
 def _chest_svg(stroke):
-    return library_svg('2-物品/箱子.svg', stroke)
+    return library_svg('2-物品/箱子.svg', stroke, scale=.85)
 
 
 def _fish_svg(stroke):
-    return library_svg('2-物品/钓鱼竿.svg', stroke)
+    return library_svg('2-物品/钓鱼竿.svg', stroke, scale=.84)
 
 
 def _configure_icon_toggle(ctx, checkbox, svg):

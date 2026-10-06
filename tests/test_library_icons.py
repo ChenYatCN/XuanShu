@@ -1,4 +1,5 @@
 import ast
+import xml.etree.ElementTree as ET
 from pathlib import Path
 import sys
 import unittest
@@ -7,12 +8,41 @@ from unittest.mock import patch
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QImage, QPainter
 from PyQt6.QtSvg import QSvgRenderer
-from src.gui.helpers import library_svg, build_shared_svgs
+from src.gui.helpers import library_svg, build_shared_svgs, translation_control_svg
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class LibraryIconsTests(unittest.TestCase):
+    def test_ui_tree_connector_caps_stay_outside_node_interiors(self):
+        svg = build_shared_svgs('#63cdda')['window']
+        image = QImage(240, 240, QImage.Format.Format_ARGB32)
+        image.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        QSvgRenderer(svg.encode()).render(painter)
+        painter.end()
+        # Sample the entire clear centerline of each bottom node at 10x size.
+        for x in (50, 190):
+            self.assertTrue(all(image.pixelColor(x, y).alpha() == 0
+                                for y in range(168, 212)), x)
+
+    def test_translation_control_renders_small_and_recolors_without_font(self):
+        for color in ('#63cdda', '#202020'):
+            svg = translation_control_svg(color)
+            self.assertNotIn('<text', svg)
+            self.assertIn(color, svg)
+            self.assertIn('fill="none"', svg)
+            renderer = QSvgRenderer(svg.encode())
+            self.assertTrue(renderer.isValid())
+            for size in (16, 24, 32):
+                image = QImage(size, size, QImage.Format.Format_ARGB32)
+                image.fill(Qt.GlobalColor.transparent)
+                painter = QPainter(image)
+                renderer.render(painter)
+                painter.end()
+                self.assertTrue(any(image.pixelColor(x, y).alpha()
+                                    for x in range(size) for y in range(size)))
+
     def test_selected_resources_render_and_recolor(self):
         tree = ast.parse((ROOT / 'XuanShu.spec').read_text(encoding='utf-8'))
         loop = next(n for n in tree.body if isinstance(n, ast.For)
@@ -24,7 +54,7 @@ class LibraryIconsTests(unittest.TestCase):
                 svg = library_svg(name, color)
                 self.assertNotIn('currentColor', svg)
                 if name in ('8-界面/人物怪物列表.svg', '8-界面/界面.svg',
-                            '8-界面/用户列表.svg'):
+                            '8-界面/用户列表.svg', '2-物品/箱子.svg', '2-物品/钓鱼竿.svg'):
                     self.assertIn(f'fill="{color}"', svg)
                 else:
                     self.assertIn('fill="none"', svg)
@@ -56,11 +86,17 @@ class LibraryIconsTests(unittest.TestCase):
         icons = build_shared_svgs(color)
         for key, path in {
             'eject': '9-媒体/断链.svg', 'hook': '9-媒体/锁链.svg',
-            'entity': '8-界面/人物怪物列表.svg', 'window': '8-界面/界面.svg',
+            'entity': '8-界面/实体查询.svg', 'window': '8-界面/UI-树.svg',
         }.items():
             self.assertEqual(icons[key], library_svg(path, color))
-        self.assertEqual(_chest_svg(color), library_svg('2-物品/箱子.svg', color))
-        self.assertEqual(_fish_svg(color), library_svg('2-物品/钓鱼竿.svg', color))
+        self.assertEqual(_chest_svg(color), library_svg('2-物品/箱子.svg', color, scale=.85))
+        self.assertEqual(_fish_svg(color), library_svg('2-物品/钓鱼竿.svg', color, scale=.84))
+        for name in ('钓鱼竿.svg', '箱子.svg'):
+            supplied = ROOT / 'assets/icon/game-icon-pack-v1.4-svg-zh/间距/2-物品' / name
+            active = ROOT / 'assets/icon/outline/2-物品' / name
+            path_tag = '{http://www.w3.org/2000/svg}path'
+            self.assertEqual([p.attrib['d'] for p in ET.parse(active).iter(path_tag)],
+                             [p.attrib['d'] for p in ET.parse(supplied).iter(path_tag)])
         for size in (16, 24, 32):
             heights = []
             for svg in (_fish_svg(color), icons['kill']):

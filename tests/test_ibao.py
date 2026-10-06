@@ -140,8 +140,8 @@ class IbaoGroupTests(unittest.IsolatedAsyncioTestCase):
                 await task
         self.assertEqual(events, ['farmer-cleaned'])
 
-    async def test_three_restarts_then_stops_despite_repeated_input(self):
-        from unittest.mock import AsyncMock
+    async def test_more_than_three_restarts_continues_and_remains_stoppable(self):
+        from unittest.mock import AsyncMock, patch
         client = SimpleNamespace(title='p1')
         async def guard(run, clients):
             return await run()
@@ -152,13 +152,19 @@ class IbaoGroupTests(unittest.IsolatedAsyncioTestCase):
         recovery = AsyncMock(return_value=client)
         manager = IbaoGroups(lambda: [client], Mock(), worker, guard,
                              recovery=recovery, inactivity_timeout=.01)
-        manager.add(['p1'], {})
-        await asyncio.wait_for(asyncio.gather(manager.groups[0]['workers'][0][1],
-                                             return_exceptions=True), 1)
-        await asyncio.sleep(0)
-        self.assertEqual(recovery.await_count, 3)
+        with patch('src.ibao_runtime.IBAO_RECOVERY_BACKOFF', .001):
+            manager.add(['p1'], {})
+            try:
+                for _ in range(100):
+                    if recovery.await_count >= 4:
+                        break
+                    await asyncio.sleep(.01)
+                self.assertGreaterEqual(recovery.await_count, 4)
+                self.assertTrue(manager.groups)
+                self.assertFalse(manager.groups[0]['workers'][0][1].done())
+            finally:
+                await manager.stop()
         self.assertFalse(manager.groups)
-        self.assertIn('连续 3 次', manager.results[0]['state'])
 
     async def test_statistics_and_account_settings_survive_reload(self):
         from copy import deepcopy
@@ -333,3 +339,101 @@ class IbaoGroupTests(unittest.IsolatedAsyncioTestCase):
         await manager.stop(['p1'])
         self.assertTrue(cancelled.is_set())
         self.assertEqual(manager.groups, [])
+
+    async def test_selection_failure_recovers_without_inactivity_wait(self):
+        from src.ibao_core import CharacterSelectionError
+        from unittest.mock import AsyncMock
+        client = SimpleNamespace(title='p1')
+        resumed = asyncio.Event()
+        runs = 0
+        async def guard(run, clients):
+            return await run()
+        async def worker(client, settings):
+            nonlocal runs
+            runs += 1
+            if runs == 1:
+                raise CharacterSelectionError('not confirmed')
+            settings['_collection_callback']()
+            resumed.set()
+            await asyncio.Event().wait()
+        recovery = AsyncMock(return_value=client)
+        manager = IbaoGroups(lambda: [client], Mock(), worker, guard,
+                             recovery=recovery, inactivity_timeout=180)
+        manager.add(['p1'], {})
+        try:
+            await asyncio.wait_for(resumed.wait(), 1)
+            recovery.assert_awaited_once()
+            self.assertEqual(manager.groups[0]['consecutive_restarts'], 0)
+        finally:
+            await manager.stop()
+
+    async def test_recovery_failure_and_empty_result_retry_until_resumed(self):
+        from src.ibao_core import CharacterSelectionError
+        from unittest.mock import AsyncMock, patch
+        old = SimpleNamespace(title='p1')
+        replacement = SimpleNamespace(title='p1')
+        clients = [old]
+        resumed = asyncio.Event()
+        async def guard(run, clients):
+            return await run()
+        async def worker(client, settings):
+            if client is old:
+                raise CharacterSelectionError('not confirmed')
+            settings['_collection_callback']()
+            resumed.set()
+            await asyncio.Event().wait()
+        attempts = 0
+        async def recover(client, settings):
+            nonlocal attempts
+            attempts += 1
+            self.assertIs(client, old)
+            self.assertEqual(settings['switch_delay'], .7)
+            clients.clear()
+            await manager.remove_missing()
+            self.assertTrue(manager.groups[0]['recovering'])
+            if attempts == 1:
+                raise OSError('temporary login failure')
+            if attempts == 2:
+                return None
+            clients.append(replacement)
+            return replacement
+        recovery = AsyncMock(side_effect=recover)
+        manager = IbaoGroups(lambda: clients, Mock(), worker, guard,
+                             recovery=recovery, inactivity_timeout=180)
+        with patch('src.ibao_runtime.IBAO_RECOVERY_RETRY_DELAY', .001):
+            manager.add(['p1'], {'switch_delay': .7})
+            try:
+                await asyncio.wait_for(resumed.wait(), 1)
+                self.assertEqual(recovery.await_count, 3)
+                self.assertEqual(manager.groups[0]['collected'], 1)
+                self.assertFalse(old.is_ibao)
+                self.assertTrue(replacement.is_ibao)
+            finally:
+                await manager.stop()
+
+    async def test_stop_during_recovery_retry_wait_preserves_other_client(self):
+        from src.ibao_core import CharacterSelectionError
+        from unittest.mock import AsyncMock
+        old, other = SimpleNamespace(title='p1'), SimpleNamespace(title='p2')
+        failed = asyncio.Event()
+        async def guard(run, clients):
+            return await run()
+        async def worker(client, settings):
+            if client is old:
+                raise CharacterSelectionError('not confirmed')
+            await asyncio.Event().wait()
+        async def recover(client, settings):
+            failed.set()
+            raise OSError('temporary login failure')
+        recovery = AsyncMock(side_effect=recover)
+        manager = IbaoGroups(lambda: [old, other], Mock(), worker, guard,
+                             recovery=recovery, inactivity_timeout=180)
+        manager.add(['p1', 'p2'], {})
+        try:
+            await asyncio.wait_for(failed.wait(), 1)
+            await asyncio.wait_for(manager.stop(['p1']), 1)
+            recovery.assert_awaited_once()
+            self.assertEqual([c for g in manager.groups for c, _ in g['workers']], [other])
+            self.assertTrue(other.is_ibao)
+        finally:
+            await manager.stop()

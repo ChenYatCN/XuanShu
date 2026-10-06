@@ -167,7 +167,7 @@ class IbaoShutdownTests(unittest.IsolatedAsyncioTestCase):
             '_hooking_in_progress': set(), '_kill_process_by_handle': Mock(),
             'get_all_wizard_handles': lambda: [], 'released_handles': set(),
             '_send_hooked_clients_update': Mock(), 'utils': SimpleNamespace(get_wiz_install=lambda: 'path'),
-            'wizlaunch': SimpleNamespace(launch_instance=lambda *args: 4321),
+            'launch_account_instance': lambda *args: 4321,
             'client_resizing': True, '_apply_account_window_config': configure,
             '_init_client_attrs': AsyncMock(), 'wizwalker': wizwalker,
         }

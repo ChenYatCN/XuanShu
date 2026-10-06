@@ -5932,6 +5932,7 @@ async def main():
                                 options.get("enabled", False),
                                 options.get("selected_title"),
                                 False,  # Manual nearby test phase never auto-replies.
+                                translation_options=settings.get_settings(),
                             )
                             if not chat_monitor.enabled:
                                 await chat_monitor.stop()
