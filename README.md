@@ -1,9 +1,7 @@
+# 玄枢 XuanShu
 <p align="center">
   <img src="XuanShu-logo.png" width="128" alt="玄枢图标">
 </p>
-
-# 玄枢 XuanShu
-
 基于 Deimos-Wizard101 的修改版本，使用 GPL-3.0-only。原作者及贡献者保留各自版权，详见 [NOTICE.md](NOTICE.md) 和 [LICENSE](LICENSE)。
 
 源码启动：运行 `启动XuanShu.bat`；打包：运行 `XuanShu打包.bat`，产物为 `dist/XuanShu.exe`。
