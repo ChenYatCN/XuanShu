@@ -19,7 +19,7 @@ import math
 from typing import List, TypeAlias
 
 import numpy as np
-from shapely.geometry import Point, Polygon, MultiPolygon
+from shapely.geometry import Point, Polygon, MultiPolygon, LineString
 from shapely.ops import unary_union, nearest_points
 from shapely.prepared import prep
 from shapely.strtree import STRtree
@@ -478,6 +478,7 @@ def zone_bcd_walls(world: CollisionWorld, zone_name: str | None):
 # ---------------------------------------------------------------------------
 
 GRID_SPACING = 100.0  # hex node centre-to-centre distance, world units
+WALK_STEP_Z = 100.0  # conservative per-edge/interaction height tolerance
 
 # When the target's own XY isn't walkable, relocate to the nearest walkable node ranked by
 # ``dxy + Z_RANK_WEIGHT * |Δz|`` so a node on the target's own floor beats a closer one on the
@@ -544,7 +545,7 @@ class _ZoneWalkGrid:
         ev = filter_valid_polygons(extra_shapes) if extra_shapes else []
         self.static_prep = prep(unary_union(ev).buffer(player_radius)) if ev else None
         self._cache: dict = {}       # (q, r) -> teleport-valid ground_z or None
-        self._walk_cache: dict = {}  # (q, r) -> walk-valid ground_z or None
+        self._walk_cache: dict = {}  # (q, r) -> walk-valid surface heights
 
     @property
     def has_mesh(self):
@@ -655,22 +656,20 @@ class _ZoneWalkGrid:
 
     # --- walking (more permissive than teleport-valid) + A* nav ---
 
-    def walk_z(self, q, r):
+    def walk_z(self, q, r, prefer_z=None):
         """Ground z at ``(q, r)`` if you can WALK there, else None. More permissive than
         ``node_z``: on raw navmesh and clear of static entity colliders (teleporter pads/
         boats), but it does NOT exclude bcd-collider interiors — a chamber cylinder's ramp
-        is walkable even though a teleport landing inside it bounces. Memoized."""
-        v = self._walk_cache.get((q, r), 0)
-        if v != 0:
-            return v if v is not None else None
-        x, y = self.to_world(q, r)
-        if self.static_prep is not None and self.static_prep.contains(Point(x, y)):
-            z = None
-        else:
-            levels = _mesh_levels_at(x, y, self.mesh)
-            z = levels[0] if levels else None
-        self._walk_cache[(q, r)] = z
-        return z
+        is walkable even though a teleport landing inside it bounces. Cache all floors,
+        not just the lowest, so a walk on a bridge does not silently use ground below it."""
+        if (q, r) not in self._walk_cache:
+            x, y = self.to_world(q, r)
+            blocked = self.static_prep is not None and self.static_prep.intersects(Point(x, y))
+            self._walk_cache[(q, r)] = () if blocked else tuple(_mesh_levels_at(x, y, self.mesh))
+        levels = self._walk_cache[(q, r)]
+        if not levels:
+            return None
+        return levels[0] if prefer_z is None else min(levels, key=lambda z: abs(z - prefer_z))
 
     def _nearest_walk_node(self, q0, r0, max_rings=40):
         for k in range(max_rings + 1):
@@ -679,31 +678,74 @@ class _ZoneWalkGrid:
                     return (q, r)
         return None
 
-    def find_walk_path(self, start_xyz, goal_xyz, max_nodes=20000):
+    def _walk_segment_clear(self, start, end, avoid=None):
+        """Check between nodes too: don't step across a wall, a mesh gap or a floor jump."""
+        ax, ay, az = start
+        bx, by, bz = end
+        if abs(bz - az) > WALK_STEP_Z:
+            return False
+        segment = LineString([(ax, ay), (bx, by)])
+        if self.static_prep is not None and self.static_prep.intersects(segment):
+            return False
+        if avoid is not None and avoid.intersects(segment):
+            return False
+        samples = max(2, math.ceil(math.hypot(bx - ax, by - ay) / 35.0))
+        samples += samples % 2  # always inspect the midpoint as well as both endpoints
+        previous_z = az
+        for i in range(samples + 1):
+            t = i / samples
+            expected_z = az + (bz - az) * t
+            levels = _mesh_levels_at(ax + (bx - ax) * t, ay + (by - ay) * t, self.mesh)
+            if not levels:
+                return False
+            z = min(levels, key=lambda value: abs(value - expected_z))
+            if abs(z - expected_z) > WALK_STEP_Z or abs(z - previous_z) > WALK_STEP_Z:
+                return False
+            previous_z = z
+        return True
+
+    def find_walk_path(self, start_xyz, goal_xyz, max_nodes=20000, *, avoid=None,
+                       goal_radius=0.0):
         """A* over WALK-valid hex nodes from ``start`` to ``goal``. Returns ``[(x, y, z), …]``
         waypoints (start node first, goal node last), or None if unreachable on foot.
-        Endpoints are snapped to the nearest walk-valid node. Evaluated lazily — only the
-        nodes A* touches are probed (and memoized for the zone)."""
+        State includes the surface height, with connected-ground checks on every edge.
+        ``avoid`` contains actual blocked steps or preferred obstacles; ``goal_radius``
+        lets us reach interaction range without requiring a node inside an object."""
+        blockers = prep(unary_union(avoid)) if avoid else None
         sq = self.to_hex(start_xyz.x, start_xyz.y)
-        if self.walk_z(*sq) is None:
-            sq = self._nearest_walk_node(*sq)
-        gq = self.to_hex(goal_xyz.x, goal_xyz.y)
-        if self.walk_z(*gq) is None:
-            gq = self._nearest_walk_node(*gq)
-        if sq is None or gq is None:
+        sz = self.walk_z(*sq, prefer_z=start_xyz.z)
+        if sz is None or abs(sz - start_xyz.z) > WALK_STEP_Z:
             return None
-        if sq == gq:
-            x, y = self.to_world(*sq)
-            return [(x, y, self.walk_z(*sq))]
-        gxw, gyw = self.to_world(*gq)
+        sx, sy = self.to_world(*sq)
+        if not self._walk_segment_clear(
+            (start_xyz.x, start_xyz.y, start_xyz.z), (sx, sy, sz), blockers
+        ):
+            return None
+        start = (*sq, sz)
+        gq = self.to_hex(goal_xyz.x, goal_xyz.y)
+        goal_levels = _mesh_levels_at(goal_xyz.x, goal_xyz.y, self.mesh)
+        goal_z = min(goal_levels, key=lambda z: abs(z - goal_xyz.z)) if goal_levels else None
+
+        def _goal(node):
+            x, y = self.to_world(*node[:2])
+            near = (math.hypot(x - goal_xyz.x, y - goal_xyz.y) <= goal_radius
+                    if goal_radius > 0 else node[:2] == gq)
+            if near and abs(node[2] - goal_xyz.z) <= WALK_STEP_Z:
+                return True
+            # A small forced-walk tolerance can be below the grid spacing. Only
+            # refine the last node if the exact final segment is connected ground.
+            return (0 < goal_radius < self.spacing and node[:2] == gq
+                    and goal_z is not None and abs(goal_z - goal_xyz.z) <= WALK_STEP_Z
+                    and self._walk_segment_clear((x, y, node[2]),
+                        (goal_xyz.x, goal_xyz.y, goal_z), blockers))
 
         def _h(node):
-            x, y = self.to_world(*node)
-            return math.hypot(x - gxw, y - gyw)
+            x, y = self.to_world(*node[:2])
+            return max(0.0, math.hypot(x - goal_xyz.x, y - goal_xyz.y) - goal_radius)
 
-        open_heap = [(_h(sq), 0.0, sq)]
-        came = {sq: None}
-        gscore = {sq: 0.0}
+        open_heap = [(_h(start), 0.0, start)]
+        came = {start: None}
+        gscore = {start: 0.0}
         seen = set()
         n_expanded = 0
         while open_heap and n_expanded < max_nodes:
@@ -712,17 +754,28 @@ class _ZoneWalkGrid:
                 continue
             seen.add(cur)
             n_expanded += 1
-            if cur == gq:
+            if _goal(cur):
                 path = []
                 node = cur
                 while node is not None:
-                    x, y = self.to_world(*node)
-                    path.append((x, y, self.walk_z(*node)))
+                    x, y = self.to_world(*node[:2])
+                    path.append((x, y, node[2]))
                     node = came[node]
                 path.reverse()
+                if (0 < goal_radius < self.spacing
+                        and math.hypot(path[-1][0] - goal_xyz.x, path[-1][1] - goal_xyz.y) > goal_radius):
+                    path.append((goal_xyz.x, goal_xyz.y, goal_z))
                 return path
-            for nb in self.neighbours(*cur):
-                if nb in seen or self.walk_z(*nb) is None:
+            cx, cy = self.to_world(*cur[:2])
+            for nq, nr in self.neighbours(*cur[:2]):
+                nz = self.walk_z(nq, nr, prefer_z=cur[2])
+                if nz is None:
+                    continue
+                nb = (nq, nr, nz)
+                nx, ny = self.to_world(nq, nr)
+                if nb in seen or not self._walk_segment_clear(
+                    (cx, cy, cur[2]), (nx, ny, nz), blockers
+                ):
                     continue
                 ng = gc + self.spacing
                 if nb not in gscore or ng < gscore[nb]:
@@ -730,6 +783,45 @@ class _ZoneWalkGrid:
                     came[nb] = cur
                     heapq.heappush(open_heap, (ng + _h(nb), ng, nb))
         return None
+
+    def find_approach_paths(self, goal_xyz, excluded=(), avoid=None, max_candidates=3, *,
+                            min_distance=0.0, max_distance=1000.0, goal_radius=120.0):
+        """Bounded nearby TP landings with a walk path to the goal's interaction range.
+
+        Search all directions, keep the goal's floor and skip previously failed landings.
+        Strict landing checks are used only for this recovery, not normal teleports.
+        """
+        q0, r0 = self.to_hex(goal_xyz.x, goal_xyz.y)
+        candidates = []
+        for ring in range(math.ceil(max_distance / self.spacing) + 1):
+            for q, r in _hex_ring(q0, r0, ring):
+                x, y = self.to_world(q, r)
+                distance = math.hypot(x - goal_xyz.x, y - goal_xyz.y)
+                if not min_distance <= distance <= max_distance:
+                    continue
+                z = self.ground_z_at(x, y, prefer_z=goal_xyz.z, strict=True)
+                if z is None or abs(z - goal_xyz.z) > WALK_STEP_Z:
+                    continue
+                if any(math.hypot(x - old.x, y - old.y) < 150.0 for old in excluded):
+                    continue
+                cost = math.hypot(x - goal_xyz.x, y - goal_xyz.y) + Z_RANK_WEIGHT * abs(z - goal_xyz.z)
+                candidates.append((cost, x, y, z))
+        selected = []
+        probes = 0
+        for _, x, y, z in sorted(candidates):
+            if any(math.hypot(x - dest.x, y - dest.y) < 200.0 for dest, _ in selected):
+                continue
+            probes += 1
+            dest = XYZ(x, y, z)
+            path = self.find_walk_path(dest, goal_xyz, max_nodes=1000,
+                                       avoid=avoid, goal_radius=goal_radius)
+            if path:
+                selected.append((dest, path))
+                if len(selected) == max_candidates:
+                    break
+            if probes >= 12:
+                break
+        return selected
 
 
 def get_walk_grid(world: CollisionWorld, zone_name: str | None, extra_shapes=None,

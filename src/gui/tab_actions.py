@@ -199,6 +199,7 @@ def build_bot_tab(ctx):
         with_status=True,
     )
     client_checks = {}
+    restarting_checks = {}
     layout.addWidget(client_toolbar)
 
     active_groups = []
@@ -230,7 +231,7 @@ def build_bot_tab(ctx):
 
     all_clients.toggled.connect(toggle_all_clients)
 
-    def set_available_clients(titles):
+    def set_available_clients(titles, restarting_titles=()):
         new_titles = []
         seen = set()
         for title in titles or []:
@@ -251,6 +252,14 @@ def build_bot_tab(ctx):
             title.casefold(): check.isChecked()
             for title, check in client_checks.items()
         }
+        retained = dict(restarting_checks)
+        for title in restarting_titles:
+            key = title.casefold()
+            if key in previous_checks and key not in retained:
+                retained[key] = previous_checks[key]
+        restarting_checks.clear()
+        restarting_checks.update({title.casefold(): retained[title.casefold()]
+                                 for title in restarting_titles if title.casefold() in retained})
         select_all = (
             (not initialized_clients[0] and bool(new_titles))
             or all_clients.isChecked()
@@ -270,7 +279,7 @@ def build_bot_tab(ctx):
                 ctx.alt_bg,
             )
             check.setChecked(
-                select_all or previous_checks.get(title.casefold(), False)
+                retained.get(title.casefold(), select_all or previous_checks.get(title.casefold(), False))
             )
             check.toggled.connect(sync_all_check)
             client_checks[title] = check
@@ -410,6 +419,7 @@ def build_combat_tab(ctx):
         'Playstyles',
     )
     client_checks = {}
+    restarting_checks = {}
     layout.addWidget(client_toolbar)
 
     initialized_clients = [False]
@@ -442,7 +452,7 @@ def build_combat_tab(ctx):
 
     all_clients.toggled.connect(toggle_all_clients)
 
-    def set_available_clients(titles):
+    def set_available_clients(titles, restarting_titles=()):
         new_titles = []
         seen = set()
         for title in titles or []:
@@ -463,6 +473,14 @@ def build_combat_tab(ctx):
             title.casefold(): check.isChecked()
             for title, check in client_checks.items()
         }
+        retained = dict(restarting_checks)
+        for title in restarting_titles:
+            key = title.casefold()
+            if key in previous_checks and key not in retained:
+                retained[key] = previous_checks[key]
+        restarting_checks.clear()
+        restarting_checks.update({title.casefold(): retained[title.casefold()]
+                                 for title in restarting_titles if title.casefold() in retained})
         select_all = (
             (not initialized_clients[0] and bool(new_titles))
             or all_clients.isChecked()
@@ -482,7 +500,7 @@ def build_combat_tab(ctx):
                 ctx.alt_bg,
             )
             check.setChecked(
-                select_all or previous_checks.get(title.casefold(), False)
+                retained.get(title.casefold(), select_all or previous_checks.get(title.casefold(), False))
             )
             check.toggled.connect(sync_all_check)
             client_checks[title] = check

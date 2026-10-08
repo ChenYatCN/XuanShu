@@ -42,7 +42,8 @@ class ScopedRuntimeTests(unittest.IsolatedAsyncioTestCase):
         party = SimpleNamespace(questers=[selected], hitters=[], hitter_assignments=[])
         resolve = Mock(return_value=party)
         apply = load_function('apply_questing_roles', {
-            'current_quest_party': resolve, 'walker': SimpleNamespace(clients=[selected, other])})
+            'current_quest_party': resolve, 'walker': SimpleNamespace(clients=[selected, other]),
+            'mainline_finder_enabled': False})
         apply(True, [selected])
         self.assertTrue(selected.questing_status)
         apply(False, [selected])

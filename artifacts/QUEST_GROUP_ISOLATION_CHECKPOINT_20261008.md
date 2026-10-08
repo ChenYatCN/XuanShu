@@ -1,0 +1,58 @@
+# ACTIVE checkpoint — automatic quest group isolation + combined status
+
+Window 01a117db-614e-78c1-a0fa-56c162ca29ad. Current repo D:/XuanShuTool/XuanShu-Project/XuanShu (nested Git). User message IDs not exposed. Do NOT end this unfinished task just due context change. No agents authorized.
+
+## Current requests / new evidence
+
+1. User: 自动任务分组有点不行，我选了左边为一组，右边为一组，然后俩边都乱了. Screenshot p1/p2 left (Avalon), p3/p4 right (Khrysalis); shortcut task lights all four; status shows both questers' mainline but only one follower.
+2. Added log: C:/Users/ChenYat/.codex/attachments/bbee3008-c124-4efd-9985-670807136206/已粘贴的文本.txt. Relevant lines 382-446: 11:31:06 group p3/p4 starts, p4 follows p3. p3 starts potion refill at 11:31:13, marking/going home; this is not proof of cross-group TP. At 11:32:11 and :18 settings questing_clients/questing_hitter_clients/quest_hitter_assignments changed; 11:32:19 p3/p4 immediately exits because no quester matched current settings. At :31 settings changed again, :35 p3/p4 starts successfully. Earlier log :20:35 p4 selection stopped p1/p2 globally; THAT is already fixed in previous turn but old live process still showed old log wording. Do not reimplement it blindly.
+3. User: 然后状态栏不同时显示俩个分组的情况 (must show both follower rows and both quest progress).
+4. LATEST User: 我把这里设置了一下. Two screenshots: task party ON, mainline Finder ON; questers p1,p3; hitters p2,p4; manual assignment p2→p1 and p4→p3. This is CORRECT desired config, preserve it, do not modify saved settings. Current shortcut selection p3,p4; task/dialogue/potion all four lit; combat ONLY p1,p2 lit, p3/p4 off. Status has both mainline rows but only p4→p3 已归队. Latest commentary told user correct config and right group's auto-combat off is separate; do NOT automatically enable it.
+
+## Work completed IN THIS current request
+
+Only bounded inspection and diagnosis, NO implementation edits or tests yet for group isolation. Existing changes all belong to prior authorized tasks and must preserve.
+
+Confirmed real code defects:
+- XuanShu.py questing_loop(members) (~1927): party=apply_questing_roles(True,members) is scoped correctly at startup. run_hotkey_group assigns each selected member.hotkey_quest_clients=members; finally scoped apply_questing_roles(False,members), clears that attribute. HotkeyGroups key=(action,frozenset client IDs) prevents overlapping same-action groups and stop awaits cleanup.
+- current_quest_party(members=None) (~1090) always re-resolves *current global settings*, no per-running-group snapshot. Runtime helpers (combat detection/rescue/status) call it globally or with member.hotkey_quest_clients. Changing config for second group can alter helper role lookups for first even though its own questing_loop captured original party. User now set BOTH roles correctly; fixes should preserve this config and prevent future runtime drift rather than invent role fallback.
+- questing_loop has LOCAL runtime_status dict and status_session object (~1946). update_party_status sends whole local string into one shared QuestPartyRuntimeStatus UI tag. remove_party_status sends whole local string too. Different groups overwrite each other's status. GUI main forwards this tag to existing hotkeys update_quest_status; no UI layout change needed. Mainline progress at ~7111 uses current_quest_party(live_clients).questers and active snapshot flags, currently displays both when config correct.
+- stop_questing_on_client_loss(title,reason) (~1172) finds ALL toggle_questing groups and stops all, apply_questing_roles(False) to ALL, sets global QuestingStatus Disabled and clears QuestPartyRuntimeStatus. Previous turn guarded calls on idle character selection, but losing/selection of a participant in one group STILL stops unrelated groups. Needs scope to affected group(s); preserve existing legacy-global behavior when legacy run active. Callers pass single title or comma-joined dead_titles.
+
+## Proposed minimal implementation (not yet done)
+
+- Reuse QuestParty dataclass in src/quest_party.py; no new architecture. It has questers,hitters,idle,hitter_assignments. Existing resolve_quest_party takes live clients + enabled/config roles/manual assignments.
+- Freeze active scoped group's resolved QuestParty on its clients (e.g. private attr), clear in apply_questing_roles(False, members) and _init_client_attrs. current_quest_party should merge frozen runtime parties for active scoped clients and resolve remaining legacy/idle clients from current config. Membership filtering and identity dedup must prevent cross-group assignments. Fresh group startup must use CURRENT config, not stale stopped snapshot; cleanup must remain scoped. Consider local quest_party_enabled snapshot in questing_loop so editing settings cannot change an active loop's mode. Do NOT auto choose roles when no configured quester.
+- Shared outer registry for status_session→local runtime_status dict. Both update/remove publish merged strings. Cleanup only removes own session, preserves other rows, even late old session cleanup cannot clear new session. Use existing statuses/session guard and GUI tag; no UI redraw redesign. Each questing_loop finally should clean its own registry.
+- Stop/loss: only stop scoped groups containing affected titles, leave other groups+client runtime fields intact; for legacy active/paused questing preserve prior all-legacy stop semantics, and aggregate enabled/status correctly. Avoid clear-all status in scoped stop. Reuse hotkey_groups.stop which awaits group cleanup.
+- Tests should exercise actual extracted nested functions with 4 fake clients: left+right startup, config changes while left active, right stop preserves left roles/tasks, selection/loss right doesn't stop left; UI merged rows right updating/closing doesn't overwrite left. Existing relevant suites: tests/test_hotkey_groups.py, test_scoped_runtime.py, test_quest_task_lifecycle.py, test_character_session.py, test_quest_party.py etc discover bounded. Need inspect imports (~line65) for adding QuestParty (not yet read full block).
+
+## Relevant inspected implementation locations
+
+- src/hotkey_groups.py fully read (120 lines). HotkeyGroups.groups values=(members list,task). _start registers done callback, stop removes key BEFORE cancelling/awaiting, remove_missing stops only changed quest group. Current run_hotkey_group finally (~1550) checks any other same-action task != current and not done to set UI Enabled/Disabled, already scoped.
+- apply_questing_roles (~1100) loops walker.clients only when members None, else members, resets roles/recovery on those only; builds quester.quest_mainline_sync_members and hitter.quest_party_quester/quester.quest_party_hitters. Existing tests use SimpleNamespace dummy current_quest_party returning party, do not over-assume runtime type without adapting focused tests.
+- entity_detect_combat_loop combat_group_for (~3340) already prefers hotkey_quest_clients filtered live+questing, then current_quest_party globally. rescue_missing_party_hitters (~3388) current_quest_party(getattr(quester,'hotkey_quest_clients',None)), must use frozen roles. Other global current_quest_party refs at ~3556,3575,3660,3875,7111.
+- settings changed branch (~6980) only restarts legacy questing_task, not scoped groups; preserve running scoped config intentionally after snapshot fix. No need broad setting redesign.
+- src/gui/main.py tag QuestPartyRuntimeStatus/QuestMainlineProgress forwarded to hotkeys exports update_quest_status.
+
+## Prior completed turns / safeguards
+
+- Quest tasker priority + independent hitter recovery: artifacts/PARTY_DUNGEON_INTERACTION_20261008.md current last section; 111 scoped tests split across runs, no live/game/exe. Preserve.
+- Collect anchor wait90/resume cached full-map route: artifacts/COLLECT_RESPAWN_TIMEOUT_20261008.md; 46 scoped tests passed, preserve.
+- Idle character selection fix: artifacts/CHARACTER_REENTRY_ISOLATION_20261008.md. maintain_client_character_session (~4058) saves _character_session_stop_questing only if client.questing_status or in quest group, so idle p4 won't trigger global stop. Re-entry removes _restart_always_on_tasks call; preserves injected Client and only initializes its own attrs. 11 test_character_session methods passed; preserve. Group-member loss still needs scoped stop helper fix now.
+- Nested repo dirty with many unrelated prior edits. apply_patch for edits. No broad git restore/clean, no builds/packaging or live game inputs. Python .venv/Scripts/python.exe; IsolatedAsyncioTestCase inside Windows sandbox hangs in socketpair, known repeated issue. Use exec require_escalated for inspected offline tests with justification; previous successful runs authorized. No need retest sandbox initialization.
+- Memory quick search used MEMORY.md line450 (current numbering) preserve working tree note; final if relying use exact citation MEMORY.md:450-450 and rollout_id01a094e8-04a3-7f90-ab99-47a4de46e0aa. No memory writes authorized.
+
+Continue from implementation of verified isolation/status defects. Latest commentary already acknowledged user new configuration as correct and combat-right OFF; do not repeat earlier commentary or ask user to restate intent.
+
+## COMPLETED 2026-10-08 — window 01a11998-73a7-7eb0-89ac-23f164c50b6f
+
+Implemented minimal source fix in XuanShu.py; earlier sections describe pre-implementation state and are superseded by this section.
+- Imported existing QuestParty, froze scoped party resolution on each member in _quest_party_runtime. current_quest_party merges runtime snapshots plus configured non-running clients, filters assignment endpoints to supplied roster. Fresh startup resolves current settings, scoped stop clears only own snapshot, _init_client_attrs clears snapshot. questing_loop caches enabled mode for its worker dispatch. No saved settings or combat toggles changed.
+- Shared main-local quest_party_runtime_status registry, keyed by existing session tokens. Status update/removal publish all sessions together. Transient follower-session exit removes only its row and retains token so recovery can publish again. Final loop cleanup removes only its token and clears only matching hitter tokens, preserving peer/new sessions. Removed quester-only loop's shared clear-all status write.
+- stop_questing_on_client_loss scopes hotkey group stops to title(s) in their membership, supports comma-joined losses, preserves peer tasks/runtime fields and Enabled aggregate UI. Legacy active/paused task still stops on client loss, but clears only legacy members when scoped groups coexist. Does not auto-enable right-side combat.
+- Added tests/test_quest_group_isolation.py (11 methods). Changed two AST test fixtures only: lifecycle current_quest_party accepts keyword; scoped runtime role fixture supplies existing mainline_finder_enabled global.
+
+Verification: .venv Python offline unittest tests.test_quest_group_isolation + test_scoped_runtime + test_quest_task_lifecycle + test_hotkey_groups + test_character_session + test_quest_party: 45 total, 44 passed, 1 unrelated existing failure. All 11 new methods passed. Existing test_scoped_runtime.test_post_battle_backward_only_for_questing expects S but unchanged current clear_post_combat_phase uses A/D. Do not change unrelated source/tests to hide failure. Scoped git diff --check passed. No EXE build/install or live game validation. No agents used. Final log-only wording narrowed to affected autoquest after tests; no logic change. Final delivery ready, no required implementation remaining.
+
+Memory read MEMORY.md line450 for preserve-dirty-worktree rule; final citation MEMORY.md:450-450, rollout01a094e8-04a3-7f90-ab99-47a4de46e0aa. No memory files written.

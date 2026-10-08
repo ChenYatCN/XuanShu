@@ -95,6 +95,7 @@ for _collision_package in ("numpy", "shapely"):
 # launcher controls silently do nothing because an older global copy was found.
 _wizlaunch = importlib.import_module("wizlaunch")
 _required_wizlaunch_api = (
+    "create_steam_account",
     "set_account_steam",
     "get_account_steam",
     "validate_account",
@@ -110,6 +111,8 @@ if _missing_wizlaunch_api:
     raise RuntimeError(
         "The .venv wizlaunch is too old; missing: "
         + ", ".join(_missing_wizlaunch_api)
+        + ". Rebuild libs/wizlaunch with maturin develop --release "
+        "--manifest-path libs/wizlaunch/Cargo.toml before packaging."
     )
 print(
     f"[XuanShu.spec] wizlaunch version: "

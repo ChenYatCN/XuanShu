@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from wizwalker import MemoryInvalidated
 from src import utils
+from src.task_lifecycle import gather_owned
 
 
 def client(gid, address):
@@ -287,6 +288,7 @@ class PartyAreaProofTests(unittest.IsolatedAsyncioTestCase):
                         if isinstance(node, ast.AsyncFunctionDef) and node.name == 'xyz_sync')
         namespace = dict(Client=object, asyncio=SimpleNamespace(
             gather=asyncio.gather, sleep=AsyncMock()), logger=Mock(),
+            gather_owned=gather_owned,
             Keycode=SimpleNamespace(A='A', D='D'),
             clients_share_live_area=AsyncMock(side_effect=AssertionError('manual proof must not run')))
         exec(compile(ast.Module(body=[function], type_ignores=[]), 'XuanShu.py', 'exec'), namespace)

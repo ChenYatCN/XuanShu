@@ -51,6 +51,16 @@ class VerifiedLanguageTests(unittest.TestCase):
         self.assertTrue(matches_text('开始重复！', 'PetGames_Action_Go'))
         self.assertFalse(matches_text('完成！', 'PetGames_Action_Go'))
 
+    def test_verified_boat_raft_and_ride_records_are_transport_not_dungeon(self):
+        for text_id in ('GUI_00000029', 'GUI_00005988', 'GUI_00006657',
+                        'GUI_00008359', 'GUI_00010697'):
+            for text in (*TEXT_RECORDS[text_id], f'<string;{text_id}>'):
+                with self.subTest(text=text):
+                    self.assertEqual(interaction_kind(text), 'ride')
+                    self.assertFalse(is_dungeon_entry_prompt(text))
+        self.assertEqual(interaction_kind('Press X to Enter Boat'), 'ride')
+        self.assertEqual(interaction_kind('按X 进入船'), 'ride')
+
     def test_quest_location_and_object_extraction(self):
         for text, location in (
             ('<center>Collect Cog in Triton Avenue (0 of 3)</center>', 'Triton Avenue'),

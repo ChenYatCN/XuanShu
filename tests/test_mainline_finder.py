@@ -50,6 +50,28 @@ class MainlineFinderTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await self.quester._maybe_recover_mainline(self.client))
         self.quester._run_mainline_finder.assert_not_awaited()
 
+    async def test_live_elephant_march_is_recognized_and_does_not_seek_another_quest(self):
+        quest_id = 121315715316472848
+        self.client.zone_name.return_value = 'Zafaria/ZF_Z07_Stone_Town'
+        self.client.quest_id = AsyncMock(return_value=quest_id)
+        self.client.quest_manager = AsyncMock(return_value=SimpleNamespace(
+            quest_data=AsyncMock(return_value={quest_id: SimpleNamespace(
+                name_lang_key=AsyncMock(return_value='QuestTitle_80B3E'),
+                mainline=AsyncMock(return_value=True))})))
+        self.client.cache_handler = SimpleNamespace(
+            get_langcode_name=AsyncMock(return_value='Elephant March'))
+        identity = await self.quester._mainline_identity(self.client)
+        self.assertEqual(identity[3]['number'], 84)
+        self.quester._run_mainline_finder = AsyncMock()
+        self.quester._mainline_finder_retry_at[id(self.client)] = 60
+        self.client.mainline_finder_offer_guard = True
+        with patch('src.questing.is_visible_by_path', new=AsyncMock(return_value=False)):
+            self.assertFalse(await self.quester._maybe_recover_mainline(self.client))
+        self.quester._run_mainline_finder.assert_not_awaited()
+        self.quester._restore_owned_mainline.assert_not_awaited()
+        self.assertFalse(self.client.mainline_finder_offer_guard)
+        self.assertNotIn(id(self.client), self.quester._mainline_finder_retry_at)
+
     async def test_unindexed_mainline_runs_finder_after_stable_wait(self):
         for flag in (True, None):
             self.quester._mainline_identity = AsyncMock(

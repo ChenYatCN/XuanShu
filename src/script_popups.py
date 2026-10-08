@@ -12,6 +12,7 @@ from src.window_text import read_control_text
 from src.paths import exit_pet_leveled_up_button_path
 from src.paths import exit_pet_leveled_up_button_path
 from src.paths import missing_area_path, missing_area_retry_path
+from src.paths import exit_zafaria_class_picture_button
 
 
 _MISSING_AREA_RETRY_INTERVAL = 3.0
@@ -112,6 +113,31 @@ async def close_pet_level_popup(client):
 async def close_automation_popup(client):
     async with automation_owner(client, 'automation-ui-guard'):
         return await _close_automation_popup_owned(client)
+
+
+async def close_class_picture_popup(client):
+    """Close only the quest's ClassPicture panel using its existing exact UI path."""
+    path = exit_zafaria_class_picture_button
+    panel = await get_window_from_path(client.root_window, path[:-1])
+    if not panel or not await panel.is_visible():
+        return False
+    button = await get_window_from_path(panel, path[-1:])
+    if not button or not await button.is_visible():
+        return False
+    async with client.mouse_handler:
+        if await client.is_loading():
+            return False
+        # A quest or manual click may have closed/replaced the panel while we
+        # waited for input ownership. Resolve the scoped close button again.
+        panel = await get_window_from_path(client.root_window, path[:-1])
+        if not panel or not await panel.is_visible():
+            return False
+        button = await get_window_from_path(panel, path[-1:])
+        if not button or not await button.is_visible():
+            return False
+        await client.mouse_handler.click_window(button)
+        logger.debug('Client {}: 已点击关闭 Zafaria 班级合照。', client.title)
+        return True
 
 
 async def _photo_buttons(client):
@@ -284,6 +310,8 @@ async def _close_automation_popup_owned(client):
             return True
     if await client.is_loading():
         return False
+    if await close_class_picture_popup(client):
+        return True
     now = time.monotonic()
     if (hasattr(client.root_window, 'get_windows_with_predicate')
             and now >= getattr(client, '_xuanshu_photo_scan_at', 0)):

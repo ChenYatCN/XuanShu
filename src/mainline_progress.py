@@ -25,12 +25,22 @@ def title_aliases(title):
     return {normalize_name(value) for value in values if value}
 
 
-def _unique(rows):
-    return rows[0] if len(rows) == 1 else None
+def _unique(rows, world=None):
+    if len(rows) == 1:
+        return rows[0]
+    if isinstance(world, str) and world:
+        world = world.split('(', 1)[0].strip().casefold()
+        local = [row for row in rows if row['world'].split('(', 1)[0].strip().casefold() == world]
+        return local[0] if len(local) == 1 else None
+    return None
 
 
-def match_quest(rows, quest_id, code, title, names=None):
-    """ID > language key > unambiguous bilingual title/old-name alias."""
+def match_quest(rows, quest_id, code, title, names=None, *, world=None):
+    """ID > language key > bilingual title/old-name alias.
+
+    World disambiguates only shared keys/titles, never overrides unique identities
+    or makes an ambiguous Quest ID valid.
+    """
     code = code.casefold() if isinstance(code, str) else ''
     by_id = [row for row in rows if quest_id in row.get('quest_ids', ())]
     if by_id:
@@ -38,7 +48,7 @@ def match_quest(rows, quest_id, code, title, names=None):
     by_key = [row for row in rows if code and code in (
         key.casefold() for key in row.get('keys', ()))]
     if by_key:
-        return _unique(by_key)
+        return _unique(by_key, world)
     aliases = {normalize_name(title)} - {''}
     if names:
         aliases |= names.by_id.get(code, set())
@@ -49,7 +59,7 @@ def match_quest(rows, quest_id, code, title, names=None):
         title_aliases(row.get('english', ''))
         | {normalize_name(value) for value in row.get('chinese', ()) + row.get('aliases', ())}
     )]
-    return _unique(matches)
+    return _unique(matches, world)
 
 
 def _world_total(row, rows):
@@ -122,6 +132,15 @@ async def _log_mainline_progress(client):
             client._xuanshu_mainline_id = quest_id
             return
         row = match_quest(rows, quest_id, code, title)
+        if row is None:
+            try:
+                zone = await client.zone_name()
+            except Exception:
+                zone = None
+            if isinstance(zone, str) and zone:
+                parts = zone.casefold().split('/', 2)
+                world = 'selenopolis' if parts[:2] == ['krokotopia', 'kt_selenopolis'] else parts[0]
+                row = match_quest(rows, quest_id, code, title, world=world)
 
         if row:
             world, total = _world_total(row, rows)

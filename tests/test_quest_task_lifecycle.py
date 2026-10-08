@@ -21,7 +21,7 @@ class QuestTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         hitter = SimpleNamespace(questing_status=False)
         clients = [quester, hitter]
         assignments = [(hitter, quester)]
-        def current_quest_party(members=None):
+        def current_quest_party(members=None, **kwargs):
             return SimpleNamespace(
                 questers=[quester], hitters=[hitter],
                 hitter_assignments=assignments,
@@ -52,6 +52,8 @@ class QuestTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             client.quest_party_quest_worker_zone = 'old zone'
             client.quest_party_group_dungeon_zone = 'old dungeon'
             client.quest_party_confirmed_dungeon_transition = ('before', 'after')
+            client.quest_party_dungeon_interaction = {'phase': 'transition'}
+            client.quest_party_shared_target = {'zone': 'old dungeon'}
         apply_roles(False)
         for client in clients:
             self.assertFalse(client.questing_status)
@@ -62,6 +64,8 @@ class QuestTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(client.quest_party_quest_worker_zone)
             self.assertIsNone(client.quest_party_group_dungeon_zone)
             self.assertIsNone(client.quest_party_confirmed_dungeon_transition)
+            self.assertIsNone(client.quest_party_dungeon_interaction)
+            self.assertIsNone(client.quest_party_shared_target)
             self.assertFalse(client.quest_party_quest_worker_restart_requested)
             self.assertFalse(client.quest_party_probe_pending)
             self.assertFalse(client.quest_party_battle_rescue_active)

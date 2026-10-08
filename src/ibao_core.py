@@ -9,6 +9,7 @@ import re
 from time import time
 from wizwalker import Client, XYZ
 from wizwalker.constants import Keycode
+from wizwalker.errors import ClientClosedError, HookNotActive
 from wizwalker.memory import Window
 from loguru import logger
 
@@ -512,18 +513,63 @@ async def logout_and_in(client, nextWizard, needSwitch, title):
     enable_page_turning = config['ENABLE_PAGE_TURNING']
     character_switch_delay = config['CHARACTER_SWITCH_DELAY']
     print(f'[{title}] 正在登出和登入')
-    await client.send_key(Keycode.ESC, 0.3)
-    await click_window_until_gone(client, quitButton)
-    while not (needConfirm := (await is_visible_by_path(client.root_window, logOutConfirm))):
-        await asyncio.sleep(0.02)
-        await asyncio.sleep(0.1)
-        if await is_visible_by_path(client.root_window, playButton):
-            break
-    if needConfirm:
-        await click_window_until_gone(client, logOutConfirm)
-    while not await is_visible_by_path(client.root_window, playButton):
-        await asyncio.sleep(0.02)
-        await asyncio.sleep(0.1)
+    next_escape = 0
+    loop = asyncio.get_running_loop()
+    menu_remaining, loading_remaining = 15.0, 60.0
+    loading = False
+    while True:
+        if menu_remaining <= 0:
+            raise CharacterSelectionError(f'{title} 登出超时，未到达选角界面；自动恢复')
+        if loading_remaining <= 0:
+            raise CharacterSelectionError(f'{title} 登出加载超时，未到达选角界面；自动恢复')
+        started = loop.time()
+        try:
+            # Loading has its own cumulative allowance, not a fresh timeout on
+            # every poll. A hung read/click is still bounded by the active budget.
+            async with asyncio.timeout(loading_remaining if loading else menu_remaining):
+                path, window = None, None
+                try:
+                    loading = await client.is_loading()
+                    if not loading:
+                        if await is_visible_by_path(client.root_window, playButton):
+                            break
+                        if await is_visible_by_path(client.root_window, logOutConfirm):
+                            path = logOutConfirm
+                        elif await is_visible_by_path(client.root_window, quitButton):
+                            path = quitButton
+                        if path is not None:
+                            window = await window_from_path(client.root_window, path)
+                            if not window or not await window.is_visible():
+                                window = None
+                            elif await is_visible_by_path(client.root_window, playButton):
+                                window = None
+                            elif path == quitButton and await is_visible_by_path(client.root_window, logOutConfirm):
+                                window = None  # A modal appeared after the first read.
+                            loading = await client.is_loading()
+                except (HookNotActive, ClientClosedError):
+                    raise  # Missing connection is not a transient UI read.
+                except Exception as exc:
+                    logger.debug('ibao {} 登出界面暂不可读，重试：{}', title, exc)
+                    await asyncio.sleep(.12)
+                    continue
+                if not loading:
+                    if window is not None:
+                        # One click per observation; Quit can stay visible under
+                        # the modal, so do not wait for that background button.
+                        await client.mouse_handler.click_window(window)
+                        next_escape = loop.time() + 1
+                    elif path is None and loop.time() >= next_escape:
+                        await client.send_key(Keycode.ESC, .3)
+                        next_escape = loop.time() + 1
+                await asyncio.sleep(.12)
+        except TimeoutError as exc:
+            raise CharacterSelectionError(f'{title} 登出超时，未到达选角界面；自动恢复') from exc
+        finally:
+            elapsed = loop.time() - started
+            if loading:
+                loading_remaining -= elapsed
+            else:
+                menu_remaining -= elapsed
     if needSwitch:
         print(f'[{title}] 正在切换魔法师到: {nextWizard}')
     async def selected_wizard():

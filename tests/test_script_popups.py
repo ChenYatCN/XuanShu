@@ -16,6 +16,9 @@ class ScriptPopupTests(unittest.IsolatedAsyncioTestCase):
         pet = patch('src.script_popups.close_pet_level_popup', AsyncMock(return_value=False))
         pet.start()
         self.addCleanup(pet.stop)
+        picture = patch('src.script_popups.close_class_picture_popup', AsyncMock(return_value=False))
+        picture.start()
+        self.addCleanup(picture.stop)
         self.title = SimpleNamespace(value='You have been reported!', is_visible=AsyncMock(return_value=True))
         self.caption = SimpleNamespace(value='Remember, the use of foul language...', is_visible=AsyncMock(return_value=True))
         self.confirm = SimpleNamespace(is_visible=AsyncMock(return_value=True))
@@ -214,6 +217,10 @@ class ScriptPopupTests(unittest.IsolatedAsyncioTestCase):
         )
         quester = SimpleNamespace(
             client=self.client,
+            _maybe_handle_overgrown_estate=AsyncMock(return_value=False),
+            _maybe_handle_darkmoor_castle=AsyncMock(return_value=False),
+            _maybe_handle_outback_story=AsyncMock(return_value=False),
+            _maybe_handle_bumbles_pet=AsyncMock(return_value=False),
             _quest_dialogue_blocks_movement=AsyncMock(return_value=False),
             handle_pending_dungeon_confirmation=AsyncMock(return_value=True))
         with patch('src.questing.close_npc_quest_menu', AsyncMock(return_value=False)):

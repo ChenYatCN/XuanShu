@@ -254,9 +254,135 @@ class CollectWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.client.get_base_entity_list.return_value = [self.entity()]
         self.client.send_key.side_effect = self.pickup
         self.assertTrue(await self.engine.run())
-        self.assertIsNone(self.engine.state.anchor)
+        self.assertEqual((self.engine.state.anchor.x, self.engine.state.anchor.y), (10, 0))
         self.engine.state.recent.clear()
         self.client.teleport.reset_mock()
+
+    def respawn_clock(self):
+        clock = SimpleNamespace(now=0.0)
+        self.stack.enter_context(patch('src.collecting.time', SimpleNamespace(monotonic=lambda: clock.now)))
+        async def tick(seconds):
+            clock.now += seconds
+            await self.real_sleep(0)
+        self.stack.enter_context(patch('src.collecting.asyncio.sleep', tick))
+        return clock
+
+    async def test_anchor_wait_90_seconds_resumes_route_and_can_collect_a_far_nonrespawning_item(self):
+        await self.lock_point()
+        clock = self.respawn_clock()
+        state = self.engine.state
+        state.route = [XYZ(0, 0, 0), XYZ(5000, 0, 0)]
+        state.cursor = 1
+        self.client.get_base_entity_list.side_effect = lambda: (
+            [self.entity(x=5000)] if self.client.teleport.await_count else [])
+        async def move(point):
+            self.assertGreaterEqual(clock.now, 90)
+            self.position = point
+        self.client.teleport.side_effect = move
+        again = CollectSearch(self.quester, self.client)
+        self.assertTrue(await again.run())
+        self.assertEqual(self.count, 2)
+        self.assertIs(again.state, state)
+        self.assertEqual(state.anchor.x, 10)  # Keep the FIRST successful point.
+        self.assertEqual(state.cursor, 0)  # Resume the old route, do not rebuild it.
+        self.assertIsNone(state.anchor_wait_started_at)
+        self.assertFalse(state.rescan_after_anchor_timeout)
+        self.client.teleport.assert_awaited_once()
+        self.quester.get_zone_chunks.assert_not_awaited()
+        self.other.send_key.assert_not_awaited()
+
+    async def test_respawn_before_90_seconds_collects_without_full_map_search(self):
+        await self.lock_point()
+        clock = self.respawn_clock()
+        self.client.get_base_entity_list.side_effect = lambda: [self.entity()] if clock.now >= 88 else []
+        self.assertTrue(await CollectSearch(self.quester, self.client).run())
+        self.assertLess(clock.now, 90)
+        self.assertEqual(self.count, 2)
+        self.assertIsNone(self.engine.state.anchor_wait_started_at)
+        self.assertFalse(self.engine.state.rescan_after_anchor_timeout)
+        self.client.teleport.assert_not_awaited()
+        self.quester.get_zone_chunks.assert_not_awaited()
+
+    async def test_worker_recreation_keeps_elapsed_wait_and_timeout_allows_subsequent_search(self):
+        await self.lock_point()
+        clock = self.respawn_clock()
+        async def interrupted():
+            if clock.now >= 40:
+                raise asyncio.CancelledError()
+            return []
+        self.client.get_base_entity_list.side_effect = interrupted
+        with self.assertRaises(asyncio.CancelledError):
+            await CollectSearch(self.quester, self.client).run()
+        self.assertEqual(self.engine.state.anchor_wait_started_at, 0)
+        self.assertEqual(clock.now, 40)
+        self.client.get_base_entity_list.side_effect = None
+        self.client.get_base_entity_list.return_value = []
+        self.quester.get_zone_chunks.return_value = [XYZ(5000, 0, 0)]
+        self.assertFalse(await CollectSearch(self.quester, self.client).run())
+        self.assertTrue(self.engine.state.rescan_after_anchor_timeout)
+        self.assertLess(clock.now, 100)  # Remaining 50 seconds, not another 90.
+        before = clock.now
+        self.assertFalse(await CollectSearch(self.quester, self.client).run())
+        self.assertLess(clock.now - before, 10)  # Do not re-enter the dead anchor wait.
+        self.quester.get_zone_chunks.assert_awaited_once()
+
+    async def test_wait_timeout_rechecks_stop_zone_or_goal_before_resuming_search(self):
+        await self.lock_point()
+        clock = self.respawn_clock()
+        for mode in ('stop', 'zone', 'quest', 'goal'):
+            with self.subTest(mode=mode):
+                self.client.questing_status = True
+                self.client.zone_name.return_value = 'Celestia/Beach'
+                self.client.quest_id.return_value = 42
+                self.text = None
+                self.engine.state.anchor_wait_started_at = None
+                clock.now = 0
+                async def changed():
+                    if clock.now >= 90:
+                        if mode == 'stop':
+                            self.client.questing_status = False
+                        elif mode == 'zone':
+                            self.client.zone_name.return_value = 'Different/Area'
+                        elif mode == 'quest':
+                            self.client.quest_id.return_value = 99
+                        else:
+                            self.text = '拜访 校长 地点：广场'
+                    return []
+                self.client.get_base_entity_list.side_effect = changed
+                self.assertFalse(await CollectSearch(self.quester, self.client).run())
+                self.assertFalse(self.engine.state.rescan_after_anchor_timeout)
+                self.assertIsNone(self.engine.state.anchor_wait_started_at)
+        self.client.teleport.assert_not_awaited()
+        self.quester.get_zone_chunks.assert_not_awaited()
+
+    async def test_refill_or_other_recovery_interrupts_and_resets_respawn_wait(self):
+        await self.lock_point()
+        clock = self.respawn_clock()
+        for attr, value in (('refilling_potions', True), ('quest_recovery_owner', 'other')):
+            with self.subTest(attr=attr):
+                self.engine.state.anchor_wait_started_at = 0
+                clock.now = 80
+                setattr(self.client, attr, value)
+                self.assertFalse(await CollectSearch(self.quester, self.client).run())
+                self.assertIsNone(self.engine.state.anchor_wait_started_at)
+                self.assertFalse(self.engine.state.rescan_after_anchor_timeout)
+                setattr(self.client, attr, False if attr == 'refilling_potions' else None)
+        self.client.teleport.assert_not_awaited()
+        self.quester.get_zone_chunks.assert_not_awaited()
+
+    async def test_expired_wait_does_not_resume_map_search_during_refill_or_other_recovery(self):
+        await self.lock_point()
+        self.engine.state.rescan_after_anchor_timeout = True
+        self.engine.state.route = [XYZ(5000, 0, 0)]
+        self.client.get_base_entity_list.reset_mock()
+        for attr, value in (('refilling_potions', True), ('quest_recovery_owner', 'other')):
+            with self.subTest(attr=attr):
+                setattr(self.client, attr, value)
+                self.assertFalse(await CollectSearch(self.quester, self.client).run())
+                setattr(self.client, attr, False if attr == 'refilling_potions' else None)
+        self.assertTrue(self.engine.state.rescan_after_anchor_timeout)
+        self.client.teleport.assert_not_awaited()
+        self.client.get_base_entity_list.assert_not_awaited()
 
     async def test_next_pickup_searches_other_points(self):
         await self.lock_point()
@@ -264,6 +390,7 @@ class CollectWorkflowTests(unittest.IsolatedAsyncioTestCase):
         again = CollectSearch(self.quester, self.client)
         self.assertTrue(await again.run())
         self.assertEqual(self.count, 2)
+        self.assertEqual(self.engine.state.anchor.x, 10)  # keep FIRST pickup, not the latest
         self.client.teleport.assert_not_awaited()
         self.quester.get_zone_chunks.assert_not_awaited()
 
@@ -279,8 +406,84 @@ class CollectWorkflowTests(unittest.IsolatedAsyncioTestCase):
             return []
         self.client.get_base_entity_list.side_effect = missing
         self.assertFalse(await CollectSearch(self.quester, self.client).run())
-        self.assertEqual(calls, 1)
+        self.assertEqual(calls, 3)
+        self.quester.get_zone_chunks.assert_not_awaited()
         self.client.send_key.assert_not_awaited()
+
+    async def test_far_loaded_object_is_not_permission_to_leave_anchor_area(self):
+        await self.lock_point()
+        self.client.get_base_entity_list.return_value = [self.entity(x=5000)]
+        again = CollectSearch(self.quester, self.client)
+        again.wait_at_anchor = AsyncMock(return_value=False)
+        self.client.send_key.reset_mock()
+        self.assertFalse(await again.run())
+        self.client.send_key.assert_not_awaited()
+        self.quester.get_zone_chunks.assert_not_awaited()
+        again.wait_at_anchor.assert_awaited_once()
+
+    async def test_returns_to_first_pickup_before_waiting_for_respawn(self):
+        await self.lock_point()
+        self.position = XYZ(500, 0, 0)
+        self.client.get_base_entity_list.return_value = []
+        again = CollectSearch(self.quester, self.client)
+        again.loaded_entities = AsyncMock(return_value=[])
+        again.wait_at_anchor = AsyncMock(return_value=False)
+        async def return_to_anchor(client, xyz):
+            self.assertEqual(xyz.x, 10)
+            self.position = xyz
+        with patch('src.collecting.collision_tp', AsyncMock(side_effect=return_to_anchor)) as move:
+            self.assertFalse(await again.run())
+        move.assert_awaited_once()
+        again.wait_at_anchor.assert_awaited_once()
+        self.quester.get_zone_chunks.assert_not_awaited()
+
+    async def test_wait_reads_new_entity_instead_of_reusing_expired_pointer(self):
+        await self.lock_point()
+        self.client.get_base_entity_list.side_effect = [[], [], [self.entity()]]
+        again = CollectSearch(self.quester, self.client)
+        self.assertTrue(await again.run())
+        self.assertEqual(self.count, 2)
+        self.quester.get_zone_chunks.assert_not_awaited()
+
+    async def test_failed_anchor_return_never_restarts_full_map_search(self):
+        await self.lock_point()
+        self.position = XYZ(5000, 0, 0)
+        self.client.get_base_entity_list.return_value = []
+        again = CollectSearch(self.quester, self.client)
+        again.wait_at_anchor = AsyncMock()
+        with patch('src.collecting.collision_tp', AsyncMock()):
+            self.assertFalse(await again.run())
+        self.quester.get_zone_chunks.assert_not_awaited()
+        again.wait_at_anchor.assert_not_awaited()
+        self.assertEqual(again.state.anchor.x, 10)
+
+    async def test_new_quest_invalidates_old_pickup_anchor(self):
+        await self.lock_point()
+        old = self.engine.state
+        self.client.quest_id.return_value = 99
+        self.client.get_base_entity_list.return_value = []
+        again = CollectSearch(self.quester, self.client)
+        self.assertFalse(await again.run())
+        self.assertIsNot(again.state, old)
+        self.assertIsNone(again.state.anchor)
+        self.quester.get_zone_chunks.assert_awaited_once()
+
+    async def test_anchor_wait_cancel_propagates_without_roaming(self):
+        await self.lock_point()
+        self.client.get_base_entity_list.side_effect = asyncio.CancelledError()
+        with self.assertRaises(asyncio.CancelledError):
+            await CollectSearch(self.quester, self.client).run()
+        self.client.teleport.assert_not_awaited()
+        self.quester.get_zone_chunks.assert_not_awaited()
+
+    async def test_other_recovery_or_refill_interrupts_anchor_wait(self):
+        await self.lock_point()
+        for name, value in [('refilling_potions', True), ('quest_recovery_owner', 'other')]:
+            with self.subTest(name=name):
+                setattr(self.client, name, value)
+                self.assertFalse(await CollectSearch(self.quester, self.client).run())
+                setattr(self.client, name, False if name == 'refilling_potions' else None)
+        self.quester.get_zone_chunks.assert_not_awaited()
 
     async def test_completed_counter_exits_without_more_pickups(self):
         await self.lock_point()

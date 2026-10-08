@@ -28,6 +28,20 @@ def client(title='p1', handle=1):
 
 
 class ManualSendTests(unittest.IsolatedAsyncioTestCase):
+    async def test_hidden_input_uses_readable_game_input_label(self):
+        for hidden in ('chatEditContainer', 'chatEdit'):
+            with self.subTest(hidden=hidden):
+                first = client()
+                nodes = {name: SimpleNamespace(is_visible=AsyncMock(return_value=name != hidden))
+                         for name in ('WorldView', 'WizardChatBox', 'chatContainer', 'chatEditContainer', 'chatEdit')}
+                for node in nodes.values():
+                    node.get_child_by_name = AsyncMock(side_effect=lambda name: nodes[name])
+                first.root_window = SimpleNamespace(get_child_by_name=AsyncMock(side_effect=lambda name: nodes[name]))
+                with self.assertRaisesRegex(RuntimeError, '游戏聊天输入栏不可见') as caught:
+                    await _chat_edit(first)
+                self.assertNotIn(hidden, str(caught.exception))
+                first.mouse_handler.click_window.assert_not_awaited()
+
     async def test_verified_self_lines_keep_original_and_other_same_body_is_not_suppressed(self):
         events = []
         monitor = ChatTranslationMonitor(events.append)

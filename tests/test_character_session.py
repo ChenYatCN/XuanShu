@@ -92,7 +92,7 @@ class CharacterSessionTests(unittest.IsolatedAsyncioTestCase):
         self.now += 0.2
         await self.maintain(self.client)
         self.namespace['_init_client_attrs'].assert_awaited_once_with(self.client)
-        self.namespace['_restart_always_on_tasks'].assert_called_once()
+        self.namespace['_restart_always_on_tasks'].assert_not_called()
         self.assertTrue(client_available(self.client, self.clients))
         self.assertFalse(self.client.questing_status)
         self.assertFalse(self.client.combat_status)
@@ -100,6 +100,63 @@ class CharacterSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.groups.groups, {})
         await self.maintain(self.client)
         self.namespace['_init_client_attrs'].assert_awaited_once()
+
+    async def test_idle_client_selection_and_reentry_leave_peer_quest_and_combat_tasks_running(self):
+        self.client.questing_status = False
+        self.client.combat_status = False
+        self.peer.questing_status = True
+        self.start_combat(self.peer)
+        peer_key = next(iter(self.groups.groups))
+        peer_task = self.groups.groups[peer_key][1]
+        peer_monitor = asyncio.create_task(asyncio.Event().wait())
+        self.addAsyncCleanup(self.cancel_task, peer_monitor)
+        self.namespace['_restart_always_on_tasks'].side_effect = peer_monitor.cancel
+        await self.maintain(self.client)
+        self.namespace['stop_questing_on_client_loss'].assert_not_awaited()
+        self.assertIs(self.groups.groups[peer_key][1], peer_task)
+        self.assertFalse(peer_task.done())
+        self.assertTrue(self.peer.questing_status)
+        self.assertTrue(self.peer.combat_status)
+        self.selecting = False
+        self.hud = True
+        await self.maintain(self.client)
+        self.now += 1
+        await self.maintain(self.client)
+        self.namespace['_restart_always_on_tasks'].assert_not_called()
+        self.assertFalse(peer_monitor.done())
+        self.assertIs(self.groups.groups[peer_key][1], peer_task)
+        self.assertFalse(peer_task.done())
+        self.assertTrue(self.peer.questing_status)
+        self.assertTrue(self.peer.combat_status)
+        self.assertFalse(self.client.questing_status)
+        self.assertFalse(self.client.combat_status)
+        self.assertIn(self.client, self.clients)
+
+    async def cancel_task(self, task):
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    async def test_pending_quest_group_membership_still_stops_related_questing(self):
+        self.client.questing_status = False
+        key = ('toggle_questing', ('p2',))
+        task = asyncio.create_task(asyncio.Event().wait())
+        self.groups.groups[key] = ((self.client,), task)
+        await self.maintain(self.client)
+        self.namespace['stop_questing_on_client_loss'].assert_awaited_once_with('p2', reason='已返回选角色界面')
+        self.assertNotIn(key, self.groups.groups)
+        self.assertTrue(task.cancelled())
+
+    async def test_cleanup_retry_preserves_quest_membership_after_partial_status_reset(self):
+        async def stop(*_args, **_kwargs):
+            self.client.questing_status = False
+            if self.namespace['stop_questing_on_client_loss'].await_count == 1:
+                raise RuntimeError('partial cleanup')
+        self.namespace['stop_questing_on_client_loss'].side_effect = stop
+        with self.assertRaisesRegex(RuntimeError, 'partial cleanup'):
+            await self.maintain(self.client)
+        await self.maintain(self.client)
+        self.assertEqual(self.namespace['stop_questing_on_client_loss'].await_count, 2)
+        self.assertTrue(self.client._character_session_cleanup_done)
 
     async def test_loading_or_invalid_character_keeps_input_gate_closed(self):
         await self.maintain(self.client)

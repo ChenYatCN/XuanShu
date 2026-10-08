@@ -1,13 +1,60 @@
 import unittest
+import ast
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from src.mainline_progress import match_quest, log_mainline_progress, quest_rows
 from src.collect_matching import CollectNames
 from src.questing import Quester
-from wizwalker import XYZ
+from wizwalker import XYZ, Keycode
 
 
 class MainlineTests(unittest.IsolatedAsyncioTestCase):
+    def test_live_elephant_march_identity_matches_existing_quest_84(self):
+        rows = quest_rows()
+        for quest_id, code, title in (
+            (121315715316472848, '', ''),
+            (0, 'QuestTitle_80B3E', ''),
+            (0, '', 'Elephant March'),
+            (0, '', '大象游行'),
+            (0, '', 'Elephant Queen'),
+        ):
+            with self.subTest(quest_id=quest_id, code=code, title=title):
+                row = match_quest(rows, quest_id, code, title)
+                self.assertIsNotNone(row)
+                self.assertEqual((row['world'], row['number'], row['total']), ('zafariA', 84, 148))
+        self.assertIsNone(match_quest(rows, 160440737060796615, 'QuestTitle_71A3D', 'Bad Vacation'))
+
+    async def test_solo_quest_ride_prompt_near_target_sends_x(self):
+        # Exercise the existing interaction branch, not a live game client.
+        tree = ast.parse(Path('src/questing.py').read_text(encoding='utf-8'))
+        method = next(node for node in ast.walk(tree)
+                      if isinstance(node, ast.AsyncFunctionDef) and node.name == 'auto_quest_solo')
+        branch = next(node for node in ast.walk(method)
+                      if isinstance(node, ast.If) and 'npc_range_path' in ast.unparse(node.test)
+                      and 'quest_xyz' in ast.unparse(node.test))
+        function = ast.AsyncFunctionDef(
+            name='interact', args=ast.arguments(posonlyargs=[], args=[], kwonlyargs=[],
+                kw_defaults=[], defaults=[]), body=[branch], decorator_list=[])
+        client = SimpleNamespace(title='p1', send_key=AsyncMock())
+        quester = Quester(client, [client], None)
+        quester.read_popup = AsyncMock(return_value='按下 &InputBindings_NPCInteract& 骑乘')
+        quester._maybe_photo_giant_vat = AsyncMock(return_value=False)
+        from src.interaction_prompts import interaction_kind, is_dungeon_entry_prompt
+        from src.paths import npc_range_path
+        namespace = dict(self=quester, quest_xyz=XYZ(0, 0, 0), current_pos=XYZ(114, 0, 0),
+            npc_range_path=npc_range_path, Keycode=Keycode,
+            calc_Distance=lambda a, b: abs(a.x - b.x),
+            is_visible_by_path=AsyncMock(return_value=True),
+            is_spiral_door_open=AsyncMock(return_value=False),
+            is_dungeon_entry_prompt=is_dungeon_entry_prompt, interaction_kind=interaction_kind,
+            asyncio=SimpleNamespace(sleep=AsyncMock()))
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[])),
+                     'quest-interaction-branch', 'exec'), namespace)
+        self.assertEqual(interaction_kind(await quester.read_popup(client)), 'ride')
+        await namespace['interact']()
+        client.send_key.assert_awaited_once_with(Keycode.X, .1)
+
     def test_live_novus_monkey_business_identity_is_unique(self):
         rows = quest_rows()
         for quest_id, code, title in (

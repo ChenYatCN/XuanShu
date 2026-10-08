@@ -869,17 +869,18 @@ def manage_gui(
                         _rebuild_hooked_clients_list()
                         _update_mc = hotkeys_exports.get("update_multi_client_state")
                         hooked_count = len(_last_hooked_data.get("hooked", []))
+                        restarting_titles = _last_hooked_data.get("restarting", [])
                         translation_dialog.set_available_clients([
                             info.get("title", "")
                             for info in _last_hooked_data.get("hooked", [])
                         ])
                         hotkeys_exports.get(
-                            "set_available_clients", lambda value: None
+                            "set_available_clients", lambda value, **kwargs: None
                         )(
                             [
                                 info.get("title", "")
                                 for info in _last_hooked_data.get("hooked", [])
-                            ]
+                            ], restarting_titles=restarting_titles
                         )
                         if _update_mc:
                             _update_mc(hooked_count)
@@ -892,13 +893,13 @@ def manage_gui(
                                 [
                                     info.get("title", "")
                                     for info in _last_hooked_data.get("hooked", [])
-                                ]
+                                ], restarting_titles=restarting_titles
                             )
-                        fishing_exports.get("set_available_clients", lambda v: None)(
+                        fishing_exports.get("set_available_clients", lambda v, **kwargs: None)(
                             [
                                 info.get("title", "")
                                 for info in _last_hooked_data.get("hooked", [])
-                            ]
+                            ], restarting_titles=restarting_titles
                         )
                         ctx.exports["ibao"]["set_available_clients"](
                             [info for info in _last_hooked_data.get("hooked", [])]
@@ -911,7 +912,7 @@ def manage_gui(
                                 [
                                     info.get("title", "")
                                     for info in _last_hooked_data.get("hooked", [])
-                                ]
+                                ], restarting_titles=restarting_titles
                             )
 
                     case GUICommandType.ClearLaunchCheckboxes:

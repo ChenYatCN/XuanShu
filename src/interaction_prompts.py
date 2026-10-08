@@ -51,6 +51,8 @@ for _id, (_english, _translation) in TEXT_RECORDS.items():
         _match = re.search(r"\bto (Talk|Open|Collect|Enter|Ride|Teleport|Use Magic Raft)\b", _english)
         if _match:
             _kind = _match[1].lower().replace("use magic raft", "ride")
+            if _id == "GUI_00008359":
+                _kind = "ride"  # Enter Boat is transport, not a dungeon sigil.
             _INTERACTION_IDS.setdefault(_kind, []).append(_id)
 
 _INTERACTION_FORMS = {

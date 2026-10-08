@@ -522,7 +522,10 @@ def show_settings_dialog(ctx):
                 )
             except (TypeError, ValueError):
                 saved_value = None
-            saved_index = icon_combo.findData(saved_value)
+            # QVariant stores these tuples as Python objects; findData can
+            # compare their identity rather than the reconstructed JSON value.
+            saved_index = next((index for index in range(icon_combo.count())
+                                if icon_combo.itemData(index) == saved_value), -1)
             if saved_index >= 0:
                 icon_combo.setCurrentIndex(saved_index)
         row_layout.addWidget(icon_combo, 1)

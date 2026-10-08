@@ -91,6 +91,51 @@ class NpcQuestAcceptTests(unittest.IsolatedAsyncioTestCase):
         self.client.send_key.assert_awaited_once_with(Keycode.SPACEBAR)
         self.quester._click_ui_window.assert_not_awaited()
 
+    async def test_ordinary_complete_does_not_wait_for_hitter_probe(self):
+        self.quester._window_text.return_value = '完成'
+        self.client.quest_party_probe_pending = True
+        self.assertTrue(await self.quester._advance_npc_dialogue(self.client))
+        self.quester._click_ui_window.assert_awaited_once_with(self.client, self.button)
+        self.assertTrue(self.client.quest_party_probe_pending)
+
+    async def test_pending_probe_complete_keeps_shared_cooldown_and_limit(self):
+        self.quester._window_text.return_value = '完成'
+        self.client.quest_party_probe_pending = True
+        other = Quester(self.client, [self.client], None)
+        other._window_text = self.quester._window_text
+        other._click_ui_window = self.quester._click_ui_window
+        for self.now in (0, .3, 1.5, 3, 5):
+            await asyncio.gather(self.quester._advance_npc_dialogue(self.client),
+                                 other._advance_npc_dialogue(self.client))
+        self.assertEqual(self.quester._click_ui_window.await_count, 3)
+        self.assertTrue(self.client.quest_party_probe_pending)
+
+    async def test_selected_mainline_complete_still_waits_for_probe(self):
+        self.quester._window_text.return_value = '完成'
+        self.client.quest_party_probe_pending = True
+        self.client.npc_mainline_menu_selection = {'zone': 'Novus/Area', 'failed': False}
+        self.assertFalse(await self.quester._advance_npc_dialogue(self.client))
+        self.quester._click_ui_window.assert_not_awaited()
+
+    async def test_pending_probe_complete_keeps_other_safety_guards(self):
+        self.quester._window_text.return_value = '完成'
+        self.client.quest_party_probe_pending = True
+        for name, blocked, restored in (
+                ('refilling_potions', True, False),
+                ('quest_party_battle_rescue_active', True, False),
+                ('quest_recovery_owner', 'mainline_finder', None),
+                ('questing_status', False, True)):
+            with self.subTest(guard=name):
+                setattr(self.client, name, blocked)
+                self.assertFalse(await self.quester._advance_npc_dialogue(self.client))
+                setattr(self.client, name, restored)
+        for name in ('is_loading', 'in_battle'):
+            with self.subTest(guard=name):
+                getattr(self.client, name).return_value = True
+                self.assertFalse(await self.quester._advance_npc_dialogue(self.client))
+                getattr(self.client, name).return_value = False
+        self.quester._click_ui_window.assert_not_awaited()
+
     async def test_unconfirmed_acceptance_retries_original_npc_before_movement(self):
         await self.quester._advance_npc_dialogue(self.client)
         self.button.is_visible.return_value = False

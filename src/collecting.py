@@ -30,6 +30,8 @@ class SearchState:
     verified_templates: set = field(default_factory=set)
     last_warning: float = -float('inf')
     anchor: XYZ | None = None
+    anchor_wait_started_at: float | None = None
+    rescan_after_anchor_timeout: bool = False
 
 
 @dataclass
@@ -48,10 +50,15 @@ class Candidate:
 
 
 class CollectSearch:
+    AVALON_GRAIN_SOURCE = 'Avalon/AV_Z00_Hub'
+    AVALON_GRAIN_DESTINATION = 'Avalon/AV_Z02_HighRoad'
+    AVALON_GRAIN_ENTRY = XYZ(462.612, 5835.807, -509.849)
     SELENOPOLIS_BOOK_STORAGE = 'Krokotopia/KT_Selenopolis/Interiors/KT_Z05I08_Storage_A_Int'
     SELENOPOLIS_BOOK_MARKET = 'Krokotopia/KT_Selenopolis/KT_Z05_Market'
     SELENOPOLIS_BOOK_EXIT = XYZ(7553.401, -9213.249, -365.059)
     PROMPT_ALIGN_MAX_STEPS = 40
+    LOCAL_SEARCH_RADIUS = 3147.0  # the existing region-loading/search distance
+    ANCHOR_RESPAWN_WAIT_SECONDS = 90.0
 
     def __init__(self, quester, client):
         self.quester = quester
@@ -92,6 +99,82 @@ class CollectSearch:
         goal = await self.snapshot()
         return (goal is not None and goal.key == self.goal.key and goal.total == self.goal.total
                 and (goal.total is None or goal.current < goal.total))
+
+    def avalon_grain_route_required(self):
+        # The supplied Fields of Barley stage, not every Avalon collect goal.
+        return (self.zone == self.AVALON_GRAIN_SOURCE and self.goal is not None
+                and self.goal.total == 6 and self.goal.current < 6
+                and normalize_name(self.goal.target) in {
+                    normalize_name('谷物袋'), normalize_name('Sacks of Grain')}
+                and normalize_name(self.goal.location) in {
+                    normalize_name('阿瓦隆大道'), normalize_name('High Road')})
+
+    async def enter_avalon_grain_map(self):
+        """Confirm the High Road transition before any collect-map search."""
+        from src.questing import claim_quest_recovery, release_quest_recovery
+        owner = 'avalon_grain_entry'
+        key = (self.zone, self.quest_id, self.goal.key, self.goal.total)
+        previous = getattr(self.client, '_xuanshu_avalon_grain_entry', None)
+        if isinstance(previous, dict) and previous.get('key') == key:
+            if time.monotonic() < previous['retry_at']:
+                return False
+        clients = getattr(self.quester, 'clients', [self.client])
+        if (getattr(self.client, 'quest_party_status_session', None) is not None
+                or any(self.client in getattr(c, 'quest_party_hitters', []) for c in clients)
+                or getattr(self.client, 'quest_party_probe_pending', False)
+                or getattr(self.client, 'mainline_chain_retry_active', False)
+                or getattr(self.client, 'quest_party_battle_rescue_active', False)
+                or getattr(self.client, 'post_combat_movement_active', False)
+                or not claim_quest_recovery(self.client, owner)):
+            return False
+        state = None
+        try:
+            async with asyncio.timeout(30):
+                async with automation_owner(self.client, owner):
+                    if (not await self.active() or not await self.same_goal()
+                            or not await is_free(self.client)):
+                        return False
+                    state = {'key': key, 'retry_at': time.monotonic() + 30}
+                    self.client._xuanshu_avalon_grain_entry = state
+                    logger.info('Client {}: 大麦领域收集谷物袋，先 TP 到阿瓦隆大道入口。',
+                                self.client.title)
+                    await self.client.teleport(self.AVALON_GRAIN_ENTRY)
+                    stable_reads = 0
+                    for _ in range(150):
+                        if (not self.client.questing_status
+                                or getattr(self.client, 'refilling_potions', False)):
+                            return False
+                        if await self.client.is_loading():
+                            stable_reads = 0
+                        else:
+                            zone = await self.client.zone_name()
+                            if zone and zone not in (self.AVALON_GRAIN_SOURCE, self.AVALON_GRAIN_DESTINATION):
+                                logger.warning('Client {}: 谷物袋入口到达非预期区域 {}，本轮不搜索。',
+                                               self.client.title, zone)
+                                return False
+                            if (not await is_free(self.client)
+                                    or self.quest_id is not None and await self.read_quest_id() != self.quest_id
+                                    or not await self.same_goal()):
+                                return False
+                            stable_reads = stable_reads + 1 if zone == self.AVALON_GRAIN_DESTINATION else 0
+                            if stable_reads >= 3:
+                                self.zone = zone
+                                self.client._xuanshu_avalon_grain_entry = None
+                                if getattr(self.client, 'quest_party_hitters', []):
+                                    self.client.quest_party_quest_worker_zone = zone
+                                    self.client.quest_party_probe_pending = True
+                                logger.info('Client {}: 已确认进入阿瓦隆大道，继续地图搜索谷物袋。',
+                                            self.client.title)
+                                return True
+                        await asyncio.sleep(.2)
+                    raise TimeoutError('阿瓦隆大道区域切换未确认')
+        except Exception as exc:
+            logger.warning('Client {}: 谷物袋入口切区未完成，本轮不搜索：{}', self.client.title, exc)
+            return False
+        finally:
+            if state is not None and getattr(self.client, '_xuanshu_avalon_grain_entry', None) is state:
+                state['retry_at'] = time.monotonic() + 30
+            release_quest_recovery(self.client, owner)
 
     async def leave_selenopolis_book_storage(self):
         """This collect stage takes place outside the storage, in the market."""
@@ -193,6 +276,9 @@ class CollectSearch:
                     continue
                 xyz = await entity.location()
                 if not all(math.isfinite(v) for v in (xyz.x, xyz.y, xyz.z)):
+                    continue
+                if (self.state.anchor is not None and not self.state.rescan_after_anchor_timeout
+                        and calc_Distance(self.state.anchor, xyz) > self.LOCAL_SEARCH_RADIUS):
                     continue
                 candidate = Candidate(entity, xyz, code, display, internal, template_id, score)
                 if self.state.recent.get(candidate.key, 0) <= time.monotonic():
@@ -324,6 +410,8 @@ class CollectSearch:
                     return False
                 after = await self.snapshot()
                 if count_increased(before, after):
+                    if self.state.anchor is None:
+                        self.state.anchor = XYZ(candidate.xyz.x, candidate.xyz.y, candidate.xyz.z)
                     if candidate.template_id is not None:
                         self.state.verified_templates.add(candidate.template_id)
                     logger.info(f'Client {self.client.title}: {before.target} 采集进度 '
@@ -351,19 +439,38 @@ class CollectSearch:
             success = await self.collect(candidate)
             self.state.recent[candidate.key] = time.monotonic() + (15 if success else 30)
             if success:
-                self.state.anchor = None
+                self.state.anchor_wait_started_at = None
+                self.state.rescan_after_anchor_timeout = False
                 return True
         return False
 
     async def wait_at_anchor(self):
-        """Stay at the verified pickup point; re-read entities after every respawn."""
+        """Re-read respawns at the first pickup; resume searching after 90 seconds."""
         while await self.active() and await self.same_goal():
+            if (getattr(self.client, 'refilling_potions', False) is True
+                    or getattr(self.client, 'quest_recovery_owner', None)):
+                self.state.anchor_wait_started_at = None
+                return False
             if await is_free(self.client):
+                if self.state.anchor_wait_started_at is None:
+                    self.state.anchor_wait_started_at = time.monotonic()
                 if await self.scan(await self.client.get_base_entity_list()):
                     return True
-            # No entity or no confirmed progress is not permission to roam.
-            # active/same_goal are rechecked every two seconds, and cancellation propagates.
+                if not await self.active() or not await self.same_goal():
+                    self.state.anchor_wait_started_at = None
+                    return False
+                if time.monotonic() - self.state.anchor_wait_started_at >= self.ANCHOR_RESPAWN_WAIT_SECONDS:
+                    self.state.anchor_wait_started_at = None
+                    self.state.rescan_after_anchor_timeout = True
+                    logger.info('Client {}: 首个成功采集点等待 90 秒仍无采集进展，重新搜索 {}。',
+                                self.client.title, self.goal.target)
+                    return False
+            else:
+                self.state.anchor_wait_started_at = None
+            # Keep the timer on client-owned SearchState across worker recreation;
+            # stop, goal/zone changes and other automation interrupt the wait.
             await asyncio.sleep(2)
+        self.state.anchor_wait_started_at = None
         return False
 
     async def run(self):
@@ -374,6 +481,11 @@ class CollectSearch:
         self.goal = await self.snapshot()
         if not self.goal or (self.goal.total is not None and self.goal.current >= self.goal.total):
             return False
+        if self.avalon_grain_route_required():
+            if not await self.enter_avalon_grain_map():
+                return False
+            if getattr(self.client, 'quest_party_probe_pending', False):
+                return False
         self.catalog = installed_catalog(self.client)
         if self.catalog is not None:
             self.names = await self.catalog.get()
@@ -402,8 +514,46 @@ class CollectSearch:
         self.state = previous if isinstance(previous, SearchState) and previous.key == key else SearchState(key)
         self.client._deimos_collect_search = self.state
         if not await self.active() or not await self.same_goal():
+            self.state.anchor_wait_started_at = None
             return False
-        self.state.anchor = None
+        if self.state.anchor is not None and not self.state.rescan_after_anchor_timeout:
+            if (getattr(self.client, 'refilling_potions', False) is True
+                    or getattr(self.client, 'quest_recovery_owner', None)):
+                self.state.anchor_wait_started_at = None
+                return False
+            # Prefer nearby objects and keep the FIRST verified pickup point;
+            # only an expired respawn wait permits resuming the map route.
+            if await self.scan(await self.client.get_base_entity_list()):
+                return True
+            if not await self.active() or not await self.same_goal() or not await is_free(self.client):
+                return False
+            if calc_Distance(await self.client.body.position(), self.state.anchor) > 120:
+                self.state.anchor_wait_started_at = None
+                if not await self.quester.is_position_safe(self.state.anchor):
+                    return False
+                try:
+                    await asyncio.wait_for(collision_tp(self.client, self.state.anchor), timeout=20)
+                except TimeoutError:
+                    return False
+                if not await self.active() or not await self.same_goal() or not await is_free(self.client):
+                    return False
+                if calc_Distance(await self.client.body.position(), self.state.anchor) > 750:
+                    return False  # failed landing is not permission to search elsewhere
+                if await self.scan(await self.loaded_entities()):
+                    return True
+            logger.debug('Client {}: 附近暂无可采集目标，留在首个成功采集点等待刷新。', self.client.title)
+            if await self.wait_at_anchor():
+                return True
+            if (not self.state.rescan_after_anchor_timeout or not await self.active()
+                    or not await self.same_goal() or not await is_free(self.client)
+                    or getattr(self.client, 'refilling_potions', False)
+                    or getattr(self.client, 'quest_recovery_owner', None)):
+                return False
+        if (self.state.rescan_after_anchor_timeout
+                and (not await is_free(self.client)
+                     or getattr(self.client, 'refilling_potions', False)
+                     or getattr(self.client, 'quest_recovery_owner', None))):
+            return False
         # Search the currently loaded region first, even if navigation data is absent.
         if await self.scan(await self.client.get_base_entity_list()):
             return True
@@ -418,6 +568,11 @@ class CollectSearch:
         origin = await self.client.body.position()
         for _ in range(len(self.state.route)):
             if not await self.active() or not await self.same_goal():
+                return False
+            if (self.state.rescan_after_anchor_timeout
+                    and (not await is_free(self.client)
+                         or getattr(self.client, 'refilling_potions', False)
+                         or getattr(self.client, 'quest_recovery_owner', None))):
                 return False
             point = self.state.route[self.state.cursor % len(self.state.route)]
             self.state.cursor = (self.state.cursor + 1) % len(self.state.route)

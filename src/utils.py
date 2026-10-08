@@ -25,6 +25,7 @@ from wizwalker.extensions.scripting.utils import (
 )
 from wizwalker.extensions.wizsprinter.wiz_navigator import toZone
 from wizwalker.memory import ObjectType, Window, WindowFlags
+from wizwalker.memory.memory_objects.enums import DuelPhase
 from wizwalker.memory.memory_objects.character_registry import DynamicMemoryObject
 from wizwalker.utils import (
     get_all_wizard_handles,
@@ -136,6 +137,44 @@ async def close_endorsement_window(client: Client) -> bool:
                     await client.mouse_handler.click_window(button)
                 return True
     return False
+
+
+async def close_friend_windows(client: Client) -> bool:
+    """Close only friend panels; never use ESC or toggle the friends button."""
+    async def visible(window):
+        if not await window.is_visible():
+            return False
+        return all([await parent.is_visible() for parent in await window.get_parents()])
+
+    closed = False
+    for name, close_name in (
+        ("wndCharacter", "btnCharacterClose"),
+        ("NewFriendsListWindow", "btnFriendListClose"),
+        ("wndFriendsList", "btnFriendListClose"),
+    ):
+        for window in await client.root_window.get_windows_with_name(name):
+            if not await visible(window):
+                continue
+            buttons = await window.get_windows_with_name(close_name)
+            button = None
+            for candidate in buttons:
+                if await visible(candidate):
+                    button = candidate
+                    break
+            async with client.mouse_handler:
+                if await client.is_loading() or not await visible(window):
+                    continue
+                if button is not None and await visible(button):
+                    await client.mouse_handler.click_window(button)
+                else:
+                    # The existing teleport utility hides this exact list by
+                    # flags. Keep that fallback scoped and preserve other bits.
+                    flags = await window.flags()
+                    await window.write_flags(WindowFlags(
+                        (int(flags) & ~int(WindowFlags.visible)) | int(WindowFlags.disabled)
+                    ))
+                closed = True
+    return closed
 
 
 async def is_friend_teleport_error(client: Client) -> bool:
@@ -1695,6 +1734,75 @@ async def logout_and_in(client: Client):
         client._intentional_character_switch = intentional
 
 
+async def reconcile_combat_state(client: Client, original_locations=None) -> bool:
+    """Release stale detection only after a readable, stable ended duel."""
+    pending = getattr(client, 'just_entered_combat', None)
+    if not (getattr(client, 'entity_detect_combat_status', False)
+            or isinstance(pending, (int, float))):
+        client._combat_ended_observation = None
+        return False
+
+    def protected():
+        entered = getattr(client, 'just_entered_combat', None)
+        return (getattr(client, '_character_selection_active', False) is True
+                or getattr(client, 'refilling_potions', False)
+                or getattr(client, 'quest_party_battle_rescue_active', False)
+                or getattr(client, 'quest_party_target_sync_active', False)
+                or getattr(client, 'post_combat_movement_active', False)
+                or getattr(client, 'post_combat_cleanup_active', False)
+                or isinstance(getattr(client, 'quest_recovery_owner', None), str)
+                or isinstance(entered, (int, float)) and time.time() - entered < 7)
+
+    if protected():
+        client._combat_ended_observation = None
+        return False
+    try:
+        async with asyncio.timeout(3.0):
+            if await client.is_loading():
+                client._combat_ended_observation = None
+                return False
+            zone = await client.zone_name()
+            # Client.in_battle() treats read errors as False. Read the phase
+            # directly so an unreadable duel cannot authorize state cleanup.
+            phase = await client.duel.duel_phase()
+    except Exception as exc:
+        client._combat_ended_observation = None
+        now = time.monotonic()
+        if now >= getattr(client, '_combat_reconcile_log_at', 0.0):
+            reason = '状态读取超过 3 秒' if isinstance(exc, asyncio.TimeoutError) else str(exc)
+            logger.debug('{} 战斗状态暂不可校准，保留保护并稍后重试：{}', client.title, reason)
+            client._combat_reconcile_log_at = now + 30.0
+        return False
+    if not zone or phase != DuelPhase.ended or protected():
+        client._combat_ended_observation = None
+        return False
+    pending = getattr(client, 'just_entered_combat', None)
+    now = time.monotonic()
+    observation = getattr(client, '_combat_ended_observation', None)
+    if (not isinstance(observation, tuple)
+            or observation[:2] != (zone, pending)):
+        client._combat_ended_observation = (zone, pending, now)
+        return False
+    if now - observation[2] < 1.5:
+        return False
+
+    helped = getattr(client, 'client_being_helped', None)
+    if helped is not None:
+        helpers = getattr(helped, 'helper_clients', [])
+        helpers[:] = [helper for helper in helpers if helper is not client]
+    client.entity_detect_combat_status = False
+    client.just_entered_combat = None
+    client.just_left_combat = False
+    client.invincible_combat_timer = False
+    client.client_being_helped = None
+    client.original_location_before_combat = None
+    client._combat_ended_observation = None
+    if original_locations is not None:
+        original_locations.pop(client.process_id, None)
+    logger.info('{} 已确认战斗结束，清理残留入战标记，恢复自动任务。', client.title)
+    return True
+
+
 async def is_free(client: Client):
     # Returns True if not in combat, loading screen, or in dialogue.
     if getattr(client, '_character_selection_active', False) is True:
@@ -1892,45 +2000,34 @@ async def _cycle_friends_list(
     client, right_button, friends_list, icon, icon_list, name, current_page
 ):
 
-    if name is not None:
-        name = name.lower()
-
-    list_text = await friends_list.maybe_text()
-
-    match = None
-    idx = 0
-
-    for idx, friend_entry in enumerate(list(_friend_list_entry.finditer(list_text))):
+    name = " ".join(plain_text(name).split()).casefold() if name is not None else None
+    list_text = await friends_list.maybe_text() or ""
+    candidates = []
+    for idx, friend_entry in enumerate(_friend_list_entry.finditer(list_text)):
         friend_icon = int(friend_entry.group("icon_index"))
         friend_icon_list = int(friend_entry.group("icon_list"))
-        friend_name = (friend_entry.group("name")).lower()
-
-        if icon is not None and icon_list is not None and name:
-            if (
-                friend_icon == icon
-                and friend_icon_list == icon_list
-                and friend_name == name
-            ):
-                match = friend_entry
-                break
-
-        elif icon is not None and icon_list is not None:
-            if friend_icon == icon and friend_icon_list == icon_list:
-                match = friend_entry
-                break
-
-        elif name:
-            if friend_name == name:
-                match = friend_entry
-                break
-
-        else:
+        friend_name = " ".join(plain_text(friend_entry.group("name")).split()).casefold()
+        if icon is not None and icon_list is not None:
+            if friend_icon != icon or friend_icon_list != icon_list:
+                continue
+        elif not name:
             raise RuntimeError("Invalid args")
+        if name and not (friend_name == name or (
+                " " not in name and friend_name.split(maxsplit=1)[0] == name)):
+            continue
+        candidates.append((friend_entry, idx))
 
-    if match:
+    if len(candidates) > 1:
+        raise ValueError(f"好友匹配不唯一：{name or f'图标 {icon_list}:{icon}'}；请使用完整角色名或唯一好友图标")
+    match, idx = candidates[0] if candidates else (None, 0)
+    if match is not None:
+        if name and name != " ".join(plain_text(match.group("name")).split()).casefold():
+            logger.debug("好友首名唯一匹配：{} -> {}", name, match.group("name"))
         target_page = (idx // 10) + 1
 
         if target_page != current_page:
+            if target_page < current_page:
+                raise ValueError("目标好友在前一页；未确认翻页方向，停止本次传送")
             for _ in range(target_page - current_page):
                 await client.mouse_handler.click_window(right_button)
 
@@ -2020,7 +2117,27 @@ async def teleport_to_friend_from_list(
 
     await _click_on_friend(client, friends_list_window, friend_index)
 
-    character_window = await _maybe_get_named_window(client.root_window, "wndCharacter")
+    # Other UI panels retain hidden wndCharacter children. Only the live
+    # profile opened from this friend list may receive the teleport click.
+    character_window = None
+    for attempt in range(5):
+        visible_profiles = []
+        for window in await client.root_window.get_windows_with_name("wndCharacter"):
+            if (await window.is_visible()
+                    and all([await parent.is_visible() for parent in await window.get_parents()])):
+                visible_profiles.append(window)
+        if len(visible_profiles) > 1:
+            raise ValueError("当前有多个可见好友详情窗口，停止本次传送")
+        if visible_profiles:
+            character_window = visible_profiles[0]
+            break
+        if attempt < 4:
+            await asyncio.sleep(0.4)
+    if character_window is None:
+        raise ValueError("好友详情窗口尚未显示，停止本次传送")
+    if (await client.is_loading() or not await character_window.is_visible()
+            or not all([await parent.is_visible() for parent in await character_window.get_parents()])):
+        raise ValueError("好友详情窗口已关闭或客户端正在加载，停止本次传送")
     await _teleport_to_friend(client, character_window)
 
     # close friends window

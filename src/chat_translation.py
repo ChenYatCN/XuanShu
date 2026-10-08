@@ -28,7 +28,7 @@ async def _chat_edit(client):
         node = await node.get_child_by_name(name)
         if not await node.is_visible():
             if name in ('chatEditContainer', 'chatEdit'):
-                raise RuntimeError(f'{name} 不可见，请先在游戏里展开聊天输入栏（只显示聊天记录不够）')
+                raise RuntimeError('游戏聊天输入栏不可见，请先在游戏里展开输入栏（只显示聊天记录不够）')
             raise RuntimeError(f'{name} 不可见，请先展开聊天框')
     if await node.maybe_read_type_name() != 'ControlFreeChat':
         raise RuntimeError('聊天输入控件类型不符')
@@ -125,7 +125,9 @@ def parse_chat_log(text):
         if not sender:
             continue
         gid = re.search(r'<link;GID:(\d+)[,;]', raw, re.I)
-        channel = {'art_chat_say': '附近', 'art_chat_group': '队伍'}.get(
+        channel = {'art_chat_say': '附近', 'art_chat_group': '队伍',
+                   'art_chat_party': '队伍',
+                   'art_chat_text': '私聊', 'chat_balloon_owner': '房间'}.get(
             icon[1].casefold(), icon[1])
         messages.append((channel, int(gid[1]) if gid else 0, sender[1], sender[2]))
     return messages

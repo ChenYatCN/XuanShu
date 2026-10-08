@@ -610,7 +610,11 @@ class OvergrownEstateTests(unittest.IsolatedAsyncioTestCase):
         await self.start()
         self.quester._window_text = AsyncMock(return_value='完成')
         button = window('btnRight', '完成')
-        with patch('src.questing.get_window_from_path', new=AsyncMock(return_value=button)):
+        async def complete(client, target):
+            self.assertIs(target, button)
+            self.dialogue = False
+        with patch('src.questing.get_window_from_path', new=AsyncMock(return_value=button)), \
+                patch.object(self.quester, '_click_ui_window', new=AsyncMock(side_effect=complete)):
             self.assertTrue(await self.quester._advance_npc_dialogue(self.client))
         self.assertTrue(self.state()['dialogue_seen'])
         self.assertFalse(self.dialogue)

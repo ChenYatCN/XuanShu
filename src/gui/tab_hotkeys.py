@@ -52,6 +52,7 @@ def build_hotkeys_tab(ctx):
                       'toggle_dialogue_side_quests', 'toggle_sigil', 'toggle_questing',
                       'toggle_auto_pet', 'toggle_auto_potion'}
     client_checks = {}
+    restarting_checks = {}
     updating_checks = [False]
 
     def selected_clients():
@@ -239,12 +240,18 @@ def build_hotkeys_tab(ctx):
 
     all_clients.toggled.connect(toggle_all)
 
-    def set_available_clients(titles):
+    def set_available_clients(titles, restarting_titles=()):
         names = sorted(set(str(t).strip() for t in titles if str(t).strip()),
                        key=lambda t: (0, int(t[1:])) if t.startswith('p') and t[1:].isdigit() else (1, t))
+        previous = {name: check.isChecked() for name, check in client_checks.items()}
+        retained = dict(restarting_checks)
+        for name in restarting_titles:
+            if name in previous and name not in retained:
+                retained[name] = previous[name]
+        restarting_checks.clear()
+        restarting_checks.update({name: retained[name] for name in restarting_titles if name in retained})
         if names == list(client_checks):
             return
-        previous = {name: check.isChecked() for name, check in client_checks.items()}
         updating_checks[0] = True
         for check in client_checks.values():
             target_flow.removeWidget(check)
@@ -254,7 +261,7 @@ def build_hotkeys_tab(ctx):
         for name in names:
             check = ThemedCheckBox(name, ctx.stroke_color, ctx.text_color, ctx.alt_bg)
             check.setProperty('clientOption', True)
-            check.setChecked(previous.get(name, True))
+            check.setChecked(retained.get(name, previous.get(name, True)))
             check.toggled.connect(sync_all_check)
             client_checks[name] = check
             target_flow.addWidget(check)

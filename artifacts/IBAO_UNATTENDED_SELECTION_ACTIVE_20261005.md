@@ -1,5 +1,38 @@
 # COMPLETED unattended efficient production-line character selection
 
+## Follow-up completed 2026-10-06: logout stuck on Settings
+
+LATEST follow-up: user asked additional simulation, then explicitly 进行修复.
+Three resulting risks fixed: logout uses single observed-control clicks with
+modal priority/fresh checks; transient UI reads retry without swallowing missing
+connection/cancellation; menu15sec and loading60sec have separate cumulative
+allowances. src/ibao_core.py and tests/test_ibao_character_selection.py only
+production/test changes; generic shared helper and manager/relaunch unchanged.
+50 distinct affected tests and final16 offline probes passed, scoped diffcheck
+passed. See IBAO_LOGOUT_SIMULATION_REPORT_20261006.md for evidence and history.
+No EXE build or live-game input/restart, no commit/upload. Complete, ready to deliver.
+
+User supplied live log and Settings screenshot, then explicitly requested 修复.
+Window 01a10d34-f634-7170-8c2e-2c050baf417d; user item ID unavailable.
+Old logout sent ESC once and immediately tried Quit; when Settings opened late,
+Quit could be missed and later loops never retried it. An isolated simulation
+confirmed Settings visible with zero Quit clicks; no real game input performed.
+Changed only logout_and_in's pre-selection transition in src/ibao_core.py:
+observe loading/Play/confirmation/Quit each poll, click existing visible controls,
+send ESC at most once per second only when neither menu nor confirmation is shown,
+wait without input while loading. A 15-second asyncio timeout covers reads/clicks
+and raises existing CharacterSelectionError for immediate existing recovery.
+Existing character verification, per-click hook/cancel cleanup, supervisor and
+relaunch implementation unchanged. Added five regression test methods to
+tests/test_ibao_character_selection.py and adapted its fake client/asyncio for
+loading/timeout. Delayed menu and confirmation, pre-opened settings/confirmation,
+loading input suppression, hung click cancellation/timeout, user cancellation,
+and already-selected/no-ESC behavior covered. 44 directly affected tests passed
+in tests.test_ibao_character_selection/tests.test_ibao/tests.test_ibao_shutdown;
+scoped git diff --check passed. No EXE build, live game input/restart, commit or
+upload; unrelated dirty edits preserved. Source complete; needs source restart or
+user packaging to update EXE. Live-game behavior remains unverified.
+
 Completion window 01a10b90-cda5-7742-a5eb-f40be7aeb571. Recovered latest user request from current thread read: user item 01a10b87-89f5-79e2-bc36-02f3bab9aac7 in turn 01a10b87-89b8-7481-8181-0c9d0476fe60 requested continuous unattended operation without efficiency regressions.
 
 Implementation and directly affected verification now complete. Added tests for target changing immediately before Play, persistent unreadable selection, transient read failure after page flip, selection cancellation, immediate selection-error recovery with 180-second ordinary timeout, recovery exception then empty result then success, missing-client protection throughout retries, cancellation during retry sleep preserving another client. Updated only test_ibao_shutdown fixture from obsolete wizlaunch.launch_instance mock to current launch_account_instance mock; production launcher unchanged by this task. All 39 tests in tests.test_ibao_character_selection, tests.test_ibao, tests.test_ibao_shutdown passed (2.065 seconds). Scoped git diff --check passed; AST syntax check passed for five changed Python files. Only subsequent code change was spacing in a comment.

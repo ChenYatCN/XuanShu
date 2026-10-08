@@ -147,10 +147,12 @@ class PotionRoutingSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(claim_quest_recovery(client, 'mainline_finder'))
         self.assertFalse(hasattr(client, 'quest_recovery_owner'))
 
-    async def test_hitter_refill_blocks_quest_movement_without_arming_zone_probe(self):
+    async def test_hitter_refill_does_not_block_quester_movement(self):
         hitter = SimpleNamespace(refilling_potions=True)
-        client = SimpleNamespace(quest_party_hitters=[hitter], quest_party_probe_pending=False)
-        self.assertTrue(await Quester._quest_party_probe_blocks_movement(SimpleNamespace(client=client)))
+        client = SimpleNamespace(quest_party_hitters=[hitter], quest_party_probe_pending=False,
+            is_loading=AsyncMock(return_value=False), zone_name=AsyncMock(return_value='Dungeon/Room'),
+            quest_party_group_dungeon_zone='Dungeon/Room')
+        self.assertFalse(await Quester._quest_party_probe_blocks_movement(SimpleNamespace(client=client)))
         self.assertFalse(client.quest_party_probe_pending)
 
     async def test_closed_mark_failure_never_waits_for_cooldown_or_sends_keys(self):

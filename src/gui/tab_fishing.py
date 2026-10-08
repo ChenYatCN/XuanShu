@@ -376,10 +376,18 @@ def build_fishing_tab(ctx):
         else:
             _start_fishing()
 
-    def set_available_clients(titles):
+    restarting_checks = {}
+
+    def set_available_clients(titles, restarting_titles=()):
         titles = sorted(dict.fromkeys(t for t in titles if t),
                         key=lambda t: (0, int(t[1:])) if t.lower().startswith('p') and t[1:].isdigit() else (1, t))
         previous = {t: c.isChecked() for t, c in checks.items()}
+        retained = dict(restarting_checks)
+        for title in restarting_titles:
+            if title in previous and title not in retained:
+                retained[title] = previous[title]
+        restarting_checks.clear()
+        restarting_checks.update({title: retained[title] for title in restarting_titles if title in retained})
         select_all = (not initialized_clients[0] and bool(titles)) or all_clients.isChecked()
         updating[0] = True
         for check in checks.values():
@@ -389,7 +397,7 @@ def build_fishing_tab(ctx):
         checks.clear()
         for title in titles:
             check = ThemedCheckBox(title, ctx.stroke_color, ctx.text_color, ctx.alt_bg)
-            check.setChecked(select_all or previous.get(title, False))
+            check.setChecked(retained.get(title, select_all or previous.get(title, False)))
             check.toggled.connect(_selection_changed)
             checks[title] = check
             target_flow.addWidget(check)

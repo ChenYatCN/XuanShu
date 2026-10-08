@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock
+from wizwalker.memory.memory_objects.enums import DuelPhase
 
 
 class ClientState(SimpleNamespace):
@@ -32,7 +33,8 @@ class FailedCombatEntryTests(unittest.IsolatedAsyncioTestCase):
         self.namespace = {
             'Client': ClientState,
             'SprintyClient': lambda client: client,
-            'asyncio': SimpleNamespace(sleep=AsyncMock()),
+            'asyncio': SimpleNamespace(sleep=AsyncMock(), wait_for=asyncio.wait_for, TimeoutError=asyncio.TimeoutError),
+            'DuelPhase': DuelPhase,
             'time': SimpleNamespace(time=lambda: 15),
             'logger': Mock(),
             'combat_group_for': lambda client: self.group,
@@ -59,6 +61,7 @@ class FailedCombatEntryTests(unittest.IsolatedAsyncioTestCase):
             just_left_combat=False, invincible_combat_timer=False,
             duel_circle_joinable=True, in_solo_zone=False,
             in_battle=AsyncMock(return_value=False),
+            duel=SimpleNamespace(duel_phase=AsyncMock(return_value=DuelPhase.planning)),
             zone_name=AsyncMock(return_value='Dungeon/Room'),
             body=SimpleNamespace(position=AsyncMock(return_value=f'{title}-safe')),
             teleport=AsyncMock(),
@@ -199,6 +202,21 @@ class FailedCombatEntryTests(unittest.IsolatedAsyncioTestCase):
         self.helper.teleport.assert_not_awaited()
         self.assertIsNone(self.helper.just_entered_combat)
         self.assertFalse(self.helper.entity_detect_combat_status)
+
+    async def test_post_combat_cleanup_is_not_interrupted_by_circle_pull(self):
+        self.prepare_teleport()
+        self.helper.post_combat_cleanup_active = True
+        await self.detect_once(self.quester)
+        self.helper.teleport.assert_not_awaited()
+        self.assertIsNone(self.helper.just_entered_combat)
+
+    async def test_ended_circle_does_not_reassert_battle_or_pull_other_group(self):
+        self.prepare_teleport()
+        self.quester.duel.duel_phase.return_value = DuelPhase.ended
+        await self.detect_once(self.quester)
+        self.assertFalse(self.quester.entity_detect_combat_status)
+        self.helper.teleport.assert_not_awaited()
+        self.assertIsNone(self.helper.just_entered_combat)
 
 
 if __name__ == '__main__':

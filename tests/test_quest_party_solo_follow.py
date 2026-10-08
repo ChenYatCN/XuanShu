@@ -17,13 +17,16 @@ class SoloFollowTests(unittest.IsolatedAsyncioTestCase):
 
     async def run_session(self, *, zone='Solo', primary=True, group_zone=None,
                           solo=True, recovery_owner='lemuria_dungeon', navigation_holding=False,
-                          outback_holding=False, estate_phase=None, target_sync=False):
+                          outback_holding=False, estate_phase=None, target_sync=False,
+                          cleanup_source=False, cleanup_hitter=False):
         self.hitter = SimpleNamespace(
             title='p2', questing_status=True,
+            post_combat_cleanup_active=cleanup_hitter,
             quest_party_battle_sync_state='failed',
             is_loading=AsyncMock(return_value=False))
         self.quester = SimpleNamespace(
             title='p1', questing_status=True, in_solo_zone=solo,
+            post_combat_cleanup_active=cleanup_source,
             quest_party_observed_zone='Solo',
             quest_party_quest_worker_zone='Solo',
             quest_party_probe_pending=False,
@@ -134,6 +137,14 @@ class SoloFollowTests(unittest.IsolatedAsyncioTestCase):
         statuses = await self.run_session(solo=False, recovery_owner='tamarin_house')
         self.assertEqual(statuses[1:], ['等待 TamarinHouse 两段 TP'] * 3)
 
+    async def test_avalon_grain_entry_pauses_followers(self):
+        statuses = await self.run_session(solo=False, recovery_owner='avalon_grain_entry')
+        self.assertEqual(statuses[1:], ['等待谷物袋入口区域切换'] * 3)
+
+    async def test_avalon_grain_entry_preserves_confirmed_solo_priority(self):
+        statuses = await self.run_session(recovery_owner='avalon_grain_entry')
+        self.assertEqual(statuses[1:], ['单人区域，任务端独立执行'] * 3)
+
     async def test_easton_house_flow_pauses_followers_before_zone_probe(self):
         statuses = await self.run_session(solo=False, recovery_owner='easton_house', zone='Hub')
         self.assertEqual(statuses[1:], ['等待 EastonHouse 专属切区恢复'] * 3)
@@ -185,6 +196,13 @@ class SoloFollowTests(unittest.IsolatedAsyncioTestCase):
     async def test_shared_target_movement_pauses_independent_follow(self):
         statuses = await self.run_session(solo=False, recovery_owner=None, target_sync=True)
         self.assertEqual(statuses[1:], ['正在同步到任务目标'] * 3)
+
+    async def test_source_or_hitter_cleanup_pauses_follow_before_zone_reads(self):
+        for guard in ({'cleanup_source': True}, {'cleanup_hitter': True}):
+            with self.subTest(guard=guard):
+                statuses = await self.run_session(solo=False, recovery_owner=None, **guard)
+                self.assertEqual(statuses[1:], ['等待战后恢复'] * 3)
+                self.quester.zone_name.assert_not_awaited()
         self.quester.zone_name.assert_not_awaited()
 
     async def test_failed_navigation_wait_also_pauses_follow_without_lock(self):

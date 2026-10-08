@@ -12,6 +12,25 @@ def chat_line(message, icon='Say', name='Amber', gid=31):
 
 
 class ChatLogTests(unittest.TestCase):
+    def test_party_and_group_both_display_as_team(self):
+        for icon in ('Party', 'PARTY', 'Group'):
+            with self.subTest(icon=icon):
+                self.assertEqual(parse_chat_log(chat_line('team', icon=icon)),
+                                 [('队伍', 31, 'Amber', 'team')])
+
+    def test_whisper_and_room_labels_preserve_sender_and_body(self):
+        for icon, channel in (('Art_Chat_Text', '私聊'), ('art_CHAT_text', '私聊'),
+                              ('chat_balloon_Owner', '房间'), ('CHAT_BALLOON_OWNER', '房间')):
+            with self.subTest(icon=icon):
+                raw = chat_line('love you', gid=0, name='你').replace('Art_Chat_Say', icon)
+                self.assertEqual(parse_chat_log(raw), [(channel, 0, '你', 'love you')])
+                raw = chat_line('one &amp; two').replace('Art_Chat_Say', icon)
+                self.assertEqual(parse_chat_log(raw), [(channel, 31, 'Amber', 'one & two')])
+
+    def test_unknown_channel_keeps_its_original_label(self):
+        raw = chat_line('hello', icon='Unknown')
+        self.assertEqual(parse_chat_log(raw), [('Art_Chat_Unknown', 31, 'Amber', 'hello')])
+
     def test_nearby_group_self_and_system_markup(self):
         raw = '\n'.join([chat_line('hi'), chat_line('team', 'Group'),
                          chat_line('mine', gid=0, name='你'),
