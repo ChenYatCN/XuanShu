@@ -59,47 +59,56 @@ class CharacterSessionTests(unittest.IsolatedAsyncioTestCase):
         self.groups.run = wait_forever
         self.groups._start('toggle_combat', [client])
 
-    async def test_selection_stops_affected_group_once_preserves_peer_and_clears_caches(self):
+    async def test_selection_preserves_groups_and_script_and_clears_only_caches(self):
         self.start_combat(self.peer)
         self.start_combat(self.client)
+        script = asyncio.create_task(asyncio.Event().wait())
+        self.addAsyncCleanup(self.cancel_task, script)
+        self.namespace['bot_tasks'][('p2',)] = script
         await self.maintain(self.client)
-        self.assertFalse(client_available(self.client, self.clients))
+        await self.groups.remove_missing()
+        self.assertTrue(client_available(self.client, self.clients))
         self.assertTrue(client_available(self.peer, self.clients))
-        self.assertEqual(len(self.groups.groups), 1)
-        self.assertIs(next(iter(self.groups.groups.values()))[0][0], self.peer)
-        self.namespace['stop_questing_on_client_loss'].assert_awaited_once_with(
-            'p2', reason='已返回选角色界面')
-        self.assertFalse(self.client.combat_status)
+        self.assertEqual(len(self.groups.groups), 2)
+        self.assertTrue(all(not task.done() for _, task in self.groups.groups.values()))
+        self.assertIs(self.namespace['bot_tasks'][('p2',)], script)
+        self.assertFalse(script.done())
+        self.namespace['stop_questing_on_client_loss'].assert_not_awaited()
+        self.namespace['fishing_groups'].stop.assert_not_awaited()
+        self.assertTrue(self.client.combat_status)
+        self.assertTrue(self.client.questing_status)
         self.assertTrue(self.peer.combat_status)
         for field in ('_world_view_window', '_character_registry_addr', '_quest_client_manager_addr'):
             self.assertIsNone(getattr(self.client, field))
         self.assertEqual(self.client.combat_config, 'saved config')
         await self.maintain(self.client)
-        self.namespace['stop_questing_on_client_loss'].assert_awaited_once()
+        self.namespace['stop_questing_on_client_loss'].assert_not_awaited()
         self.namespace['_init_client_attrs'].assert_not_awaited()
 
-    async def test_reentry_requires_stable_hud_and_refreshes_without_auto_restart(self):
+    async def test_reentry_requires_stable_hud_and_preserves_automation(self):
         await self.maintain(self.client)
         self.selecting = False
         await self.maintain(self.client)
         self.client.is_loading.assert_not_awaited()
         self.hud = True
         await self.maintain(self.client)
-        self.assertTrue(self.client._character_selection_active)
+        self.assertTrue(self.client._character_session_refresh_pending)
         self.now += 0.4
         await self.maintain(self.client)
         self.namespace['_init_client_attrs'].assert_not_awaited()
         self.now += 0.2
         await self.maintain(self.client)
-        self.namespace['_init_client_attrs'].assert_awaited_once_with(self.client)
+        self.namespace['_init_client_attrs'].assert_not_awaited()
         self.namespace['_restart_always_on_tasks'].assert_not_called()
         self.assertTrue(client_available(self.client, self.clients))
-        self.assertFalse(self.client.questing_status)
-        self.assertFalse(self.client.combat_status)
+        self.assertTrue(self.client.questing_status)
+        self.assertTrue(self.client.combat_status)
+        self.assertFalse(self.client._character_session_refresh_pending)
+        self.assertEqual(self.client.character_level, 170)
         self.assertEqual(self.client.combat_config, 'saved config')
         self.assertEqual(self.groups.groups, {})
         await self.maintain(self.client)
-        self.namespace['_init_client_attrs'].assert_awaited_once()
+        self.namespace['_init_client_attrs'].assert_not_awaited()
 
     async def test_idle_client_selection_and_reentry_leave_peer_quest_and_combat_tasks_running(self):
         self.client.questing_status = False
@@ -136,29 +145,37 @@ class CharacterSessionTests(unittest.IsolatedAsyncioTestCase):
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
-    async def test_pending_quest_group_membership_still_stops_related_questing(self):
+    async def test_pending_quest_group_membership_survives_selection(self):
         self.client.questing_status = False
         key = ('toggle_questing', ('p2',))
         task = asyncio.create_task(asyncio.Event().wait())
         self.groups.groups[key] = ((self.client,), task)
         await self.maintain(self.client)
-        self.namespace['stop_questing_on_client_loss'].assert_awaited_once_with('p2', reason='已返回选角色界面')
-        self.assertNotIn(key, self.groups.groups)
-        self.assertTrue(task.cancelled())
+        self.namespace['stop_questing_on_client_loss'].assert_not_awaited()
+        self.assertIn(key, self.groups.groups)
+        self.assertFalse(task.done())
 
-    async def test_cleanup_retry_preserves_quest_membership_after_partial_status_reset(self):
-        async def stop(*_args, **_kwargs):
-            self.client.questing_status = False
-            if self.namespace['stop_questing_on_client_loss'].await_count == 1:
-                raise RuntimeError('partial cleanup')
-        self.namespace['stop_questing_on_client_loss'].side_effect = stop
-        with self.assertRaisesRegex(RuntimeError, 'partial cleanup'):
-            await self.maintain(self.client)
+    async def test_script_can_reenter_without_being_cancelled(self):
+        reenter = asyncio.Event()
+        async def script():
+            await reenter.wait()
+            self.selecting = False
+            self.hud = True
+        task = asyncio.create_task(script())
+        self.addAsyncCleanup(self.cancel_task, task)
+        self.namespace['bot_tasks'][('p2',)] = task
         await self.maintain(self.client)
-        self.assertEqual(self.namespace['stop_questing_on_client_loss'].await_count, 2)
-        self.assertTrue(self.client._character_session_cleanup_done)
+        reenter.set()
+        await task
+        await self.maintain(self.client)
+        self.now += 1
+        await self.maintain(self.client)
+        self.assertFalse(task.cancelled())
+        self.assertFalse(self.client._character_session_refresh_pending)
+        self.assertTrue(self.client.questing_status)
+        self.assertTrue(self.client.combat_status)
 
-    async def test_loading_or_invalid_character_keeps_input_gate_closed(self):
+    async def test_loading_or_invalid_character_delays_refresh_without_stopping_tasks(self):
         await self.maintain(self.client)
         self.selecting = False
         self.hud = True
@@ -168,33 +185,36 @@ class CharacterSessionTests(unittest.IsolatedAsyncioTestCase):
         self.client.stats.reference_level.return_value = 0
         await self.maintain(self.client)
         self.namespace['_init_client_attrs'].assert_not_awaited()
-        self.assertTrue(self.client._character_selection_active)
+        self.assertTrue(self.client._character_session_refresh_pending)
+        self.assertTrue(client_available(self.client, self.clients))
+        self.assertTrue(self.client.questing_status)
 
-    async def test_failed_refresh_keeps_gate_closed_and_preserves_playstyle(self):
+    async def test_failed_character_read_preserves_automation_and_playstyle(self):
         await self.maintain(self.client)
         self.selecting = False
         self.hud = True
         await self.maintain(self.client)
         self.now += 1.0
-        async def fail(client):
-            client.combat_config = 'partially initialized config'
-            raise RuntimeError('character stats temporarily unavailable')
-        self.namespace['_init_client_attrs'].side_effect = fail
+        self.client.stats.reference_level.side_effect = RuntimeError('character stats temporarily unavailable')
         with self.assertRaisesRegex(RuntimeError, 'temporarily unavailable'):
             await self.maintain(self.client)
-        self.assertTrue(self.client._character_selection_active)
+        self.assertTrue(self.client._character_session_refresh_pending)
+        self.assertTrue(self.client.combat_status)
+        self.assertTrue(self.client.questing_status)
         self.assertEqual(self.client.combat_config, 'saved config')
         self.namespace['_restart_always_on_tasks'].assert_not_called()
 
-    async def test_failed_cleanup_is_retried_instead_of_leaving_workers_active(self):
-        self.namespace['stop_questing_on_client_loss'].side_effect = [RuntimeError('retry cleanup'), None]
-        with self.assertRaisesRegex(RuntimeError, 'retry cleanup'):
-            await self.maintain(self.client)
-        self.assertTrue(self.client._character_selection_active)
-        self.assertFalse(self.client._character_session_cleanup_done)
+    async def test_user_stop_during_selection_is_not_undone_on_reentry(self):
         await self.maintain(self.client)
-        self.assertTrue(self.client._character_session_cleanup_done)
-        self.assertEqual(self.namespace['stop_questing_on_client_loss'].await_count, 2)
+        self.client.questing_status = False
+        self.client.combat_status = False
+        self.selecting = False
+        self.hud = True
+        await self.maintain(self.client)
+        self.now += 1
+        await self.maintain(self.client)
+        self.assertFalse(self.client.questing_status)
+        self.assertFalse(self.client.combat_status)
 
     async def test_intentional_logout_ibao_and_hook_initialization_do_not_stop_tasks(self):
         for field in ('_intentional_character_switch', 'is_ibao'):

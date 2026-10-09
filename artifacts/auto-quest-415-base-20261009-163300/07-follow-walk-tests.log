@@ -1,0 +1,169 @@
+test_cancellation_during_countdown_releases_only_this_entry_lock (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_cancellation_during_countdown_releases_only_this_entry_lock) ... ok
+test_confirmed_solo_area_keeps_independent_quester_policy (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_confirmed_solo_area_keeps_independent_quester_policy) ... ok
+test_delayed_confirmation_requires_every_hitter_to_change_zone (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_delayed_confirmation_requires_every_hitter_to_change_zone) ... ok
+test_entrance_collection_uses_only_ready_same_instance_assigned_hitters (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_entrance_collection_uses_only_ready_same_instance_assigned_hitters) ... ok
+test_entry_requires_same_destination_and_live_instance_not_merely_leaving_source (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_entry_requires_same_destination_and_live_instance_not_merely_leaving_source) ... ok
+test_fast_zone_change_without_loading_sample_is_not_an_entry_timeout (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_fast_zone_change_without_loading_sample_is_not_an_entry_timeout) ... ok
+test_first_hitter_departing_during_later_prompt_read_blocks_all_entry_keys (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_first_hitter_departing_during_later_prompt_read_blocks_all_entry_keys) ... ok
+test_full_party_return_to_verified_entry_zone_releases_dungeon_marker (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_full_party_return_to_verified_entry_zone_releases_dungeon_marker) ... ok
+test_hidden_team_up_never_enters_or_marks_group (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_hidden_team_up_never_enters_or_marks_group) ... ok
+test_incomplete_entry_keeps_the_existing_probe (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_incomplete_entry_keeps_the_existing_probe) ... ok
+test_new_room_keeps_verified_entry_source (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_new_room_keeps_verified_entry_source) ... ok
+test_next_zone_waits_for_this_partys_hitters_before_releasing_movement (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_next_zone_waits_for_this_partys_hitters_before_releasing_movement) ... ok
+test_one_arrived_hitter_cannot_release_multi_hitter_party_or_block_other_group (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_one_arrived_hitter_cannot_release_multi_hitter_party_or_block_other_group) ... ok
+test_ordinary_entrance_sends_both_keys_without_claiming_sigil_evidence (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_ordinary_entrance_sends_both_keys_without_claiming_sigil_evidence) ... ok
+test_ordinary_entrance_without_team_up_still_waits_for_assigned_hitter (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_ordinary_entrance_without_team_up_still_waits_for_assigned_hitter) ... ok
+test_ordinary_zone_probe_does_not_hold_quester_for_slow_or_disconnected_hitter (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_ordinary_zone_probe_does_not_hold_quester_for_slow_or_disconnected_hitter) ... ok
+test_partial_or_unready_entrance_list_never_sends_quester_x (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_partial_or_unready_entrance_list_never_sends_quester_x) ... ok
+test_pending_dungeon_confirmation_records_real_zone_change (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_pending_dungeon_confirmation_records_real_zone_change) ... ok
+test_real_entry_sends_both_x_and_waits_for_late_hitter_before_next_step (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_real_entry_sends_both_x_and_waits_for_late_hitter_before_next_step) ... ok
+test_same_named_separate_instance_and_read_failure_keep_transition_pending (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_same_named_separate_instance_and_read_failure_keep_transition_pending) ... ok
+test_source_transition_during_hitter_proof_prevents_both_entry_inputs (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_source_transition_during_hitter_proof_prevents_both_entry_inputs) ... ok
+test_ten_second_countdown_keeps_both_members_locked_through_loading (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_ten_second_countdown_keeps_both_members_locked_through_loading) ... ok
+test_failed_battle_sync_stays_local_in_confirmed_instance (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_failed_battle_sync_stays_local_in_confirmed_instance) ... ok
+test_follower_closes_its_world_selector_before_resuming_follow (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_follower_closes_its_world_selector_before_resuming_follow) ... ok
+test_follower_world_selector_closure_respects_loading_combat_and_other_owner (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_follower_world_selector_closure_respects_loading_combat_and_other_owner) ... ok
+test_ordinary_interior_never_creates_group_marker (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_ordinary_interior_never_creates_group_marker) ... ok
+test_local_teleport_rejection_never_falls_back_to_friend (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_local_teleport_rejection_never_falls_back_to_friend) ... FAIL
+test_confirmed_same_room_with_unreadable_proof_waits_without_friend_teleport (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_confirmed_same_room_with_unreadable_proof_waits_without_friend_teleport) ... FAIL
+test_primary_arrival_does_not_release_gate_before_another_assigned_hitter (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_primary_arrival_does_not_release_gate_before_another_assigned_hitter) ... FAIL
+test_active_split_recovery_runs_on_follower_loop_only (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_active_split_recovery_runs_on_follower_loop_only) ... ok
+test_415_walk_follows_old_waypoints_and_refines_reachable_target (tests.test_collision_approach.ApproachRuntimeTests.test_415_walk_follows_old_waypoints_and_refines_reachable_target) ... FAIL
+test_415_default_120_range_keeps_existing_landing (tests.test_collision_approach.ApproachRuntimeTests.test_415_default_120_range_keeps_existing_landing) ... ok
+test_zone_change_stops_remaining_walk (tests.test_collision_approach.ApproachRuntimeTests.test_zone_change_stops_remaining_walk) ... FAIL
+test_dialogue_or_battle_stops_remaining_walk (tests.test_collision_approach.ApproachRuntimeTests.test_dialogue_or_battle_stops_remaining_walk) ... FAIL
+test_walk_timeout_cancels_pending_input (tests.test_collision_approach.ApproachRuntimeTests.test_walk_timeout_cancels_pending_input) ... FAIL
+test_external_cancellation_is_not_swallowed (tests.test_collision_approach.ApproachRuntimeTests.test_external_cancellation_is_not_swallowed) ... FAIL
+test_entire_walk_has_a_time_budget (tests.test_collision_approach.ApproachRuntimeTests.test_entire_walk_has_a_time_budget) ... ok
+
+======================================================================
+FAIL: test_local_teleport_rejection_never_falls_back_to_friend (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_local_teleport_rejection_never_falls_back_to_friend)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 563, in test_local_teleport_rejection_never_falls_back_to_friend
+    self.assertEqual(hitter.teleport.await_count, 3)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 2 != 3
+
+======================================================================
+FAIL: test_confirmed_same_room_with_unreadable_proof_waits_without_friend_teleport (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_confirmed_same_room_with_unreadable_proof_waits_without_friend_teleport)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 579, in test_confirmed_same_room_with_unreadable_proof_waits_without_friend_teleport
+    self.assertIn('等待本组切区同步，可人工归队；地牢内不使用好友传送', [c.args[2] for c in status.call_args_list])
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: '等待本组切区同步，可人工归队；地牢内不使用好友传送' not found in ['准备跟随', '等待同副本确认，可手动归队', '等待同副本确认，可手动归队', '等待同副本确认，可手动归队']
+
+======================================================================
+FAIL: test_primary_arrival_does_not_release_gate_before_another_assigned_hitter (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_primary_arrival_does_not_release_gate_before_another_assigned_hitter)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 638, in test_primary_arrival_does_not_release_gate_before_another_assigned_hitter
+    self.assertTrue(self.follow_quester.quest_party_probe_pending)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_415_walk_follows_old_waypoints_and_refines_reachable_target (tests.test_collision_approach.ApproachRuntimeTests.test_415_walk_follows_old_waypoints_and_refines_reachable_target)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 171, in test_415_walk_follows_old_waypoints_and_refines_reachable_target
+    self.assertTrue(await self.remaining())
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_zone_change_stops_remaining_walk (tests.test_collision_approach.ApproachRuntimeTests.test_zone_change_stops_remaining_walk)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 268, in test_zone_change_stops_remaining_walk
+    self.assertTrue(await self.remaining())
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_dialogue_or_battle_stops_remaining_walk (tests.test_collision_approach.ApproachRuntimeTests.test_dialogue_or_battle_stops_remaining_walk)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 275, in test_dialogue_or_battle_stops_remaining_walk
+    self.assertTrue(await self.remaining())
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_walk_timeout_cancels_pending_input (tests.test_collision_approach.ApproachRuntimeTests.test_walk_timeout_cancels_pending_input)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 288, in test_walk_timeout_cancels_pending_input
+    self.assertEqual(cancelled, [True])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+AssertionError: Lists differ: [] != [True]
+
+Second list contains 1 additional elements.
+First extra element 0:
+True
+
+- []
++ [True]
+
+======================================================================
+FAIL: test_external_cancellation_is_not_swallowed (tests.test_collision_approach.ApproachRuntimeTests.test_external_cancellation_is_not_swallowed)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 292, in test_external_cancellation_is_not_swallowed
+    with self.assertRaises(asyncio.CancelledError):
+         ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: CancelledError not raised
+
+----------------------------------------------------------------------
+Ran 37 tests in 1.497s
+
+FAILED (failures=8)

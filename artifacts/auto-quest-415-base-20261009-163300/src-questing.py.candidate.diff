@@ -1,0 +1,1838 @@
+--- snapshot/src/questing.py
++++ candidate/src/questing.py
+@@ -1230,33 +1230,19 @@
+             # UniverseMap.gui contains a hidden streamTitle whose default is
+             # Streamportal even at ordinary world gates. Only a displayed title
+             # identifies a special portal; the tracked quest selects the world.
+-            title = (await title_text_path.maybe_text()
+-                     if title_text_path and await title_text_path.is_visible() else '')
++            if not title_text_path or not await title_text_path.is_visible():
++                return ""
++            title = await read_control_text(title_text_path)
+         except Exception:
+             title = ""
+-        if portal_kind(title) is None:
+-            # Some menu layouts render the verified title in a separate text
+-            # control. Scope the fallback to THIS visible travel-button parent,
+-            # never an NPC label elsewhere in the world or a hidden default.
+-            try:
+-                button = await get_spiral_teleport_button(client)
+-                if button is not None:
+-                    nodes = await self._visible_window_nodes(await button.parent(), [])
+-                    titles = [await self._window_text(window) for window, _ in nodes
+-                              if await window.maybe_read_type_name() in ('ControlText', 'ControlList')]
+-                    matches = [text for text in titles if portal_kind(text) == 'tamed_demox']
+-                    if len(matches) == 1:
+-                        return matches[0]
+-            except Exception:
+-                pass  # Preserve the ordinary title when the fallback is unreadable.
++
+         return title
+ 
+     async def read_popup(self, p: Client) -> str:
+         try:
+             popup_text_path = await get_window_from_path(p.root_window, popup_msgtext_path)
+-            txtmsg = await read_control_text(popup_text_path) if popup_text_path else ''
+-        except Exception as exc:
+-            self._note_quest_entry_wait(p, '进入提示读取失败', detail=str(exc))
++            txtmsg = await read_control_text(popup_text_path) if popup_text_path else ""
++        except Exception:
+             txtmsg = ""
+         return txtmsg
+ 
+@@ -1275,9 +1261,8 @@
+ 
+         return True
+ 
+-    async def get_zone_chunks(self, client: Client = None) -> list[XYZ]:
+-        client = self.client if client is None else client
+-        wad = await self.load_wad(await client.zone_name())
++    async def get_zone_chunks(self) -> list[XYZ]:
++        wad = await self.load_wad(await self.client.zone_name())
+         nav_data = await wad.get_file("zone.nav")
+         vertices, _ = parse_nav_data(nav_data)
+ 
+@@ -1312,11 +1297,10 @@
+         return Wad.from_game_data(path.replace("/", "-"))
+ 
+     async def followers_in_correct_zone(self) -> bool:
+-        if getattr(self.current_leader_client, "refilling_potions", False) is True:
+-            return True
+         zone = await self.current_leader_client.zone_name()
+         for c in self.clients:
+-            if getattr(c, "refilling_potions", False) is True or getattr(c, "questing_status", True) is False:
++            if (getattr(c, 'questing_status', True) is False
++                    or getattr(c, 'refilling_potions', False)):
+                 continue
+             if await c.zone_name() != zone:
+                 return False
+@@ -1338,9 +1322,10 @@
+     async def get_follower_clients(self) -> list[Client]:
+         follower_clients = []
+         for c in self.clients:
+-            if (c.process_id != self.current_leader_client.process_id
+-                    and getattr(c, "refilling_potions", False) is not True
+-                    and getattr(c, "questing_status", True) is not False):
++            if (getattr(c, 'questing_status', True) is False
++                    or getattr(c, 'refilling_potions', False)):
++                continue
++            if c.process_id != self.current_leader_client.process_id:
+                 follower_clients.append(c)
+ 
+         return follower_clients
+@@ -1368,27 +1353,9 @@
+         return client_quests
+ 
+     async def zone_recorrect_hub(self):
+-        if any(getattr(p, 'bumbles_pet_pending', False) is True for p in self.clients):
+-            return
+-        if any(isinstance(getattr(p, 'quest_lemuria_navigation_recovery', None), dict)
+-               and p.quest_lemuria_navigation_recovery.get('holding')
+-               or getattr(p, 'quest_recovery_owner', None) in ('lemuria_navigation', 'dueling_tent', 'easton_house', 'darkmoor_cantrip', 'avalon_grain_entry', 'azteca_beetle_entry')
+-               for p in self.clients):
+-            return
+         if await self.followers_in_correct_zone():
+             return
+         for p in self.clients:
+-            if await self._maybe_handle_panopticon_book(p):
+-                return
+-            if await self._maybe_handle_bumbles_mind(p):
+-                return
+-            if getattr(p, 'quest_recovery_owner', None) == 'tamarin_house':
+-                return
+-            if await self._maybe_handle_tamarin_house(p):
+-                return
+-        for p in self.clients:
+-            if getattr(p, "refilling_potions", False) is True or getattr(p, "questing_status", True) is False:
+-                continue
+             await p.send_key(Keycode.END)
+             await p.send_key(Keycode.END)
+             await asyncio.sleep(3)
+@@ -1399,21 +1366,14 @@
+         await asyncio.sleep(2)
+ 
+     async def friend_teleport(self, maybe_solo_zone: bool):
+-        if any(getattr(c, 'outback_story_pending', False) is True for c in self.clients):
+-            return [], None
+-        if any(getattr(c, 'bumbles_pet_pending', False) is True for c in self.clients):
+-            return [], None
+-        if any(getattr(c, 'quest_recovery_owner', None) in ('dueling_tent', 'easton_house', 'darkmoor_cantrip') for c in self.clients):
+-            return [], None
+-        if getattr(self.current_leader_client, "refilling_potions", False) is True:
+-            return [], None
+         clients_in_solo_zone = []
+         solo_zone = None
+         leader_in_solo_zone = False
+         was_loading = False
+ 
+         for c in self.clients:
+-            if getattr(c, "refilling_potions", False) is True or getattr(c, "questing_status", True) is False:
++            if (getattr(c, 'questing_status', True) is False
++                    or getattr(c, 'refilling_potions', False)):
+                 continue
+             if c.process_id != self.current_leader_pid:
+                 c_zone = await c.zone_name()
+@@ -1534,24 +1494,17 @@
+     async def heal_and_handle_potions(self):
+         await gather_owned(*[self.collect_wisps(p) for p in self.clients])
+         await gather_owned(*[self.guarantee_use_potion(p) for p in self.clients])
+-
+-        clients_needing_potions = []
+-        for p in self.clients:
+-            if await p.stats.potion_charge() < 1.0 and await p.stats.reference_level() >= 6:
+-                clients_needing_potions.append(p)
+-
+-        if clients_needing_potions:
+-            results = await gather_owned(*[refill_potions(c) for c in clients_needing_potions])
+-            for client, result in zip(clients_needing_potions, results):
+-                if result is False:
+-                    client.questing_status = False
+-            # Keep failed clients out of every subsequent legacy group action.
+-            # Rebind the local roster; do not modify the shared application roster.
+-            self.clients = [c for c in self.clients if getattr(c, "questing_status", True) is not False]
+-            if getattr(self.current_leader_client, "questing_status", True) is False and self.clients:
+-                self.current_leader_client = self.clients[0]
+-            return all(result is not False for result in results)
+-        return True
++        needs_refill = any([await p.stats.potion_charge() < 1.0 and await p.stats.reference_level() >= 6 for p in self.clients])
++        if not needs_refill:
++            return True
++        results = await gather_owned(*[refill_potions(c) for c in self.clients])
++        for client, result in zip(self.clients, results):
++            if result is False:
++                client.questing_status = False
++        self.clients = [c for c in self.clients if getattr(c, 'questing_status', True) is not False]
++        if getattr(self.current_leader_client, 'questing_status', True) is False and self.clients:
++            self.current_leader_client = self.clients[0]
++        return all(result is not False for result in results)
+ 
+     async def collect_wisps(self, p: Client):
+         if await is_free(p):
+@@ -1591,53 +1544,30 @@
+ 
+         # await gather_owned(*[c.wait_for_zone_change() for c in self.clients])
+ 
+-    async def find_quest_zone_area_name(self, client: Client, door_locations: list, *, exact=False) -> Optional[str]:
++    async def find_quest_zone_area_name(self, client: Client, door_locations: list) -> Optional[str]:
+         location = await self.get_quest_zone_name(client)
+-        self.d_location = resolve_portal_destination(location, door_locations, exact=exact)
++        self.d_location = resolve_portal_destination(location, door_locations)
+         return self.d_location
+ 
+     async def new_world_doors(self, client: Client) -> bool:
+         kind = portal_kind(await self.read_spiral_door_title(client))
+-        if kind in {"streamportal", "nanavator", "tamed_demox"}:
+-            choices = tamed_demox_locations if kind == "tamed_demox" else streamportal_locations if kind == "streamportal" else nanavator_locations
+-            snapshot = await self._dungeon_quest_snapshot(client) if kind == 'tamed_demox' else None
+-            location = (await self.find_quest_zone_area_name(client, choices, exact=True)
+-                        if kind == 'tamed_demox' else await self.find_quest_zone_area_name(client, choices))
++        if kind in {"streamportal", "nanavator"}:
++            choices = streamportal_locations if kind == "streamportal" else nanavator_locations
++            location = await self.find_quest_zone_area_name(client, choices)
+             if location is None:
+                 logger.warning(f"Client {client.title}: 无法确定特殊传送门的任务目的地，跳过传送。")
+                 return True
+-            if kind == 'tamed_demox':
+-                zone = await client.zone_name()
+-                async def before_input():
+-                    return (snapshot is not None and getattr(client, 'questing_status', True) is not False
+-                            and not getattr(client, 'refilling_potions', False)
+-                            and not isinstance(getattr(client, 'quest_recovery_owner', None), str)
+-                            and not await client.is_loading() and not await client.in_battle()
+-                            and await client.zone_name() == zone
+-                            and await self._dungeon_quest_snapshot(client) == snapshot
+-                            and portal_kind(await self.read_spiral_door_title(client)) == kind)
+-                success = await new_portals_cycle(client, location, before_input=before_input)
+-            else:
+-                success = await new_portals_cycle(client, location)
+-            if success is False:
+-                self.d_location = None  # Do not dispatch peers after leader selection failed.
++            await new_portals_cycle(client, location)
+             return True
+ 
+         return False
+ 
+     async def handle_spiral_navigation(self):
+-        if await self.new_world_doors(self.current_leader_client):
+-            if self.d_location is None:
+-                return
+-            for c in self.clients:
+-                if c.process_id != self.current_leader_pid:
+-                    if await is_visible_by_path(c, spiral_door_teleport_path):
+-                        await new_portals_cycle(c, self.d_location)
+-        else:
+-            # Handles spiral door navigation
++        # World selection belongs to the task client. Legacy followers rejoin
++        # through their existing zone/friend follow after the leader arrives.
++        if not await self.new_world_doors(self.current_leader_client):
+             await spiral_door_with_quest(self.current_leader_client)
+-            # Standard world selection belongs only to the quester. Followers
+-            # regroup after the quester's transition rather than selecting here.
++            await asyncio.sleep(1)
+ 
+     async def auto_tfc_friend_all_wizards(self):
+         for code_generator in self.clients:
+@@ -2128,12 +2058,11 @@
+ 
+                 await asyncio.sleep(2.0)
+ 
+-    async def handle_dungeon_entry(self, questing_friend_tp: bool, follower_clients: list[Client], entry_zone: str, mainline_id=None):
++    async def handle_dungeon_entry(self, questing_friend_tp: bool, follower_clients: list[Client]):
+         # await self.enter_dungeon()
+         await gather_owned(*[c.wait_for_zone_change() for c in self.clients])
+ 
+         await asyncio.sleep(1.0)
+-        await self._confirm_dungeon_entry(self.current_leader_client, entry_zone, mainline_id)
+ 
+         # check for instance desync, and attempt to fix if it has happened
+         if questing_friend_tp:
+@@ -2150,30 +2079,116 @@
+     async def handle_npc_talking_quests(
+         self, talking_client: Client, present_clients: list[Client]
+     ) -> bool:
+-        if not claim_quest_recovery(talking_client, "npc_dialogue"):
+-            self._log_npc_retry_wait(talking_client, f"recovery owned by {talking_client.quest_recovery_owner}")
+-            return False
+-        try:
+-            async with automation_owner(talking_client, 'npc-dialogue-transaction'):
+-                updated = await self._handle_npc_talking_quests(talking_client, present_clients)
+-            if updated:
+-                self._npc_retry_exhausted.pop(id(talking_client), None)
+-                self._npc_retry_debug_at.pop(id(talking_client), None)
+-        except asyncio.CancelledError:
+-            self._npc_retry_exhausted.pop(id(talking_client), None)
+-            self._npc_retry_debug_at.pop(id(talking_client), None)
+-            raise
+-        except Exception as exc:
+-            self._npc_retry_exhausted.pop(id(talking_client), None)
+-            self._log_npc_retry_wait(talking_client, f"NPC state unavailable: {exc}")
+-            updated = False
+-        finally:
+-            release_quest_recovery(talking_client, "npc_dialogue")
+-            talking_client.quest_dialogue_settle = {'snapshot': None, 'since': None}
+-        if not updated:
+-            # Run only after releasing our owner; otherwise recovery blocks itself.
+-            await self._maybe_refresh_stalled_dungeon_quest(talking_client)
+-        return updated
++        """Wait for NPC dialogue and confirm the tracked quest actually advances."""
++
++        async def read_quest_state():
++            quest_text = await self.read_quest_txt(talking_client)
++            try:
++                quest_xyz = await talking_client.quest_position.position()
++            except Exception:
++                quest_xyz = None
++            try:
++                identity = await talking_client.quest_id(), await talking_client.goal_id()
++            except Exception:
++                identity = None
++            return quest_text, quest_xyz, identity
++
++        def quest_state_changed(before, after) -> bool:
++            before_text, before_xyz, before_id = before
++            after_text, after_xyz, after_id = after
++            if before_id is not None and after_id is not None and before_id != after_id:
++                return True
++            if after_text != before_text:
++                return True
++            if before_xyz is not None and after_xyz is not None:
++                return calc_Distance(before_xyz, after_xyz) > 1.0
++            return False
++
++        initial_state = await read_quest_state()
++        after_talking_paths = (
++            exit_zafaria_class_picture_button,
++            exit_pet_leveled_up_button_path,
++            avalon_badge_exit_button_path,
++        )
++
++        for attempt in range(1, 4):
++            if getattr(talking_client, 'questing_status', True) is False:
++                return False
++            if attempt > 1:
++                logger.warning(
++                    f"Client {talking_client.title} - Quest did not update after "
++                    f"dialogue; retrying NPC interaction ({attempt}/3)."
++                )
++                await asyncio.sleep(1.0)
++                async with automation_owner(talking_client, 'quest-interaction'):
++                    if (getattr(talking_client, 'questing_status', True) is False
++                            or not await is_free_leader_questing(talking_client)):
++                        return False
++                    if quest_state_changed(initial_state, await read_quest_state()):
++                        return True
++                    await talking_client.send_key(Keycode.X, 0.15)
++
++            # A missed X press previously left this loop waiting forever.  Give
++            # the game a few seconds to display dialogue, then retry the input.
++            appear_deadline = time.monotonic() + 4.0
++            while (
++                await is_free_leader_questing(talking_client)
++                and time.monotonic() < appear_deadline
++            ):
++                if quest_state_changed(initial_state, await read_quest_state()):
++                    await asyncio.sleep(1.0)
++                    return True
++                await asyncio.sleep(0.15)
++
++            if await is_free_leader_questing(talking_client):
++                continue
++
++            logger.info(
++                f"Client {talking_client.title} - Detected dialogue; waiting "
++                "for it and the quest update to finish."
++            )
++
++            # Dialogue may briefly close and immediately open another page or
++            # reward window.  Require a quiet period before allowing movement.
++            quiet_since = None
++            dialogue_deadline = time.monotonic() + 60.0
++            while time.monotonic() < dialogue_deadline:
++                if getattr(talking_client, 'questing_status', True) is False:
++                    return False
++                await close_npc_quest_menu(talking_client)
++                if await is_free_leader_questing(talking_client):
++                    if quiet_since is None:
++                        quiet_since = time.monotonic()
++                    elif time.monotonic() - quiet_since >= 3.0:
++                        break
++                else:
++                    quiet_since = None
++                await asyncio.sleep(0.15)
++
++            await gather_owned(
++                *[exit_menus(c, after_talking_paths) for c in present_clients]
++            )
++
++            # Leave extra time for the server to publish the new objective.
++            await asyncio.sleep(1.25)
++            if quest_state_changed(initial_state, await read_quest_state()):
++                logger.debug(
++                    f"Client {talking_client.title} - Quest update confirmed."
++                )
++                return True
++
++            await asyncio.sleep(1.25)
++            if quest_state_changed(initial_state, await read_quest_state()):
++                logger.debug(
++                    f"Client {talking_client.title} - Delayed quest update confirmed."
++                )
++                return True
++
++        logger.error(
++            f"Client {talking_client.title} - Could not confirm quest acceptance "
++            "after 3 attempts; keeping the quester near the NPC for another retry."
++        )
++        return False
+ 
+     def _log_npc_retry_wait(self, client: Client, reason: str) -> None:
+         now = time.monotonic()
+@@ -2424,7 +2439,8 @@
+                 or getattr(client, 'bumbles_pet_pending', False) is True
+                 or isinstance(getattr(client, 'quest_recovery_owner', None), str)
+                 or getattr(client, 'mainline_chain_retry_active', False)
+-                or getattr(client, 'quest_party_probe_pending', False)
++                or (getattr(client, 'quest_party_probe_pending', False)
++                    and getattr(client, 'quest_party_group_dungeon_zone', None) is not None)
+                 or getattr(client, 'quest_party_battle_rescue_active', False)
+                 or getattr(client, 'quest_party_quest_worker_restart_requested', False)
+                 or getattr(client, 'entity_detect_combat_status', False)
+@@ -2829,37 +2845,12 @@
+             client.mainline_last_turn_in_snapshot = None
+             client.mainline_sync_npc_retry_at = 0.0
+             return False
+-        if getattr(client, 'outback_story_pending', False) is True:
+-            return True
++        # Finder is explicitly enabled by the user. Dungeon state and special
++        # story state never redirect this pass into a different recovery chain.
+         if await is_visible_by_path(client, advance_dialog_path):
+             await self._advance_npc_dialogue(client)
+             self._mainline_finder_observations.pop(id(client), None)
+             return True
+-        # Instance objectives can legitimately be absent from the mainline index.
+-        # Give the existing quest-card recovery the iteration before Finder can
+-        # pause movement (including its stability/retry waiting iterations).
+-        dungeon_state = getattr(client, 'quest_dungeon_recovery', None)
+-        dungeon_zone = getattr(client, 'quest_party_group_dungeon_zone', None)
+-        current_zone = await client.zone_name()
+-        if ((current_zone in self.LEMURIA_DUNGEON_ROOMS or current_zone == self.POWER_CORE_ZONE)
+-                and (not isinstance(dungeon_state, dict) or dungeon_state.get('zone') != current_zone)):
+-            client.quest_dungeon_recovery = dungeon_state = {
+-                'zone': current_zone, 'snapshot': None, 'since': None,
+-                'active': False, 'attempted': False, 'waiting_logged': False,
+-            }
+-        if isinstance(dungeon_state, dict) or isinstance(dungeon_zone, str):
+-            zone = await client.zone_name()
+-            if zone and (zone == dungeon_zone or isinstance(dungeon_state, dict)
+-                         and zone == dungeon_state.get('zone')):
+-                self._mainline_finder_observations.pop(id(client), None)
+-                self._mainline_finder_retry_at.pop(id(client), None)
+-                client.mainline_finder_offer_guard = False
+-                if not isinstance(dungeon_state, dict):
+-                    client.quest_dungeon_recovery = {
+-                        'zone': zone, 'snapshot': None, 'since': None,
+-                        'active': False, 'attempted': False, 'waiting_logged': False,
+-                    }
+-                return await self._maybe_refresh_stalled_dungeon_quest(client)
+         identity = await self._mainline_identity(client)
+         key = id(client)
+         if identity is None:
+@@ -3571,6 +3562,8 @@
+     async def _run_mainline_finder(self, client: Client, expected_id=None) -> bool:
+         from src.mainline_progress import log_mainline_progress
+ 
++        if not getattr(client, 'mainline_finder_enabled', False) or not getattr(client, 'questing_status', False):
++            return False
+         identity = await self._mainline_identity(client)
+         if identity is None:
+             return False
+@@ -3897,52 +3890,13 @@
+             return False
+         if calc_Distance(await client.body.position(), xyz) >= 750:
+             return False
+-        if not require_objective_match:
+-            # 4.1.5 ordinary X input uses the visible range window and quest
+-            # position, even when a portal's title differs from its destination.
+-            # A nearby NPC is not arrival at a different tracked destination.
+-            # Otherwise its talk popup cancels navmap's landing + final walk.
+-            if interaction_kind(await self.read_popup(client)) == 'talk':
+-                title = await get_popup_title(client)
+-                objective = await get_quest_name(leader_client or client)
+-                if (not quest_has_action(objective, 'talk')
+-                        and not quest_interaction_matches(objective, title)):
+-                    self._note_quest_entry_wait(client, '附近 NPC 不是当前任务目标，继续任务传送',
+-                                               title=title, objective=objective)
+-                    return False
+-            return True
+         title = await get_popup_title(client)
+         if not title:
+-            self._note_quest_entry_wait(client, '范围窗可见但入口标题为空')
+-            return False
+-        prompt = await self.read_popup(client)
+-        kind = interaction_kind(prompt)
+-        if kind is None and not plain_text(prompt) and '<string;' not in str(prompt):
+-            self._note_quest_entry_wait(client, '范围窗可见但交互提示为空', title=title)
+-            return False
++            return False
++        if not require_objective_match:
++            return True
+         objective = await get_quest_name(leader_client or client)
+-        if await self.party_dungeon_entry_visible(client, prompt):
+-            # The current HUD arrow may name the boss inside, or use another
+-            # translation of the entrance. Position + visible sigil are evidence.
+-            source = leader_client or client
+-            quest_id, goal_id = await source.quest_id(), await source.goal_id()
+-            valid = (type(quest_id) is int and quest_id > 0 and type(goal_id) is int
+-                     and bool(plain_text(objective)))
+-            if not valid:
+-                self._note_quest_entry_wait(client, '组队入口可见但任务数据未就绪',
+-                                           quest_id=quest_id, goal_id=goal_id, objective=objective)
+-            return valid
+-        if (portal_kind(title) == 'world_gate' and kind in {'enter', 'teleport'}
+-                and quest_has_action(objective, 'explore')):
+-            # The HUD arrow locates this known world gate; its generic title
+-            # need not repeat the destination. Existing world routing chooses it.
+-            return True
+-        matched = quest_interaction_matches(objective, title)
+-        if not matched:
+-            self._note_quest_entry_wait(client, '目标未匹配且未确认组队入口',
+-                                       title=title, prompt=prompt, kind=kind, objective=objective,
+-                                       team_up=await self._visible_team_up_control(client))
+-        return matched
++        return quest_interaction_matches(objective, title)
+ 
+     async def handle_quest_interaction(self, client, xyz) -> bool:
+         """Use the existing handlers once this client's tracked prompt is ready."""
+@@ -4033,43 +3987,42 @@
+         return True
+ 
+     async def move_until_quest_interaction(self, client, xyz, leader_client=None):
+-        # Let the existing interaction handler press X once movement has stopped.
+         source = leader_client or client
+-        try:
+-            snapshot = await source.quest_id(), await source.goal_id(), await source.zone_name()
+-        except Exception:
+-            return
++        context = getattr(source, 'quest_party_shared_target', None)
++        retained = (leader_client is not None and isinstance(context, dict)
++                    and context.get('identity') is not None and context.get('zone')
++                    and calc_Distance(context['xyz'], xyz) <= 1)
++        snapshot = ((*context['identity'], context['zone']) if retained else
++                    (await source.quest_id(), await source.goal_id(), await source.zone_name()))
+         async def interaction_pending():
+             if (getattr(client, 'questing_status', True) is False
+                     or getattr(source, 'questing_status', True) is False
+-                    or getattr(client, 'refilling_potions', False) is True):
++                    or getattr(client, 'refilling_potions', False)
++                    or not await is_free_leader_questing(client)):
+                 return True
+-            if (await source.zone_name() == snapshot[2] and not await source.is_loading()
+-                    and (await source.quest_id(), await source.goal_id()) != snapshot[:2]):
++            if await client.zone_name() != snapshot[2]:
+                 return True
+-            return (not await is_free_leader_questing(client)
+-                    or await is_spiral_door_open(client)
+-                    or await self.quest_interaction_ready(client, xyz, leader_client, require_objective_match=False))
+-
++            if await source.zone_name() != snapshot[2]:
++                # The leader may already be in the next room while a slow
++                # hitter still uses the retained entrance in its source room.
++                if (not retained or context.get('source_tokens', {}).get(id(client)) is None
++                        or await _party_area_token(client) != context['source_tokens'][id(client)]):
++                    return True
++            elif (await source.quest_id(), await source.goal_id()) != snapshot[:2]:
++                return True
++            return await self.quest_interaction_ready(client, xyz, leader_client)
+         if await interaction_pending():
+             return
+-
+-        # Keep recovery on the quester, inside the movement path so assigned
+-        # parties have already passed their shared-area preflight. Hitters use
+-        # this same target, but must not inspect/recover their own tracked goal.
+-        if (client is (leader_client or self.client)
+-                and getattr(client, 'quest_party_quester', None) is None
+-                and await client.zone_name() != self.NIGHTMARE_ZONE
+-                and await self._maybe_reenter_quest_trigger(client, xyz)):
+-            return
+-
++        async def move():
++            async with automation_owner(client, 'quest-movement'):
++                if not await interaction_pending():
++                    await collision_tp(client, xyz, leader_client=leader_client)
+         async def watch_interaction():
+             while True:
+                 await asyncio.sleep(.1)
+                 if await interaction_pending():
+                     return
+-
+-        movement = asyncio.create_task(navmap_tp(client, xyz, leader_client=leader_client))
++        movement = asyncio.create_task(move())
+         watcher = asyncio.create_task(watch_interaction())
+         try:
+             done, _ = await asyncio.wait((movement, watcher), return_when=asyncio.FIRST_COMPLETED)
+@@ -6692,105 +6645,11 @@
+                 release_quest_recovery(client, owner)
+ 
+     async def teleport_to_quest_target(self, client, xyz, leader_client=None):
+-        if (getattr(client, 'refilling_potions', False) is True
+-                or getattr(client, 'questing_status', True) is False):
+-            return
+-        if await self._maybe_handle_overgrown_estate(client):
+-            return
+-        if await self._maybe_handle_no_blood_hideout(client):
+-            return
+-        if await self._maybe_handle_darkmoor_castle(client):
+-            return
+-        if await self._maybe_handle_darkmoor_cantrips(client):
+-            return
+-        if await self._maybe_handle_panopticon_book(client):
+-            return
+-        if await self._maybe_handle_outback_story(client):
+-            return
+-        if await self._maybe_handle_bumbles_pet(client):
+-            return
+-        if await self._maybe_handle_callisto(client):
+-            return
+-        if (getattr(client, "refilling_potions", False) is True
+-                or getattr(client, 'quest_recovery_owner', None) in ('gobblerton', 'lemuria_dungeon', 'sacred_yarn', 'tamarin_house', 'avalon_grain_entry', 'azteca_beetle_entry', 'bumbles_mind', 'lemuria_navigation', 'dueling_tent', 'easton_house', 'darkmoor_cantrip', 'final_act', 'overgrown_estate')
+-                or isinstance(getattr(client, 'quest_lemuria_navigation_recovery', None), dict)
+-                and client.quest_lemuria_navigation_recovery.get('holding')
+-                or getattr(client, "questing_status", True) is False):
+-            return
+-        if await client.zone_name() == self.TAMARIN_HOUSE_ZONE and await self._maybe_handle_tamarin_house(client):
++        if (getattr(client, 'questing_status', True) is False
++                or getattr(client, 'refilling_potions', False)):
+             return
+         zone = await client.zone_name()
+         key = id(client)
+-        final_act_progress = await self._final_act_stage(client) if zone == self.FINAL_ACT_ZONE else None
+-        final_act = final_act_progress is not None
+-        estate_progress = await self._overgrown_estate_stage(client) if zone == self.OVERGROWN_ESTATE_ZONE else None
+-        estate = estate_progress is not None
+-        lab_progress = await self._scholomance_lab_stage(client) if zone == self.SCHOLOMANCE_LAB_ZONE else None
+-        scholomance = lab_progress is not None
+-        dialogue_recovery = final_act or estate or scholomance
+-        private_wing = zone == self.PRIVATE_WING_ZONE
+-        dueling_tent = zone == self.DUELING_TENT_ZONE
+-        easton_house = zone == self.EASTON_HOUSE_ZONE
+-        gargoyle_progress = await self._dungeon_quest_snapshot(client) if zone == self.DARKMOOR_CANTRIP_ZONE else None
+-        gargoyle = self._graveholm_gargoyle_stage(gargoyle_progress)
+-        scholomance_progress = await self._dungeon_quest_snapshot(client) if zone == self.SCHOLOMANCE_LAB_ZONE else None
+-        scholomance_exit = self._scholomance_exit_stage(scholomance_progress) is not None
+-        parlor_progress = await self._dungeon_quest_snapshot(client) if zone == self.SCHOLOMANCE_PARLOR_ZONE else None
+-        parlor = self._scholomance_parlor_stage(parlor_progress) is not None
+-        bounded_exit = dueling_tent or easton_house or gargoyle or scholomance_exit or parlor
+-        day_progress = await self._dungeon_quest_snapshot(client) if zone == self.EASTON_DAY_RITUAL_ZONE else None
+-        day_ritual = (day_progress is not None and day_progress[0] == self.EASTON_DAY_QUEST_ID
+-                      and calc_Distance(xyz, self.EASTON_DAY_RITUAL_POSITION) < 1000)
+-        bounded_navigation = bounded_exit or day_ritual
+-        if not dueling_tent:
+-            client._xuanshu_dueling_tent_failed = None
+-        if not easton_house:
+-            client._xuanshu_easton_house_failed = None
+-        if not gargoyle:
+-            client._xuanshu_graveholm_gargoyle_failed = None
+-        if not scholomance_exit:
+-            client._xuanshu_scholomance_exit_failed = None
+-        if not parlor:
+-            client._xuanshu_scholomance_parlor_failed = None
+-        if bounded_navigation and (await client.is_in_dialog() or not await is_free_leader_questing(client)
+-                or not (scholomance_exit or parlor) and getattr(client, 'quest_party_status_session', None) is not None
+-                or any(client in getattr(member, 'quest_party_hitters', []) for member in self.clients)):
+-            self._krok_exit_watch.pop(key, None)
+-            return
+-        gobblerton = zone == self.GOBBLERTON_ZONE
+-        lemuria = zone == self.LEMURIA_DUNGEON_ZONE
+-        sacred_yarn = zone == self.SACRED_YARN_ZONE
+-        bumbles = (zone == self.BUMBLES_MIND_ZONE
+-                   and self._bumbles_mind_task_matches(await self.read_quest_txt(client)))
+-        if (sacred_yarn or bumbles) and (getattr(client, 'quest_party_status_session', None) is not None
+-                or any(client in getattr(member, 'quest_party_hitters', []) for member in self.clients)):
+-            return
+-        transition_exit = private_wing or gobblerton or lemuria or sacred_yarn or bumbles or bounded_navigation
+-        failed_attr = ('_xuanshu_scholomance_parlor_failed' if parlor else '_xuanshu_scholomance_exit_failed' if scholomance_exit else '_xuanshu_scholomance_lab_failed' if scholomance else '_xuanshu_overgrown_estate_failed' if estate else '_xuanshu_graveholm_gargoyle_failed' if gargoyle else '_xuanshu_easton_day_ritual_failed' if day_ritual else '_xuanshu_final_act_failed' if final_act else '_xuanshu_easton_house_failed' if easton_house else '_xuanshu_dueling_tent_failed' if dueling_tent else '_xuanshu_bumbles_mind_failed' if bumbles else
+-                       '_xuanshu_sacred_yarn_failed' if sacred_yarn else
+-                       '_xuanshu_lemuria_dungeon_failed' if lemuria else
+-                       '_xuanshu_gobblerton_failed' if gobblerton else '_xuanshu_private_wing_failed')
+-        if not sacred_yarn:
+-            client._xuanshu_sacred_yarn_failed = None
+-        if zone != self.BUMBLES_MIND_ZONE:
+-            client._xuanshu_bumbles_mind_failed = None
+-        if not lemuria and isinstance(getattr(client, '_xuanshu_lemuria_dungeon_failed', None), dict):
+-            client._xuanshu_lemuria_dungeon_failed = None
+-        if not gobblerton and isinstance(getattr(client, '_xuanshu_gobblerton_failed', None), dict):
+-            client._xuanshu_gobblerton_failed = None
+-        if not private_wing and isinstance(getattr(client, '_xuanshu_private_wing_failed', None), dict):
+-            client._xuanshu_private_wing_failed = None
+-        if (transition_exit or dialogue_recovery) and (not getattr(client, 'questing_status', False)
+-                or isinstance(getattr(client, 'quest_recovery_owner', None), str)
+-                or getattr(client, 'mainline_chain_retry_active', False)
+-                or getattr(client, 'quest_party_probe_pending', False)
+-                or getattr(client, 'quest_party_battle_rescue_active', False)
+-                or getattr(client, 'quest_party_quest_worker_restart_requested', False)
+-                or getattr(client, 'post_combat_movement_active', False)
+-                or isinstance(getattr(client, 'quest_dungeon_recovery', None), dict)
+-                and client.quest_dungeon_recovery.get('active')):
+-            self._krok_exit_watch.pop(key, None)
+-            return
+         floating_exit = zone == 'Celestia/CL_Z05_The_Floating_Land'
+         crystal_exit = zone == 'DragonSpire/DS_A3_Kings/Interiors/DS_Crystal_T9'
+         special_targets = {
+@@ -6798,7 +6657,7 @@
+             'Celestia/CL_Z09_Science_Center': XYZ(-1067.512, 343.759, -449.800),
+             'Celestia/Interiors/CL_Z10i3_Kingdom_Of_The_Crabs': XYZ(3184.987, -9931.280, -1014.007),
+         }
+-        special_exit = zone in special_targets or transition_exit or dialogue_recovery
++        special_exit = zone in special_targets
+         stuck = XYZ(6420.986, -6956.173, -399.699)
+         if (zone != "Krokotopia/KT_WorldTeleporter" and not floating_exit and not crystal_exit and not special_exit
+                 or floating_exit and calc_Distance(await client.body.position(), stuck) > 150):
+@@ -6807,11 +6666,9 @@
+             return
+ 
+         async def interaction_pending():
+-            statue_prompt = (gargoyle and await is_visible_by_path(client, npc_range_path)
+-                             and plain_text(await get_popup_title(client)) == '石雕怪兽基座')
+             return (await is_spiral_door_open(client)
+                     or (await is_visible_by_path(client, npc_range_path)
+-                        and calc_Distance(await client.body.position(), xyz) < 750 and not statue_prompt)
++                        and calc_Distance(await client.body.position(), xyz) < 750)
+                     or await is_visible_by_path(client, exit_dungeon_path))
+ 
+         # Give world-gate interaction priority over both movement and END.
+@@ -6820,46 +6677,13 @@
+             return
+ 
+         objective = await get_quest_name(leader_client or client)
+-        if not objective:
+-            return
+         target = (xyz.x, xyz.y, xyz.z)
+         before = await client.body.position()
+-        progress = parlor_progress if parlor else scholomance_progress if scholomance_exit else lab_progress if scholomance else estate_progress if estate else gargoyle_progress if gargoyle else day_progress if day_ritual else final_act_progress if final_act else await self._dungeon_quest_snapshot(client) if transition_exit else None
+-        if day_ritual and getattr(client, '_xuanshu_easton_day_ritual_attempt', None) == (zone, progress):
+-            return  # Do not restart normal or fallback TP for the same attempted ritual goal.
+-        if (sacred_yarn or bumbles or bounded_exit) and progress is None:
+-            self._krok_exit_watch.pop(key, None)
+-            await self.move_until_quest_interaction(client, xyz, leader_client=leader_client)
+-            return
+-        def progress_changed(current, previous):
+-            if bumbles and current is not None and previous is not None:
+-                return (current[:2] != previous[:2]
+-                        or not self._bumbles_mind_task_matches(current[2]))
+-            return current != previous
+-
+         state = self._krok_exit_watch.get(key)
+-        if (state is None or state.get('zone') != zone or state['objective'] != objective
+-                or not (sacred_yarn or bumbles or bounded_navigation or dialogue_recovery) and state['target'] != target
+-                or (transition_exit or dialogue_recovery) and progress is not None and state.get('progress') is not None
+-                and progress_changed(progress, state['progress'])):
++        if state is None or state.get('zone') != zone or state['objective'] != objective or state['target'] != target:
+             state = dict(zone=zone, objective=objective, target=target, anchor=before,
+-                         since=time.monotonic(), attempts=0, end_sent=False, progress=progress)
++                         since=time.monotonic(), attempts=0, end_sent=False)
+             self._krok_exit_watch[key] = state
+-        elif (transition_exit or dialogue_recovery) and progress is not None:
+-            state['progress'] = progress
+-        if transition_exit or dialogue_recovery:
+-            failed = getattr(client, failed_attr, None)
+-            if isinstance(failed, dict):
+-                changed = (failed['zone'] != zone or failed['objective'] != objective
+-                           or not (sacred_yarn or bumbles or bounded_navigation or dialogue_recovery) and failed['target'] != target
+-                           or progress is not None and failed['progress'] is not None
+-                           and progress_changed(progress, failed['progress']))
+-                if changed and objective:
+-                    setattr(client, failed_attr, None)
+-                else:
+-                    state['end_sent'] = True
+-                    if bounded_exit or dialogue_recovery:
+-                        return  # Exhausted same-stage attempts survive worker recreation.
+ 
+         transition = [False]
+         async def watch_transition():
+@@ -6872,18 +6696,8 @@
+ 
+         # Observe loading during the existing teleport, without adding a dwell sleep.
+         watcher = asyncio.create_task(watch_transition())
+-        rejections_before = getattr(client, '_collision_tp_rejections', 0)
+-        path_blocked = False
+         try:
+-            if bounded_navigation:
+-                try:
+-                    async with asyncio.timeout(15):
+-                        await collision_tp(client, xyz, leader_client=leader_client)
+-                except TimeoutError:
+-                    path_blocked = True
+-                    logger.debug('{} {} 普通任务寻路超时，纳入受阻观察。', client.title, 'Scholomance Parlor' if parlor else 'Scholomance Miranda' if scholomance_exit else 'Graveholm Gargoyle' if gargoyle else 'EastonDay Ritual' if day_ritual else 'EastonHouse' if easton_house else 'DuelingTent')
+-            else:
+-                await collision_tp(client, xyz, leader_client=leader_client)
++            await collision_tp(client, xyz, leader_client=leader_client)
+         except BaseException:
+             self._krok_exit_watch.pop(key, None)
+             raise
+@@ -6895,333 +6709,63 @@
+                 transition[0] = True
+ 
+         if (transition[0] or await client.is_loading() or await client.zone_name() != zone
+-                or await interaction_pending() or not await is_free(client)):
++                or await interaction_pending() or not await is_free(client)
++                or await get_quest_name(leader_client or client) != objective):
+             self._krok_exit_watch.pop(key, None)
+             return
+-        if bounded_navigation and (await client.is_in_dialog() or not await is_free_leader_questing(client)):
+-            self._krok_exit_watch.pop(key, None)
+-            return
+-        current_objective = await get_quest_name(leader_client or client)
+-        if not current_objective:
+-            return
+-        if current_objective != objective:
+-            self._krok_exit_watch.pop(key, None)
+-            return
+-        if (gobblerton or lemuria or sacred_yarn or bumbles or bounded_navigation or dialogue_recovery) and progress_changed(await self._dungeon_quest_snapshot(client), progress):
+-            self._krok_exit_watch.pop(key, None)
+-            return
+ 
+         after = await client.body.position()
+-        if bounded_navigation:
+-            rejected = path_blocked or getattr(client, '_collision_tp_rejections', 0) > rejections_before
+-            no_approach = calc_Distance(before, xyz) - calc_Distance(after, xyz) < 100
+-            if not rejected and (not no_approach or not (gargoyle or scholomance_exit or parlor) and calc_Distance(after, xyz) < self.TRIGGER_NEAR_DISTANCE):
+-                state.update(anchor=after, since=time.monotonic(), attempts=0)
+-                return  # Successful approach / normal arrival is not blocked navigation.
+         if floating_exit and calc_Distance(after, stuck) > 150:
+             self._krok_exit_watch.pop(key, None)
+             return
+-        # Gobblerton tracks quest progress even when repeated TP moves the body.
+-        # Other exits retain their existing stationary-position requirement.
+-        if not (gobblerton or sacred_yarn or bumbles or bounded_navigation or dialogue_recovery) and max(calc_Distance(before, state['anchor']),
++        # Both endpoints must stay within the same small area across attempts.
++        if max(calc_Distance(before, state['anchor']),
+                calc_Distance(after, state['anchor'])) > 100:
+             state.update(anchor=after, since=time.monotonic(), attempts=0)
+             return
+         state['attempts'] += 1
+-        if (sacred_yarn or bumbles) and state['end_sent']:
+-            # Let the existing mainline/dungeon recovery inspect the next iteration.
+-            self._krok_exit_watch.pop(key, None)
+-            return
+         if not objective or state['end_sent'] or state['attempts'] < 3 or time.monotonic() - state['since'] < 10:
+             return
+ 
+-        recovery_owner = ('overgrown_estate' if estate else 'darkmoor_cantrip' if day_ritual or scholomance else 'final_act' if final_act else 'easton_house' if easton_house or gargoyle or scholomance_exit or parlor else 'dueling_tent' if dueling_tent else 'bumbles_mind' if bumbles else 'sacred_yarn' if sacred_yarn else 'lemuria_dungeon' if lemuria else
+-                          'gobblerton' if gobblerton else 'private_wing' if private_wing else 'special_zone')
+-        if not claim_quest_recovery(client, recovery_owner):
++        state['end_sent'] = True
++        if special_exit:
++            logger.info(f'Client {client.title}: 连续任务传送至少 3 次且 10 秒无进展，执行区域脱困。')
++            await client.teleport(special_targets[zone])
++            if zone.endswith('CL_Z10i3_Kingdom_Of_The_Crabs'):
++                try:
++                    async with asyncio.timeout(10):
++                        while not await is_visible_by_path(client, npc_range_path):
++                            if await client.is_loading() or await client.zone_name() != zone:
++                                return
++                            await asyncio.sleep(.25)
++                        await client.send_key(Keycode.X, .1)
++                        while await get_quest_name(leader_client or client) == objective:
++                            if await client.is_loading() or not await is_free(client):
++                                return
++                            await asyncio.sleep(.25)
++                except TimeoutError:
++                    pass
+             return
+-        state['end_sent'] = True
++        if crystal_exit:
++            logger.info(f'Client {client.title}: 水晶塔连续任务传送受阻，执行脱困传送。')
++            await client.teleport(XYZ(34.461, 1382.432, 0.123))
++            return
++        if floating_exit:
++            logger.info(f'Client {client.title}: 漂浮大陆连续任务传送受阻，执行出口脱困传送。')
++            await client.teleport(XYZ(6592.342, -6749.908, -250.054))
++            return
++        logger.debug(f"Client {client.title}: 克洛克传送室连续任务传送受阻，按 END 返回主城。")
++        await client.send_key(Keycode.END, 0.1)
+         try:
+-            if estate:
+-                if (await self._overgrown_estate_stage(client) != progress
+-                        or not client.questing_status or await client.is_loading() or await client.in_battle()
+-                        or not await is_free_leader_questing(client)
+-                        or self._darkmoor_clue_input_blocked(client, recovery_owner)):
+-                    state['end_sent'] = False
+-                    return
+-                if self.overgrown_estate_paused(client):
+-                    return  # Another legacy peer may have started this shared visit during TP.
+-                participants = [client, *getattr(client, 'quest_party_hitters', [])]
+-                if len(participants) == 1:
+-                    participants = [client, *[p for p in self.clients if p is not client]]
+-                estate_state = dict(owner_client=client, participants=participants,
+-                                    progress=progress, phase='dialogue_move')
+-                for member in participants:
+-                    member._xuanshu_overgrown_estate = estate_state
+-                self._krok_exit_watch.pop(key, None)
+-                release_quest_recovery(client, recovery_owner)
+-                await self._maybe_handle_overgrown_estate(client)
+-                return
+-            if day_ritual:
+-                await self._recover_easton_day_ritual(client, progress,
+-                    photo=self._is_easton_day_ritual_photo(progress[2]))
+-                if getattr(client, '_xuanshu_easton_day_ritual_attempt', None) != (zone, progress):
+-                    state['end_sent'] = False  # Priority takeover before TP only defers.
+-                return
+-            if final_act or scholomance:
+-                setattr(client, failed_attr, dict(zone=zone, objective=objective, target=target, progress=progress, attempts=0))
+-                try:
+-                    if scholomance:
+-                        await self._recover_final_act(client, progress, scholomance=True)
+-                    else:
+-                        await self._recover_final_act(client, progress)
+-                except Exception as exc:
+-                    logger.warning('{}对话触发暂未完成，停止本阶段重复 TP：{}', '米兰达实验室' if scholomance else '最终一幕', exc)
+-                finally:
+-                    if scholomance:
+-                        failed = getattr(client, failed_attr, None)
+-                        if isinstance(failed, dict) and failed.get('attempts') == 0:
+-                            setattr(client, failed_attr, None)
+-                            state['end_sent'] = False  # Takeover before first TP only defers.
+-                return
+-            if bounded_exit:
+-                if (await client.zone_name() != zone or await self._dungeon_quest_snapshot(client) != progress
+-                        or not client.questing_status or await client.is_loading() or await client.in_battle()
+-                        or not await is_free_leader_questing(client) or await interaction_pending()):
+-                    return
+-                setattr(client, failed_attr, dict(zone=zone, objective=objective, target=target, progress=progress))
+-                try:
+-                    if parlor:
+-                        getattr(client, failed_attr)['attempts'] = 0
+-                        await self._recover_dueling_tent(client, progress, interaction_pending, parlor=True)
+-                    elif scholomance_exit:
+-                        getattr(client, failed_attr)['attempts'] = 0
+-                        await self._recover_dueling_tent(client, progress, interaction_pending, scholomance=True)
+-                    elif gargoyle:
+-                        getattr(client, failed_attr)['attempts'] = 0
+-                        await self._recover_dueling_tent(client, progress, interaction_pending, gargoyle=True)
+-                    elif easton_house:
+-                        getattr(client, failed_attr)['attempts'] = 0
+-                        await self._recover_dueling_tent(client, progress, interaction_pending, easton_house=True)
+-                    else:
+-                        await self._recover_dueling_tent(client, progress, interaction_pending)
+-                except Exception as exc:
+-                    logger.error('{} 特殊恢复未完成，停止本任务阶段重复 TP：{}', 'Scholomance Parlor' if parlor else 'Scholomance Miranda' if scholomance_exit else 'Graveholm Gargoyle' if gargoyle else 'EastonHouse' if easton_house else 'DuelingTent', exc)
+-                finally:
+-                    failed = getattr(client, failed_attr, None)
+-                    if (easton_house or gargoyle or scholomance_exit or parlor) and isinstance(failed, dict) and failed.get('attempts') == 0:
+-                        setattr(client, failed_attr, None)
+-                        if scholomance_exit or parlor:
+-                            state['end_sent'] = False
+-                return
+-            if bumbles:
+-                if (progress_changed(await self._dungeon_quest_snapshot(client), progress)
+-                        or await client.zone_name() != zone
+-                        or not self._bumbles_mind_task_matches(await self.read_quest_txt(client))
+-                        or not client.questing_status or await client.is_loading()
+-                        or await client.in_battle() or not await is_free_leader_questing(client)
+-                        or await interaction_pending()):
+-                    return
+-                setattr(client, failed_attr, dict(zone=zone, objective=objective,
+-                                                target=target, progress=progress))
+-                try:
+-                    await self._recover_bumbles_mind(client, progress, failed_attr)
+-                except Exception as exc:
+-                    logger.warning('BumblesMind 特殊恢复失败，退出本次恢复。原因：{}', exc)
+-                return
+-            if transition_exit:
+-                label = ('SacredYarnTemple' if sacred_yarn else 'Lemuria Dungeon' if lemuria
+-                         else 'Gobblerton' if gobblerton else 'PrivateWing')
+-                if lemuria or sacred_yarn:
+-                    if (await client.zone_name() != zone
+-                            or await self._dungeon_quest_snapshot(client) != progress):
+-                        self._krok_exit_watch.pop(key, None)
+-                        return
+-                    if sacred_yarn:
+-                        if (not client.questing_status or await client.is_loading()
+-                                or await client.in_battle() or not await is_free_leader_questing(client)
+-                                or await interaction_pending()):
+-                            self._krok_exit_watch.pop(key, None)
+-                            return
+-                        logger.info('SacredYarnTemple 连续任务传送无进展，启动特殊恢复。')
+-                    else:
+-                        logger.info('自动任务：Lemuria Dungeon 连续任务传送受阻，启动特殊脱困。')
+-                else:
+-                    logger.info(f'自动任务：{label} 连续任务传送无进展，前往区域切换点。')
+-                setattr(client, failed_attr, dict(
+-                    zone=zone, objective=objective, target=target, progress=progress
+-                ))
+-                try:
+-                    async with asyncio.timeout(40.0 if lemuria else 25.0):
+-                        exit_point = (self.SACRED_YARN_EXIT if sacred_yarn else self.LEMURIA_DUNGEON_EXIT if lemuria else
+-                                      self.GOBBLERTON_EXIT if gobblerton else self.PRIVATE_WING_EXIT)
+-                        if lemuria:
+-                            logger.info('自动任务：正在前往指定交互坐标。')
+-                        if sacred_yarn:
+-                            logger.info('SacredYarnTemple 正在前往指定区域切换点。')
+-                            for attempt in range(2):
+-                                if await client.zone_name() != zone or await client.is_loading():
+-                                    break
+-                                if (not client.questing_status or await client.in_battle()
+-                                        or not await is_free_leader_questing(client)
+-                                        or await interaction_pending()):
+-                                    raise RuntimeError('任务停止或进入战斗/对话')
+-                                current_progress = await self._dungeon_quest_snapshot(client)
+-                                if current_progress is not None and current_progress != progress:
+-                                    setattr(client, failed_attr, None)
+-                                    return
+-                                if current_progress is None:
+-                                    raise RuntimeError('任务状态不可读')
+-                                await client.teleport(exit_point)
+-                                retry_deadline = time.monotonic() + 10.0
+-                                while await client.zone_name() == zone and not await client.is_loading():
+-                                    if (not client.questing_status or await client.in_battle()
+-                                            or not await is_free_leader_questing(client)
+-                                            or await interaction_pending()):
+-                                        raise RuntimeError('等待切换期间任务停止或进入战斗/对话')
+-                                    current_progress = await self._dungeon_quest_snapshot(client)
+-                                    if current_progress is not None and current_progress != progress:
+-                                        setattr(client, failed_attr, None)
+-                                        return
+-                                    if current_progress is None:
+-                                        raise RuntimeError('任务状态不可读')
+-                                    if time.monotonic() >= retry_deadline:
+-                                        break
+-                                    await asyncio.sleep(.2)
+-                                if await client.zone_name() != zone or await client.is_loading():
+-                                    break
+-                            else:
+-                                raise TimeoutError('两次传送后未触发区域切换')
+-                        else:
+-                            await client.teleport(exit_point)
+-                        if lemuria:
+-                            last_position = await client.body.position()
+-                            position_stable_since = None
+-                            attempts = 0
+-                            retry_at = 0.0
+-                            interaction_deadline = time.monotonic() + 20.0
+-                            while await client.zone_name() == zone and not await client.is_loading():
+-                                if not client.questing_status:
+-                                    return
+-                                if await client.in_battle():
+-                                    raise RuntimeError('交互期间进入战斗')
+-                                position = await client.body.position()
+-                                now = time.monotonic()
+-                                if now >= interaction_deadline:
+-                                    raise TimeoutError('交互提示、对话完成或区域切换响应超时')
+-                                if (calc_Distance(position, exit_point) > 100
+-                                        or calc_Distance(position, last_position) > 2):
+-                                    position_stable_since = None
+-                                elif position_stable_since is None:
+-                                    position_stable_since = now
+-                                elif (now - position_stable_since >= .5
+-                                        and await is_free_leader_questing(client)
+-                                        and await is_visible_by_path(client, npc_range_path)
+-                                        and now >= retry_at):
+-                                    if attempts >= 2:
+-                                        raise RuntimeError('两次 X 交互后未发生区域切换')
+-                                    logger.info('自动任务：已到达目标位置，尝试 X 交互（{}/2）。', attempts + 1)
+-                                    await client.send_key(Keycode.X, .1)
+-                                    attempts += 1
+-                                    retry_at = time.monotonic() + 4.0
+-                                last_position = position
+-                                await asyncio.sleep(.2)
+-                            logger.info('自动任务：交互完成，等待区域切换。')
+-                        if not sacred_yarn:
+-                            logger.info(f'自动任务：{label} 正在等待区域切换。')
+-                        await wait_for_zone_change(client, current_zone=zone)
+-                        arrival_zone = await client.zone_name()
+-                        if arrival_zone == zone:
+-                            raise TimeoutError('区域未变化')
+-                        stable_since = None
+-                        while True:
+-                            if not client.questing_status:
+-                                return
+-                            current_zone = await client.zone_name()
+-                            if (sacred_yarn and current_zone and current_zone != zone
+-                                    and current_zone != arrival_zone):
+-                                arrival_zone = current_zone
+-                                stable_since = None
+-                            if (sacred_yarn and not current_zone
+-                                    or current_zone == zone or current_zone != arrival_zone
+-                                    or await client.is_loading()
+-                                    or not await is_free_leader_questing(client)):
+-                                stable_since = None
+-                            elif stable_since is None:
+-                                stable_since = time.monotonic()
+-                            elif time.monotonic() - stable_since >= self.PRIVATE_WING_STABLE_SECONDS:
+-                                snapshot = await self._dungeon_quest_snapshot(client)
+-                                if sacred_yarn and snapshot is None:
+-                                    await asyncio.sleep(.2)
+-                                    continue
+-                                await get_quest_name(client)
+-                                await client.quest_position.position()
+-                                self._krok_exit_watch.pop(key, None)
+-                                setattr(client, failed_attr, None)
+-                                if sacred_yarn:
+-                                    logger.info('SacredYarnTemple 区域切换完成，恢复自动任务。')
+-                                else:
+-                                    logger.info(f'自动任务：{label} 区域切换完成，继续任务传送。')
+-                                return
+-                            await asyncio.sleep(.2)
+-                except Exception as exc:
+-                    if sacred_yarn:
+-                        logger.warning('SacredYarnTemple 特殊恢复失败，退出本次恢复。原因：{}', exc)
+-                    elif lemuria:
+-                        logger.warning('Lemuria Dungeon 特殊脱困失败，退出本次恢复。原因：{}', exc)
+-                    else:
+-                        logger.warning(f'自动任务：{label} 区域切换未成功，退出本次特殊恢复。{exc}')
+-                return
+-            if special_exit:
+-                logger.info(f'Client {client.title}: 连续任务传送至少 3 次且 10 秒无进展，执行区域脱困。')
+-                await client.teleport(special_targets[zone])
+-                if zone.endswith('CL_Z10i3_Kingdom_Of_The_Crabs'):
+-                    try:
+-                        async with asyncio.timeout(10):
+-                            while not await is_visible_by_path(client, npc_range_path):
+-                                if await client.is_loading() or await client.zone_name() != zone:
+-                                    return
+-                                await asyncio.sleep(.25)
+-                            await client.send_key(Keycode.X, .1)
+-                            while True:
+-                                current_objective = await get_quest_name(leader_client or client)
+-                                if current_objective and current_objective != objective:
+-                                    break
+-                                if await client.is_loading() or not await is_free(client):
+-                                    return
+-                                await asyncio.sleep(.25)
+-                    except TimeoutError:
+-                        pass
+-                return
+-            if crystal_exit:
+-                logger.info(f'Client {client.title}: 水晶塔连续任务传送受阻，执行脱困传送。')
+-                await client.teleport(XYZ(34.461, 1382.432, 0.123))
+-                return
+-            if floating_exit:
+-                logger.info(f'Client {client.title}: 漂浮大陆连续任务传送受阻，执行出口脱困传送。')
+-                await client.teleport(XYZ(6592.342, -6749.908, -250.054))
+-                return
+-            logger.debug(f"Client {client.title}: 克洛克传送室连续任务传送受阻，按 END 返回主城。")
+-            await client.send_key(Keycode.END, 0.1)
+-            try:
+-                async with asyncio.timeout(15):
+-                    while await client.is_loading() or await client.zone_name() == zone:
+-                        await asyncio.sleep(.1)
+-            except TimeoutError:
+-                logger.warning(f"Client {client.title}: END 回城尚未完成，本次受阻不重复按 END。")
+-                return
+-            self._krok_exit_watch.pop(key, None)
+-        finally:
+-            if sacred_yarn or bumbles or bounded_exit:
+-                self._krok_exit_watch.pop(key, None)
+-            if lemuria or bounded_exit:
+-                dungeon = getattr(client, 'quest_dungeon_recovery', None)
+-                if isinstance(dungeon, dict):
+-                    dungeon.update(since=time.monotonic(), waiting_logged=False)
+-            release_quest_recovery(client, recovery_owner)
++            async with asyncio.timeout(15):
++                while await client.is_loading() or await client.zone_name() == zone:
++                    await asyncio.sleep(.1)
++        except TimeoutError:
++            logger.warning(f"Client {client.title}: END 回城尚未完成，本次受阻不重复按 END。")
++            return
++        self._krok_exit_watch.pop(key, None)
+ 
+     async def teleport_to_quest(self, hitting_client: str, follower_clients: list[Client]):
+-        if await self._quest_dialogue_blocks_movement(self.current_leader_client):
+-            return
+         await gather_owned(*[self.leader_wait_for_free(p) for p in self.clients])
+ 
+         if await is_free_leader_questing(self.current_leader_client):
+@@ -7409,23 +6953,33 @@
+         await client.send_key(Keycode.Z, 0.1)
+ 
+     async def handle_normal_quests(self, follower_clients: list[Client], questing_friend_tp: bool):
++        if getattr(self.client, 'questing_status', True) is False:
++            return
++        present_clients = []
++        for member in self.clients:
++            if (getattr(member, 'questing_status', True) is not False
++                    and not getattr(member, 'refilling_potions', False)
++                    and not await member.is_loading()
++                    and (member is self.current_leader_client
++                         or await clients_share_live_area(member, self.current_leader_client))):
++                present_clients.append(member)
+         if await close_npc_quest_menu(self.current_leader_client):
+             return
+-        if any(await gather_owned(*[close_automation_popup(c) for c in self.clients])):
++        if any(await gather_owned(*[close_automation_popup(c) for c in present_clients])):
+             return
+         if await is_spiral_door_open(self.current_leader_client):
+             self._krok_exit_watch.pop(id(self.current_leader_client), None)
+             await self.handle_spiral_navigation()
+             return
+         # Handles chest reroll menu, will always cancel
+-        await gather_owned(*[safe_click_window(c, cancel_chest_roll_path) for c in self.clients])
++        await gather_owned(*[safe_click_window(c, cancel_chest_roll_path) for c in present_clients])
+         # confirm exit dungeon early button
+-        await gather_owned(*[safe_click_window(c, exit_dungeon_path) for c in self.clients])
+-
+-        await gather_owned(*[self.leader_wait_for_free(p) for p in self.clients])
++        await gather_owned(*[safe_click_window(c, exit_dungeon_path) for c in present_clients])
++
++        await gather_owned(*[self.leader_wait_for_free(p) for p in present_clients])
+ 
+         if await is_free_leader_questing(self.current_leader_client):
+-            for c in self.clients:
++            for c in present_clients:
+                 while await c.is_loading():
+                     await asyncio.sleep(0.1)
+ 
+@@ -7436,30 +6990,37 @@
+                 # await self.handle_interactibles(current_leader_client)
+ 
+                 # Handles interactables
++                if portal_kind(await get_popup_title(self.current_leader_client)) == 'world_gate':
++                    async with automation_owner(self.current_leader_client, 'quest-world-gate'):
++                        if (getattr(self.current_leader_client, 'questing_status', True) is not False
++                                and not getattr(self.current_leader_client, 'refilling_potions', False)
++                                and await is_free_leader_questing(self.current_leader_client)):
++                            await self.current_leader_client.send_key(Keycode.X, .1)
++                    await asyncio.sleep(.75)
++                    if await is_spiral_door_open(self.current_leader_client):
++                        await self.handle_spiral_navigation()
++                    return
+                 sigil_msg_check = await self.read_popup(self.current_leader_client)
+-                if await self._maybe_photo_giant_vat(self.current_leader_client, sigil_msg_check):
+-                    return
+-                if await self.party_dungeon_entry_visible(self.current_leader_client, sigil_msg_check):
+-                    entry_zone = await self.current_leader_client.zone_name()
+-                    entry_mainline = await self._mainline_identity(self.current_leader_client)
+-                    entry_mainline_id = (entry_mainline[0] if entry_mainline and entry_mainline[3] is not None
+-                                         and entry_mainline[4] is True else None)
+-                    while await self.party_dungeon_entry_visible(self.current_leader_client, sigil_msg_check):
++                if is_dungeon_entry_prompt(sigil_msg_check):
++                    if len(present_clients) != len(self.clients):
++                        logger.info('旧队长模式：等待本组成员到达同一副本入口，可手动归队。')
++                        return
++                    while is_dungeon_entry_prompt(sigil_msg_check):
+                         logger.debug('Entering dungeon')
+-                        await gather_owned(*[p.send_key(Keycode.X, 0.1) for p in self.clients])
++                        await gather_owned(*[p.send_key(Keycode.X, 0.1) for p in present_clients])
+                         await asyncio.sleep(1.0)
+-                        for c in self.clients:
++                        for c in present_clients:
+                             if await is_visible_by_path(c, dungeon_warning_path):
+                                 await c.send_key(Keycode.ENTER, 0.1)
+ 
+                         sigil_msg_check = await self.read_popup(self.current_leader_client)
+ 
+-                    await self.handle_dungeon_entry(questing_friend_tp, follower_clients, entry_zone, entry_mainline_id)
++                    await self.handle_dungeon_entry(questing_friend_tp, follower_clients)
+                 else:
+                     msg = sigil_msg_check.lower()
+-                    if portal_kind(await get_popup_title(self.current_leader_client)) == 'world_gate':
+-                        await self.current_leader_client.send_key(Keycode.X, .1)
+-                    elif interaction_kind(msg) == "talk":
++                    if interaction_kind(msg) == "talk":
++                        await gather_owned(*[p.send_key(Keycode.X, 0.1) for p in present_clients])
++                        logger.debug('Talking to NPC')
+                         quest_updated = await self.handle_npc_talking_quests(
+                             self.current_leader_client, self.clients
+                         )
+@@ -7470,15 +7031,15 @@
+                     elif interaction_kind(msg) in {"ride", "teleport"}:
+                         await self.current_leader_client.send_key(Keycode.X, 0.1)
+                         await asyncio.sleep(1.0)
+-                        await gather_owned(*[p.send_key(Keycode.X, 0.1) for p in self.clients])
++                        await gather_owned(*[p.send_key(Keycode.X, 0.1) for p in present_clients])
+                     else:
+-                        await gather_owned(*[p.send_key(Keycode.X, 0.1) for p in self.clients])
++                        await gather_owned(*[p.send_key(Keycode.X, 0.1) for p in present_clients])
+ 
+                     # original_zone = await self.current_leader_client.zone_name()
+ 
+                     await asyncio.sleep(2)
+                     was_loading = False
+-                    for c in self.clients:
++                    for c in present_clients:
+                         while await c.is_loading():
+                             was_loading = True
+                             await asyncio.sleep(0.1)
+@@ -7490,7 +7051,7 @@
+                     # Exit NPC menus (spell menus, quest menus, etc)
+                     # await asyncio.sleep(2)
+                     end_of_loop_paths = (exit_recipe_shop_path, exit_equipment_shop_path, cancel_multiple_quest_menu_path, cancel_spell_vendor, exit_snack_shop_path, exit_reagent_shop_path, exit_tc_vendor, exit_minigame_sigil, exit_wysteria_tournament, exit_dungeon_path, exit_zafaria_class_picture_button, exit_pet_leveled_up_button_path, avalon_badge_exit_button_path, potion_exit_path)
+-                    await gather_owned(*[exit_menus(c, end_of_loop_paths) for c in self.clients])
++                    await gather_owned(*[exit_menus(c, end_of_loop_paths) for c in present_clients])
+ 
+                     await asyncio.sleep(0.75)
+ 
+@@ -7502,7 +7063,15 @@
+ 
+                 if quest_has_action(quest_objective, "photomance"):
+                     # Photomancy quests (WC, KM, LM)
+-                    await gather_owned(*[self.take_photomancy_photo(p, quest_objective) for p in self.clients])
++                    await gather_owned(*[p.send_key(key=Keycode.Z, seconds=0.1) for p in present_clients])
++                    await gather_owned(*[p.send_key(key=Keycode.Z, seconds=0.1) for p in present_clients])
++
++            for c in present_clients:
++                if await is_visible_by_path(c, missing_area_path):
++                    # Handles when an area hasn't been downloaded yet
++                    while not await is_visible_by_path(c, missing_area_retry_path):
++                        await asyncio.sleep(0.1)
++                    await click_window_by_path(c, missing_area_retry_path, True)
+ 
+         await asyncio.sleep(0.7)
+ 
+@@ -7591,14 +7160,13 @@
+             await self.auto_collect_rewrite(self.current_leader_client)
+ 
+     async def bring_clients_to_same_location(self, questing_friend_tp: bool, gear_switching_in_solo_zones: bool):
+-        if getattr(self.current_leader_client, "refilling_potions", False) is True:
+-            return
+         leader_pos = await self.current_leader_client.body.position()
+         teleported = False
+         for c in self.clients:
+-            if getattr(c, "refilling_potions", False) is True or getattr(c, "questing_status", True) is False:
++            if (getattr(c, 'questing_status', True) is False
++                    or getattr(c, 'refilling_potions', False)):
+                 continue
+-            if await c.zone_name() == await self.current_leader_client.zone_name():
++            if await clients_share_live_area(c, self.current_leader_client):
+                 errored = True
+                 # teleport throws should update bool
+                 while errored:
+@@ -7634,44 +7202,29 @@
+ 
+             if all_high_energy:
+                 # buy potions if necessary, otherwise auto pet will fail
+-                if await self.heal_and_handle_potions() is False:
+-                    return
++                await self.heal_and_handle_potions()
+ 
+                 logger.debug('All questing clients have high energy, training pets on all clients.')
+                 await gather_owned(*[auto_pet(c, ignore_pet_level_up, play_dance_game, questing=True) for c in self.clients])
+ 
+     async def leader_wait_for_free(self, p: Client):
+         while not await is_free_leader_questing(p):
+-            self._note_dungeon_recovery_wait(p)
++            if (getattr(p, 'questing_status', True) is False
++                    or getattr(p, 'refilling_potions', False)):
++                return
++            await reconcile_combat_state(p)
+             await asyncio.sleep(.1)
+ 
+     # TODO: Slay the beast
+     async def auto_quest_leader(self, questing_friend_tp: bool, gear_switching_in_solo_zones: bool, hitting_client, ignore_pet_level_up: bool, play_dance_game: bool):
++        if (getattr(self.client, 'questing_status', True) is False
++                or getattr(self.client, '_character_selection_active', False) is True
++                or getattr(self.client, 'refilling_potions', False)
++                or isinstance(getattr(self.client, 'quest_recovery_owner', None), str)
++                or await self.client.is_loading() or await self.client.in_battle()):
++            return
+         from src.mainline_progress import log_mainline_progress
+-        if await self._maybe_enter_azteca_beetle_map(self.current_leader_client):
+-            return
+-        if await self._maybe_enter_avalon_grain_map(self.current_leader_client):
+-            return
+-        if await self._maybe_handle_overgrown_estate(self.current_leader_client):
+-            return
+-        if await self._maybe_handle_no_blood_hideout(self.current_leader_client):
+-            return
+-        if await self._maybe_handle_darkmoor_cantrips(self.current_leader_client):
+-            return
+-        if await self._maybe_handle_panopticon_book(self.current_leader_client):
+-            return
+-        if any(await gather_owned(*[self._maybe_handle_outback_story(p) for p in self.clients])):
+-            return
+-        if any(await gather_owned(*[self._maybe_handle_bumbles_pet(p) for p in self.clients])):
+-            return
+-        if any(await gather_owned(*[self._maybe_recover_lemuria_navigation(p) for p in self.clients])):
+-            return
+-        if await self._maybe_handle_bumbles_mind(self.current_leader_client):
+-            return
+-        if await self._maybe_handle_tamarin_house(self.current_leader_client):
+-            return
+-        if await self._maybe_handle_callisto(self.current_leader_client):
+-            return
++        await log_mainline_progress(self.client)
+         follower_clients = await self.get_follower_clients()
+         questing_clients = await self.get_questing_clients()
+ 
+@@ -7689,11 +7242,6 @@
+         # if all questing clients have high energy, run auto pet once initially
+         if self.current_leader_client.auto_pet_status:
+             await self.initial_auto_pet(energy_info, questing_clients, ignore_pet_level_up, play_dance_game)
+-
+-        if not self.client.questing_status:
+-            return
+-        questing_clients = [c for c in questing_clients if c.questing_status]
+-        follower_clients = await self.get_follower_clients()
+ 
+         # gather all clients to the same zone and exact location
+         await self.bring_clients_to_same_location(questing_friend_tp, gear_switching_in_solo_zones)
+@@ -7715,39 +7263,26 @@
+ 
+             logger.info('Clients on same quest: ' + s)
+ 
++        # information needed for handle_repeated_normal_quest_failures()
++        iterations_since_last_quest_change = 0
++        leader_last_full_quest = await get_quest_name(self.current_leader_client)
++        last_leader_pid = self.current_leader_client.process_id
++        last_leader_zone = await self.current_leader_client.zone_name()
++
+         # main loop
+         while self.client.questing_status:
+             await asyncio.sleep(.4)
+-
+-            if await self._maybe_handle_overgrown_estate(self.current_leader_client):
+-                continue
+-            if any(await gather_owned(*[self._maybe_handle_outback_story(p) for p in self.clients])):
+-                continue
+-            if any(await gather_owned(*[self._maybe_handle_darkmoor_castle(p) for p in self.clients])):
+-                continue
+-            if await self._quest_dialogue_blocks_movement(self.current_leader_client):
+-                continue
++            if not self.client.questing_status:
++                return
++            self.clients = [c for c in self.clients if getattr(c, 'questing_status', True) is not False]
+ 
+             # in case client(s) in combat and the questing loop continued anyway
+             await gather_owned(*[self.leader_wait_for_free(p) for p in self.clients])
+-            if any(await gather_owned(*[self._maybe_handle_bumbles_pet(p) for p in self.clients])):
+-                continue
+-            if any(await gather_owned(*[self._maybe_recover_lemuria_navigation(p) for p in self.clients])):
+-                continue
+-            if await self._mainline_sync_blocks_movement(self.current_leader_client):
+-                continue
+-
+-            # The leader controls movement, but each questing client owns its
+-            # own tracked mainline task and one-time progress log.
+-            await gather_owned(*[
+-                log_mainline_progress(p) for p in self.clients if p.questing_status
+-            ])
+ 
+             # Collect wisps, use potions, or get potions if necessary
+-            if await self.heal_and_handle_potions() is False:
+-                questing_clients = [c for c in questing_clients if c.questing_status]
+-                client_quests = {c: q for c, q in client_quests.items() if c.questing_status}
+-                follower_clients = await self.get_follower_clients()
++            if not await self.heal_and_handle_potions():
++                if not self.client.questing_status:
++                    return
+                 continue
+ 
+             # if dungeon recall button is visible, click it
+@@ -7760,51 +7295,23 @@
+             # if there were previously clients on the same quest check for quest objective change on all clients
+             follower_clients, client_quests = await self.determine_new_leader_and_followers(client_quests, questing_clients, follower_clients)
+ 
+-            if await self._mainline_sync_blocks_movement(self.current_leader_client):
+-                continue
+-
+-            if await self._maybe_handle_no_blood_hideout(self.current_leader_client):
+-                continue
+-            if await self._maybe_handle_panopticon_book(self.current_leader_client):
+-                continue
+-            if await self._maybe_handle_darkmoor_cantrips(self.current_leader_client):
+-                continue
+-            if await self._maybe_handle_callisto(self.current_leader_client):
+-                continue
+-            if await self._maybe_recover_mainline(self.current_leader_client):
+-                continue
+-            if (await is_free_leader_questing(self.current_leader_client)
+-                    and await self._maybe_photo_giant_vat(self.current_leader_client)):
+-                continue
+-
+             # handle circumstances where any follower client is not in the same zone as the leader client
+             # keep in mind, the previous leader client may now be a follower client since we have just called determine_new_leader_and_followers()
+             await self.handle_zone_correction(maybe_solo_zone, questing_friend_tp, gear_switching_in_solo_zones)
+ 
+             if await is_free_leader_questing(self.current_leader_client):
+                 quest_xyz = await self.current_leader_client.quest_position.position()
+-                if await self._maybe_recover_nightmare(self.current_leader_client):
+-                    continue
+                 distance = calc_Distance(quest_xyz, XYZ(0.0, 0.0, 0.0))
+ 
+                 # we are almost certainly not on a collect quest
+                 if distance > 1:
+-                    if await self._maybe_refresh_stalled_dungeon_quest(self.current_leader_client):
+-                        continue
+-
+-                    if await self._mainline_sync_blocks_movement(self.current_leader_client):
+-                        continue
++                    # attempt to fix cases where we loop through several times without completing a quest
++                    await self.handle_repeated_normal_quest_failures(last_leader_pid, last_leader_zone, iterations_since_last_quest_change)
+ 
+                     await self.teleport_to_quest(hitting_client, follower_clients)
+ 
+-                    if self.overgrown_estate_paused(self.current_leader_client):
+-                        continue
+-                    if await self._mainline_sync_blocks_movement(self.current_leader_client):
+-                        continue
+                     await self.handle_normal_quests(follower_clients, questing_friend_tp)
+                 else:
+-                    if await self._maybe_refresh_stalled_dungeon_quest(self.current_leader_client):
+-                        continue
+                     # Double check - sometimes wiz lies about quest position - a simple sleep and re-grabbing of the quest xyz solves the issue
+                     await asyncio.sleep(3.0)
+                     quest_xyz = await self.current_leader_client.quest_position.position()
+@@ -7835,6 +7342,19 @@
+ 
+                     else:
+                         logger.debug('False collect quest detected.  Quest position: ' + str(distance))
++
++            # keep track of how many loops we've gone through without changing our quest
++            # if leader happened to change, reset the counter
++            leader_full_current_quest = await get_quest_name(self.current_leader_client)
++            # quest hasn't changed, new leader has not been assigned, and zone hasn't changed
++            # this means we have failed to complete the last single quest objective
++            if leader_full_current_quest == leader_last_full_quest and last_leader_pid == self.current_leader_client.process_id and last_leader_zone == await self.current_leader_client.zone_name():
++                iterations_since_last_quest_change += 1
++            else:
++                leader_last_full_quest = await get_quest_name(self.current_leader_client)
++                last_leader_pid = self.current_leader_client.process_id
++                last_leader_zone = await self.current_leader_client.zone_name()
++                iterations_since_last_quest_change = 0
+ 
+     async def handle_pending_dungeon_confirmation(self, client: Client = None) -> bool:
+         """Confirm a dungeon transition modal even if it appeared late."""
+@@ -8103,10 +7623,9 @@
+         # Ordinary doors also need the assigned party at the entrance. Only a
+         # visible sigil establishes dungeon state before the transition.
+         sigil = await self.party_dungeon_entry_visible(client)
+-        if not sigil and not (getattr(client, 'quest_party_hitters', [])
+-                              and is_dungeon_entry_prompt(await self.read_popup(client))
++        if not sigil and not (is_dungeon_entry_prompt(await self.read_popup(client))
+                               and await is_visible_by_path(client, npc_range_path)
+-                              and await self.quest_interaction_ready(client, await client.quest_position.position())):
++                              and await self.quest_interaction_ready(client, await client.quest_position.position(), require_objective_match=False)):
+             return False
+         entry_mainline = await self._mainline_identity(client)
+         entry_mainline_id = (entry_mainline[0] if entry_mainline and entry_mainline[3] is not None
+@@ -8211,7 +7730,16 @@
+         for member in entry_clients:
+             member.quest_party_target_sync_active = True
+         try:
+-            await gather_owned(*[p.send_key(Keycode.X, 0.1) for p in entry_clients])
++            async with AsyncExitStack() as owners:
++                for member in entry_clients:
++                    await owners.enter_async_context(automation_owner(member, 'party-dungeon-entry'))
++                if (entry_ready is not None and not await entry_ready()
++                        or any([not getattr(member, 'questing_status', True)
++                               or getattr(member, 'refilling_potions', False)
++                               or await member.is_loading() or await member.in_battle()
++                               for member in entry_clients])):
++                    return False
++                await gather_owned(*[p.send_key(Keycode.X, 0.1) for p in entry_clients])
+             # Countdown and loading are part of the same entry operation.
+             # Independent coordinate/friend follow must not pull a member off
+             # the sigil after X while another member is already entering.
+@@ -8219,6 +7747,8 @@
+             for c in entry_clients:
+                 loading_deadline = time.monotonic() + 15.0
+                 while not await c.is_loading() and time.monotonic() < loading_deadline:
++                    if any(getattr(p, 'questing_status', True) is False for p in entry_clients):
++                        return False
+                     member_zone = await c.zone_name()
+                     if member_zone and member_zone != entry_zone:
+                         break  # A fast load may have finished between samples.
+@@ -8231,6 +7761,8 @@
+                     logger.warning(f"Client {c.title} did not enter the dungeon in time.")
+             for c in loading_clients:
+                 while await c.is_loading():
++                    if any(getattr(p, 'questing_status', True) is False for p in entry_clients):
++                        return False
+                     await asyncio.sleep(0.1)
+             current_zone = await client.zone_name()
+             await self._confirm_dungeon_entry(client, entry_zone, entry_mainline_id)
+@@ -8770,19 +8302,23 @@
+         return True
+ 
+     async def auto_quest_solo(self, auto_pet_disabled=False, ignore_pet_level_up=False, play_dance_game=False):
++        if (getattr(self.client, 'questing_status', True) is False
++                or getattr(self.client, '_character_selection_active', False) is True
++                or getattr(self.client, 'refilling_potions', False)
++                or isinstance(getattr(self.client, 'quest_recovery_owner', None), str)
++                or await self.client.is_loading() or await self.client.in_battle()):
++            return
+         from src.mainline_progress import log_mainline_progress
+-        if await self._maybe_handle_overgrown_estate(self.client):
+-            return
+-        if getattr(self.client, "refilling_potions", False) is True:
+-            return
+-        if await self._maybe_handle_darkmoor_castle(self.client):
+-            return
+-        if await self._maybe_handle_outback_story(self.client):
+-            return
+-        if await self._quest_dialogue_blocks_movement(self.client):
+-            return
+-        if await self._maybe_handle_bumbles_pet(self.client):
+-            return
++        await log_mainline_progress(self.client)
++        if getattr(self.client, 'mainline_finder_enabled', False) is True:
++            if await self._maybe_recover_mainline(self.client):
++                return
++        else:
++            self._mainline_finder_observations.pop(id(self.client), None)
++            self._mainline_finder_retry_at.pop(id(self.client), None)
++            self.client.mainline_finder_offer_guard = False
++            self.client.mainline_chain_retry_active = False
++            self.client.mainline_last_turn_in_snapshot = None
+         if await close_npc_quest_menu(self.client):
+             return
+         if await close_automation_popup(self.client):
+@@ -8801,43 +8337,12 @@
+                 await spiral_door_with_quest(self.client)
+             return
+ 
+-        # Followers probe newly entered zones independently. Only the quester's
+-        # own loading/return state can stop its next movement here.
+-        if await self._maybe_recover_lemuria_navigation(self.client):
+-            return
++        # In configurable quest-party mode the assigned hitter first probes a
++        # newly entered zone with friend teleport.  Do not start the next quest
++        # movement until that probe decides whether the zone is solo-only.
+         if await self._quest_party_probe_blocks_movement():
+-            # A nearby tracked NPC remains independent of follower arrival.
+-            # Always end this iteration afterward: no new movement may slip
+-            # through if that prompt disappears during the dialogue checks.
+-            if (interaction_kind(await self.read_popup(self.client)) == 'talk'
+-                    and not await self.client.is_loading()):
+-                target = await self.client.quest_position.position()
+-                await self.handle_quest_interaction(self.client, target)
+-            return
+-        if await self._maybe_handle_no_blood_hideout(self.client):
+-            return
+-        if await self._maybe_handle_bumbles_mind(self.client):
+-            return
+-        if await self._maybe_handle_tamarin_house(self.client):
+-            return
+-        if await self._maybe_handle_panopticon_book(self.client):
+-            return
+-        if await self._maybe_handle_darkmoor_cantrips(self.client):
+-            return
+-        if await self._mainline_sync_blocks_movement(self.client):
+-            return
+-        if await self._maybe_enter_azteca_beetle_map(self.client):
+-            return
+-        if await self._maybe_enter_avalon_grain_map(self.client):
+-            return
+-        if await self._maybe_handle_callisto(self.client):
+-            return
+-        if await self._maybe_recover_mainline(self.client):
+             return
+         if await is_free(self.client):
+-            if await self._maybe_photo_giant_vat(self.client):
+-                return
+-            await log_mainline_progress(self.client)
+             if await is_potion_needed(self.client) and await self.client.stats.current_mana() > 1 and await self.client.stats.current_hitpoints() > 1:
+                 await collect_wisps(self.client)
+ 
+@@ -8847,8 +8352,6 @@
+                     return
+ 
+             quest_xyz = await self.client.quest_position.position()
+-            if await self._maybe_recover_nightmare(self.client):
+-                return
+ 
+             if self.client.auto_pet_status and not auto_pet_disabled:
+                 # client has leveled up
+@@ -8859,43 +8362,24 @@
+             distance = calc_Distance(quest_xyz, XYZ(0.0, 0.0, 0.0))
+             if distance > 1:
+                 while self.client.entity_detect_combat_status:
+-                    await reconcile_combat_state(self.client)
+                     if not self.client.questing_status:
+                         return
++                    await reconcile_combat_state(self.client)
+                     await asyncio.sleep(.1)
+ 
+-                if await self._quest_dialogue_blocks_movement(self.client):
+-                    return
+-                if await self._maybe_refresh_stalled_dungeon_quest(self.client):
+-                    return
+-                shared_room = (bool(getattr(self.client, 'quest_party_hitters', []))
+-                               and getattr(self.client, 'quest_party_group_dungeon_zone', None)
+-                               == await self.client.zone_name())
+-                shared_target = getattr(self.client, 'quest_party_shared_target', None)
+-                shared_move_pending = shared_room and (
+-                    not isinstance(shared_target, dict)
+-                    or shared_target['zone'] != await self.client.zone_name()
+-                    or shared_target['identity'] != (await self.client.quest_id(), await self.client.goal_id())
+-                    or calc_Distance(shared_target['xyz'], quest_xyz) > 1)
+-                visible_entry = await self.party_dungeon_entry_visible(self.client)
+-                if ((not shared_move_pending or visible_entry)
+-                        and await self.quest_interaction_ready(self.client, quest_xyz, require_objective_match=False)):
+-                    self._trigger_reentry.pop(id(self.client), None)
+-                    if not visible_entry and await self.handle_party_dungeon_interaction(quest_xyz):
+-                        return
+-                    if await self.handle_quest_interaction(self.client, quest_xyz):
+-                        return
+-
+-                if await self._mainline_sync_blocks_movement(self.client):
++                if not self.client.questing_status:
+                     return
+                 zone_before_quest_move = await self.client.zone_name()
+-                if not await self.teleport_party_to_quest_target(quest_xyz):
+-                    return
+-
+-                if await self._quest_dialogue_blocks_movement(self.client):
+-                    return
+-                if self.overgrown_estate_paused(self.client):
+-                    return
++                move_snapshot = await self.client.quest_id(), await self.client.goal_id(), zone_before_quest_move
++                shared_room = (bool(getattr(self.client, 'quest_party_hitters', []))
++                               and not getattr(self.client, 'in_solo_zone', False)
++                               and getattr(self.client, 'quest_party_group_dungeon_zone', None) == zone_before_quest_move)
++                if shared_room:
++                    if not await self.teleport_party_to_quest_target(quest_xyz):
++                        return
++                else:
++                    await self.teleport_to_quest_target(self.client, quest_xyz)
++
+                 # confirm exit dungeon early button or wait for client to exit loading
+                 await self.handle_questing_zone_change()
+ 
+@@ -8903,37 +8387,84 @@
+                     getattr(self.client, "quest_party_hitters", [])
+                     and await self.client.zone_name() != zone_before_quest_move
+                 ):
+-                    # Notify the follower without waiting for its probe. The
+-                    # next worker iteration reads the quester's new target.
++                    # Set this from the quest worker itself, rather than relying
++                    # only on the follower's polling interval.  This guarantees
++                    # that no second quest teleport starts before the hitter has
++                    # probed the newly entered zone.
+                     self.client.quest_party_quest_worker_zone = (
+                         await self.client.zone_name()
+                     )
+                     self.client.quest_party_probe_pending = True
+                     logger.debug(
+-                        f"Client {self.client.title} changed zones; hitters probe independently."
++                        f"Client {self.client.title} changed zones; pausing quest movement for hitter probe."
+                     )
+                     return
+ 
+                 await asyncio.sleep(.5)
++                if (not self.client.questing_status or not await is_free(self.client)
++                        or calc_Distance(await self.client.quest_position.position(), quest_xyz) > 1
++                        or (await self.client.quest_id(), await self.client.goal_id(), await self.client.zone_name()) != move_snapshot):
++                    return
+                 if await is_visible_by_path(self.client, cancel_chest_roll_path):
+                     # Handles chest reroll menu, will always cancel
+                     await click_window_by_path(self.client, cancel_chest_roll_path)
+ 
+-                if await self.handle_party_dungeon_interaction(quest_xyz):
+-                    return
+-
+-                if await self.handle_quest_interaction(self.client, quest_xyz):
+-                    return
++                current_pos = await self.client.body.position()
++                if await is_visible_by_path(self.client, npc_range_path) and calc_Distance(quest_xyz, current_pos) < 750.0:
++                    # Shared mechanisms stay scoped to a confirmed party room.
++                    sigil_msg_check = await self.read_popup(self.client)
++                    if shared_room and interaction_kind(sigil_msg_check) != 'talk':
++                        if await self.handle_party_dungeon_interaction(quest_xyz):
++                            return
++                    if is_dungeon_entry_prompt(sigil_msg_check):
++                        async def entry_ready():
++                            return (self.client.questing_status and not await self.client.is_loading()
++                                    and not await self.client.in_battle()
++                                    and (await self.client.quest_id(), await self.client.goal_id(), await self.client.zone_name()) == move_snapshot)
++                        entry_clients = await self.prepare_party_dungeon_entry(entry_ready=entry_ready)
++                        await self.enter_party_dungeon(entry_clients, entry_ready=entry_ready)
++                        return
++                    elif interaction_kind(sigil_msg_check) == "talk":
++                        logger.debug('Talking to NPC')
++                        async with automation_owner(self.client, 'quest-interaction'):
++                            if (not self.client.questing_status or not await is_free(self.client)
++                                    or (await self.client.quest_id(), await self.client.goal_id(), await self.client.zone_name()) != move_snapshot):
++                                return
++                            await self.client.send_key(Keycode.X, 0.1)
++                        quest_updated = await self.handle_npc_talking_quests(
++                            self.client, [self.client]
++                        )
++                        if not quest_updated:
++                            await asyncio.sleep(2.0)
++                            return
++
++                    else:
++                        async with automation_owner(self.client, 'quest-interaction'):
++                            if (not self.client.questing_status or not await is_free(self.client)
++                                    or (await self.client.quest_id(), await self.client.goal_id(), await self.client.zone_name()) != move_snapshot):
++                                return
++                            await self.client.send_key(Keycode.X, 0.1)
++
++                        await asyncio.sleep(0.75)
++                        if await is_spiral_door_open(self.client):
++                            # Handles spiral door navigation
++                            if await self.new_world_doors(self.client) == False:
++                                await spiral_door_with_quest(self.client)
+ 
+                 quest_objective = await get_quest_name(self.client)
+ 
+                 if quest_has_action(quest_objective, "photomance"):
+                     # Photomancy quests (WC, KM, LM)
+-                    await self.take_photomancy_photo(self.client, quest_objective)
++                    await self.client.send_key(key=Keycode.Z, seconds=0.1)
++                    await self.client.send_key(key=Keycode.Z, seconds=0.1)
++
++                if await is_visible_by_path(self.client, missing_area_path):
++                    # Handles when an area hasn't been downloaded yet
++                    while not await is_visible_by_path(self.client, missing_area_retry_path):
++                        await asyncio.sleep(0.1)
++                    await click_window_by_path(self.client, missing_area_retry_path, True)
+ 
+             else:
+-                if await self._maybe_refresh_stalled_dungeon_quest(self.client):
+-                    return
+                 # Double check - sometimes wiz lies about quest position - a simple sleep and re-grabbing of the quest xyz seems to solve the issue
+                 await asyncio.sleep(3.0)
+                 quest_xyz = await self.client.quest_position.position()
+@@ -8941,13 +8472,47 @@
+ 
+                 if distance < 1:
+                     await self.auto_collect_rewrite(self.client)
+-        else:
+-            self._note_dungeon_recovery_wait(self.client)
+ 
+     async def auto_quest(self, ignore_pet_level_up: bool, play_dance_game: bool):
+         while self.client.questing_status:
+-            await asyncio.sleep(.3)
++            await asyncio.sleep(1)
++            if not self.client.questing_status:
++                return
+             await self.auto_quest_solo(ignore_pet_level_up=ignore_pet_level_up, play_dance_game=play_dance_game)
++
++    async def gather_clients_from_potion_buy(
++        self, p: Client, original_zone: str
++    ) -> bool:
++        recalled = await recall_to_teleport_mark(
++            p, expected_zone=original_zone, attempts=3
++        )
++        if not recalled:
++            logger.error(
++                f'Client {p.title} - Could not return to the pre-potion '
++                'location; auto questing will continue recovery from the Commons.'
++            )
++        return recalled
++
++
++    async def handle_repeated_normal_quest_failures(self, last_leader_pid, last_leader_zone: str, iterations_since_last_quest_change: int):
++        # In its current form, this attempts to correct for situations where you are standing too close to an NPC or sigil, and need to move away then return to get the popup to talk / enter
++        # if after a certain number of loops we've failed to move on from our quest, something is wrong, and we try to correct for this in case this is the cause
++
++        # this could be expanded to matching entity name to mob name for situations like the Labyrinth where the game tells you to defeat an enemy but gives you an inaccurate location
++
++        # logger.info('ITERATIONS: ' + str(iterations_since_last_quest_change))
++        if last_leader_pid == self.current_leader_client.process_id and last_leader_zone == await self.current_leader_client.zone_name():
++            # more serious than 5 - the issue may be that the XYZ is just incorrect
++            # we should scan for entities, teleport to the one that is closest to the given XYZ
++            # if that fails, try the next one
++            # if iterations_since_last_quest_change == ?:
++
++            # first check - most likely scenario (and easiest to solve) is that we just need to move away and back towards the NPC or sigil
++            if iterations_since_last_quest_change >= 5:
++                location = await self.current_leader_client.body.position()
++                await gather_owned(*[p.teleport(XYZ(location.x + 500, location.y, location.z - 1500)) for p in self.clients])
++                await asyncio.sleep(2.0)
++
+ 
+ 
+ 

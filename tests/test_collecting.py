@@ -55,6 +55,34 @@ class CollectWorkflowTests(unittest.IsolatedAsyncioTestCase):
     def pickup(self, *args):
         self.count += 1
 
+    async def test_stolen_food_screenshot_collects_food_stores_and_confirms_progress(self):
+        for missing_label in (False, True):
+            with self.subTest(missing_label=missing_label):
+                self.count = 0
+                self.position = XYZ(-5004.500, 4956.112, 25.736)
+                self.target_title = '食品店'
+                self.quester.read_quest_txt.side_effect = lambda _: f'寻找 被偷走的食物 地点：盐土沼泽 ({self.count} of 5)'
+                self.client.zone_name.return_value = 'Azteca/AZ_Z04_SaltmeadowSwamp'
+                food = self.entity(template_id=549)
+                food.location.return_value = self.position
+                food.object_name = AsyncMock(return_value='AZ-FoodStores')
+                food.object_template.return_value.object_name.return_value = 'Basic Food Object'
+                food.object_template.return_value.display_name.return_value = (
+                    'Unknown_00000549' if missing_label else 'WizardGameObjects_00000549')
+                self.client.cache_handler.get_langcode_name.return_value = '食品店'
+                self.client.cache_handler.get_langcode_name.side_effect = (
+                    ValueError('label unavailable') if missing_label else None)
+                self.client.get_base_entity_list.return_value = [food]
+                self.client.send_key.reset_mock()
+                self.client.send_key.side_effect = self.pickup
+                self.engine = CollectSearch(self.quester, self.client)
+                self.assertTrue(await self.engine.run())
+                self.client.send_key.assert_awaited_once_with(Keycode.X, .1)
+                self.assertEqual(self.count, 1)
+                self.other.send_key.assert_not_awaited()
+                if missing_label:
+                    food.object_name.assert_awaited()
+
     async def test_english_entity_chinese_quest_collects_only_this_client(self):
         self.client.get_base_entity_list.return_value = [self.entity()]
         self.client.send_key.side_effect = self.pickup
@@ -94,7 +122,7 @@ class CollectWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.leyden_jar_scene()
         self.target_title = 'Sea Foam Crystal'
         self.client.send_key.side_effect = None
-        with patch('src.collecting.collision_tp', AsyncMock()):
+        with patch('src.collecting.navmap_tp', AsyncMock()):
             self.assertFalse(await self.engine.run())
         self.assertEqual(self.client.send_key.await_count, self.engine.PROMPT_ALIGN_MAX_STEPS)
         self.assertTrue(all(call.args[0] == Keycode.A for call in self.client.send_key.await_args_list))
@@ -133,7 +161,7 @@ class CollectWorkflowTests(unittest.IsolatedAsyncioTestCase):
     async def test_unrelated_popup_does_not_press_x(self):
         self.target_title = 'Dungeon Entrance'
         self.client.get_base_entity_list.return_value = [self.entity()]
-        with patch('src.collecting.collision_tp', AsyncMock()):
+        with patch('src.collecting.navmap_tp', AsyncMock()):
             self.assertFalse(await self.engine.run())
         self.assertEqual(self.client.send_key.await_count, self.engine.PROMPT_ALIGN_MAX_STEPS)
         self.assertTrue(all(call.args[0] == Keycode.A for call in self.client.send_key.await_args_list))
@@ -208,7 +236,7 @@ class CollectWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.client.get_base_entity_list.return_value = [self.entity()]
         async def switch(*_):
             self.client.quest_id.return_value = 99
-        with patch('src.collecting.collision_tp', side_effect=switch):
+        with patch('src.collecting.navmap_tp', side_effect=switch):
             self.assertFalse(await self.engine.run())
         self.client.send_key.assert_not_awaited()
 
@@ -222,7 +250,7 @@ class CollectWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.Future()
             finally:
                 stopped.set()
-        with patch('src.collecting.collision_tp', side_effect=moving):
+        with patch('src.collecting.navmap_tp', side_effect=moving):
             task = asyncio.create_task(self.engine.run())
             await started.wait()
             task.cancel()
@@ -431,7 +459,7 @@ class CollectWorkflowTests(unittest.IsolatedAsyncioTestCase):
         async def return_to_anchor(client, xyz):
             self.assertEqual(xyz.x, 10)
             self.position = xyz
-        with patch('src.collecting.collision_tp', AsyncMock(side_effect=return_to_anchor)) as move:
+        with patch('src.collecting.navmap_tp', AsyncMock(side_effect=return_to_anchor)) as move:
             self.assertFalse(await again.run())
         move.assert_awaited_once()
         again.wait_at_anchor.assert_awaited_once()
@@ -451,7 +479,7 @@ class CollectWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.client.get_base_entity_list.return_value = []
         again = CollectSearch(self.quester, self.client)
         again.wait_at_anchor = AsyncMock()
-        with patch('src.collecting.collision_tp', AsyncMock()):
+        with patch('src.collecting.navmap_tp', AsyncMock()):
             self.assertFalse(await again.run())
         self.quester.get_zone_chunks.assert_not_awaited()
         again.wait_at_anchor.assert_not_awaited()
@@ -512,7 +540,7 @@ class CollectWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(self.target_title, 'Sea Foam Crystal')
                 self.count += 1
         self.client.send_key.side_effect = keypress
-        with patch('src.collecting.collision_tp', AsyncMock()) as movement:
+        with patch('src.collecting.navmap_tp', AsyncMock()) as movement:
             self.assertTrue(await self.engine.run())
         movement.assert_awaited_once()
         self.assertEqual([call.args[0] for call in self.client.send_key.await_args_list],
@@ -590,7 +618,7 @@ class CollectWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.target_title = 'Dungeon Entrance'
         self.client.get_base_entity_list.return_value = [self.entity()]
         self.client.send_key.side_effect = asyncio.CancelledError()
-        with patch('src.collecting.collision_tp', AsyncMock()):
+        with patch('src.collecting.navmap_tp', AsyncMock()):
             with self.assertRaises(asyncio.CancelledError):
                 await self.engine.run()
         self.client.send_key.assert_awaited_once_with(Keycode.A, .1)
@@ -650,7 +678,7 @@ class CollectWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 self.count += 1
                 self.text = '寻找 魔法书 地点：Marketplace of Ideas (3 of 3)'
         self.client.send_key.side_effect = interact
-        with patch('src.collecting.collision_tp', AsyncMock()) as movement:
+        with patch('src.collecting.navmap_tp', AsyncMock()) as movement:
             self.assertTrue(await self.engine.run())
         self.client.teleport.assert_awaited_once_with(CollectSearch.SELENOPOLIS_BOOK_EXIT)
         movement.assert_awaited_once()

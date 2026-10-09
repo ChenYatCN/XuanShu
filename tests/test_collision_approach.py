@@ -125,6 +125,8 @@ class ApproachRuntimeTests(unittest.IsolatedAsyncioTestCase):
             goto=AsyncMock(side_effect=self.walk), teleport=AsyncMock(),
         )
         self.grid = Mock()
+        self.grid.to_hex.return_value = (0, 0)
+        self.grid.walk_z.return_value = 0
         self.grid.find_walk_path.return_value = [(0, 0, 0), (100, 0, 0), (200, 0, 0),
                                                  (300, 0, 0), (400, 0, 0)]
         self.grid.find_approach_paths.return_value = [
@@ -167,10 +169,16 @@ class ApproachRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.recovery = self.stack.enter_context(patch.object(tm, '_recover_near_target', AsyncMock(return_value=True)))
         self.navmap = self.stack.enter_context(patch.object(tm, 'navmap_tp', AsyncMock()))
 
-    async def test_walk_stops_in_range_without_exact_target_refinement(self):
+    async def test_415_walk_follows_old_waypoints_and_refines_reachable_target(self):
         self.assertTrue(await self.remaining())
-        self.assertEqual(self.pos.x, 400)
-        self.assertNotIn((500, 0), [call.args for call in self.client.goto.call_args_list])
+        self.assertEqual([call.args for call in self.client.goto.await_args_list],
+                         [(100, 0), (200, 0), (300, 0), (400, 0), (500, 0)])
+        self.assertEqual(self.pos.x, 500)
+
+    async def test_415_default_120_range_keeps_existing_landing(self):
+        self.pos = XYZ(400, 0, 0)
+        self.assertTrue(await self.remaining())
+        self.client.goto.assert_not_awaited()
 
     async def test_forced_walk_closes_gap_previously_counted_as_arrival(self):
         self.pos = XYZ(400, 0, 0)
@@ -393,7 +401,7 @@ class ApproachRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await tm.collision_tp(self.client)
         self.assertIsNone(self.client._collision_tp_approach)
         self.recovery.assert_not_awaited()
-        self.assertEqual(self.foot.await_args.kwargs['goal_radius'], 5)
+        self.assertEqual(self.foot.await_args.kwargs['goal_radius'], 120)
 
     async def test_missing_geometry_keeps_existing_navmap_fallback(self):
         self.patch_collision()

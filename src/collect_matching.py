@@ -75,6 +75,13 @@ class CollectNames:
                 self.by_id[code.casefold()] = aliases
             for name in aliases:
                 self.by_name[name].update(aliases)
+        # Monkey Men: the objective names Stolen Food, while the collectible
+        # AZ-FoodStores and its popup use Food Stores (verified game labels
+        # WizardGameObjects_00000553 / WizardGameObjects_00000549).
+        food = {normalize_name(name) for name in
+                ('Stolen Food', '被偷走的食物', 'Food Stores', '食品店')}
+        for name in food:
+            self.by_name[name].update(food)
 
     def aliases(self, name):
         key = normalize_name(name)

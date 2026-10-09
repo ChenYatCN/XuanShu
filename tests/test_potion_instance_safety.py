@@ -101,6 +101,101 @@ class PotionInstanceSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await utils.return_to_dungeon_after_potions(self.client, 'Dungeon/Room'))
         self.assertIsNone(self.client.potion_dungeon_returned)
 
+    def room_peer(self, zone='Dungeon/Room'):
+        peer = SimpleNamespace(title='p2', questing_status=True,
+            is_loading=AsyncMock(return_value=False), zone_name=AsyncMock(return_value=zone))
+        self.client.quest_party_quester = peer
+        self.client.quest_party_status_session = object()
+        self.client.potion_return_context['peer_areas'] = {id(peer): ('saved-area',)}
+        return peer
+
+    async def test_first_room_return_follows_quest_through_multiple_rooms(self):
+        self.room_peer()
+        async def arrive(_):
+            self.client.zone_name.return_value = 'Dungeon/Entrance'
+        self.client.mouse_handler.click_window.side_effect = arrive
+        async def advance(client, zone, *, reenter):
+            client.zone_name.return_value = ('Dungeon/Middle' if zone == 'Dungeon/Entrance'
+                                           else 'Dungeon/Room')
+        with patch.object(utils, '_potion_dungeon_room_tp', AsyncMock(side_effect=advance)) as tp, \
+             patch.object(utils, 'clients_share_live_area', AsyncMock(return_value=True)), \
+             patch.object(utils.time, 'monotonic', side_effect=range(300)):
+            self.assertTrue(await utils.return_to_dungeon_after_potions(self.client, 'Dungeon/Room'))
+        self.assertEqual([call.args[1] for call in tp.await_args_list],
+                         ['Dungeon/Entrance', 'Dungeon/Middle'])
+        self.assertEqual(self.client.potion_dungeon_returned[0], 'Dungeon/Room')
+
+    async def test_catches_up_to_peer_that_moved_to_next_room(self):
+        peer = self.room_peer('Dungeon/Next')
+        self.client.potion_return_context['dungeon_state'] = {'zone': 'Dungeon/Room'}
+        async def advance(client, zone, *, reenter):
+            client.zone_name.return_value = await peer.zone_name()
+            self.zone_id.return_value = 456
+        with patch.object(utils, '_potion_dungeon_room_tp', AsyncMock(side_effect=advance)) as tp, \
+             patch.object(utils, 'clients_share_live_area', AsyncMock(return_value=True)):
+            self.assertTrue(await utils.return_to_dungeon_after_potions(self.client, 'Dungeon/Room'))
+        tp.assert_awaited_once_with(self.client, 'Dungeon/Room', reenter=False)
+        self.assertEqual(self.client.quest_party_group_dungeon_zone, 'Dungeon/Next')
+        self.assertEqual(self.client.quest_dungeon_recovery['zone'], 'Dungeon/Next')
+        self.assertEqual(self.client.potion_dungeon_returned[0], 'Dungeon/Next')
+        self.assertEqual(self.client.potion_return_context['zone_id'], 456)
+
+    async def test_same_room_without_instance_proof_does_not_tp_or_resume(self):
+        self.room_peer()
+        with patch.object(utils, '_potion_dungeon_room_tp', AsyncMock()) as tp, \
+             patch.object(utils, 'clients_share_live_area', AsyncMock(return_value=False)), \
+             patch.object(utils.time, 'monotonic', side_effect=range(0, 600, 3)):
+            self.assertFalse(await utils.return_to_dungeon_after_potions(self.client, 'Dungeon/Room'))
+        tp.assert_not_awaited()
+
+    async def test_wrong_quest_in_first_room_does_not_tp(self):
+        self.room_peer()
+        async def arrive(_):
+            self.client.zone_name.return_value = 'Dungeon/Entrance'
+        self.client.mouse_handler.click_window.side_effect = arrive
+        self.snapshot.return_value = (99, 8, 'Other quest')
+        with patch.object(utils, '_potion_dungeon_room_tp', AsyncMock()) as tp:
+            self.assertFalse(await utils.return_to_dungeon_after_potions(self.client, 'Dungeon/Room'))
+        tp.assert_not_awaited()
+
+    async def test_unverified_peer_is_not_followed(self):
+        self.room_peer('Dungeon/Next')
+        self.client.potion_return_context['peer_areas'] = {}
+        with patch.object(utils, '_potion_dungeon_room_tp', AsyncMock()) as tp:
+            self.assertTrue(await utils.return_to_dungeon_after_potions(self.client, 'Dungeon/Room'))
+        tp.assert_not_awaited()
+
+    async def test_stuck_room_retries_with_walk_and_times_out(self):
+        self.room_peer('Dungeon/Next')
+        with patch.object(utils, '_potion_dungeon_room_tp', AsyncMock()) as tp, \
+             patch.object(utils.time, 'monotonic', side_effect=range(0, 600, 3)):
+            self.assertFalse(await utils.return_to_dungeon_after_potions(self.client, 'Dungeon/Room'))
+        self.assertGreater(tp.await_count, 1)
+        self.assertFalse(tp.await_args_list[0].kwargs['reenter'])
+        self.assertTrue(tp.await_args_list[1].kwargs['reenter'])
+
+    async def test_user_stop_during_room_catchup_prevents_resume(self):
+        self.room_peer('Dungeon/Next')
+        async def stop(client, zone, *, reenter):
+            client.questing_status = False
+        with patch.object(utils, '_potion_dungeon_room_tp', AsyncMock(side_effect=stop)) as tp:
+            self.assertFalse(await utils.return_to_dungeon_after_potions(self.client, 'Dungeon/Room'))
+        tp.assert_awaited_once()
+
+    async def test_room_tp_cancels_movement_when_client_stops(self):
+        import asyncio
+        cancelled = []
+        async def moving(client, *, reenter):
+            client.questing_status = False
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.append(True)
+        with patch('src.teleport_math.navmap_tp', AsyncMock(side_effect=moving)) as tp:
+            await utils._potion_dungeon_room_tp(self.client, 'Shop', reenter=False)
+        tp.assert_awaited_once_with(self.client, reenter=False)
+        self.assertEqual(cancelled, [True])
+
 
 class PotionRoutingSafetyTests(unittest.IsolatedAsyncioTestCase):
     async def test_bumbles_refill_routes_to_dungeon_and_releases_lock(self):

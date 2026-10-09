@@ -84,6 +84,50 @@ class QuestTriggerReentryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.observe(5, step=1), [False] * 5)
         self.recover.assert_not_awaited()
 
+    async def test_normal_movement_invokes_quester_reentry_after_thirty_seconds(self):
+        async def tick(_):
+            await REAL_SLEEP(0)
+        with patch('src.questing.asyncio.sleep', new=tick):
+            for self.now in (0, 15, 30, 31):
+                await self.quester.move_until_quest_interaction(self.client, self.target)
+        self.recover.assert_awaited_once()
+        self.assertEqual(self.navmap.await_count, 2)
+        self.assertTrue(self.quester._trigger_reentry[id(self.client)]['walking'])
+        self.assertIsNone(self.client.quest_recovery_owner)
+
+    async def test_shared_target_movement_recovers_quester_only(self):
+        hitter = SimpleNamespace(title='p2', quest_party_quester=self.client)
+        reentry = AsyncMock(return_value=True)
+        async def tick(_):
+            await REAL_SLEEP(0)
+        with patch.object(self.quester, '_maybe_reenter_quest_trigger', new=reentry), \
+                patch('src.questing.asyncio.sleep', new=tick):
+            await self.quester.move_until_quest_interaction(
+                self.client, self.target, leader_client=self.client)
+            await self.quester.move_until_quest_interaction(
+                hitter, self.target, leader_client=self.client)
+        reentry.assert_awaited_once_with(self.client, self.target)
+        self.navmap.assert_awaited_once_with(hitter, self.target, leader_client=self.client)
+
+    async def test_ready_interaction_keeps_priority_over_reentry(self):
+        self.quester.quest_interaction_ready.return_value = True
+        reentry = AsyncMock(return_value=True)
+        with patch.object(self.quester, '_maybe_reenter_quest_trigger', new=reentry):
+            await self.quester.move_until_quest_interaction(self.client, self.target)
+        reentry.assert_not_awaited()
+        self.navmap.assert_not_awaited()
+
+    async def test_nightmare_keeps_its_special_recovery(self):
+        self.client.zone_name.return_value = self.quester.NIGHTMARE_ZONE
+        reentry = AsyncMock(return_value=True)
+        async def tick(_):
+            await REAL_SLEEP(0)
+        with patch.object(self.quester, '_maybe_reenter_quest_trigger', new=reentry), \
+                patch('src.questing.asyncio.sleep', new=tick):
+            await self.quester.move_until_quest_interaction(self.client, self.target)
+        reentry.assert_not_awaited()
+        self.navmap.assert_awaited_once()
+
     async def test_second_approach_and_two_attempt_limit_even_when_far(self):
         await self.observe()
         self.position = XYZ(2000, 2000, 0)  # A retreat must not reactivate ordinary TP.

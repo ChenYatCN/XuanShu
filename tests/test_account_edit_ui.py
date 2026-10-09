@@ -118,12 +118,12 @@ class AccountEditUITests(unittest.TestCase):
         command = self.ctx.send_queue.put.call_args.args[0]
         self.assertEqual(command.data, ('Old', 'Old', False, False))
 
-    def test_steam_hides_credentials_and_cancel_does_not_save(self):
+    def test_steam_keeps_credentials_editable_and_cancel_does_not_save(self):
         def interact():
             dialog = self.app.activeModalWidget()
             buttons = {button.text(): button for button in dialog.findChildren(QPushButton)}
             dialog.findChild(QCheckBox).setChecked(True)
-            self.assertFalse(buttons['update_account_credentials'].isVisible())
+            self.assertTrue(buttons['update_account_credentials'].isVisible())
             buttons['cancel'].click()
 
         QTimer.singleShot(0, interact)

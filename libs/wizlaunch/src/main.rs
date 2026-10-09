@@ -152,10 +152,8 @@ fn cmd_launch(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 launcher::enable_window(handle, false);
                 std::thread::sleep(std::time::Duration::from_secs(2));
 
-                if !steam {
-                    let (username, password) = credential_store::read_credential(nickname)?;
-                    login::login_to_instance(handle, &username, &password)?;
-                }
+                let (username, password) = credential_store::read_credential(nickname)?;
+                login::login_to_instance(handle, &username, &password)?;
 
                 launcher::enable_window(handle, true);
                 println!("  Launched '{nickname}' (handle {handle}).");

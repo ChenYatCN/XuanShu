@@ -1,0 +1,430 @@
+        async def _follow_quester_session(
+            hitter: Client, quester: Client, is_probe_hitter: bool
+        ):
+            """Follow the quester without ever reading the hitter's quest target."""
+            logger.info(f"打手 {hitter.title} 开始跟随做任务客户端 {quester.title}。")
+            loop = asyncio.get_running_loop()
+            last_quester_zone = getattr(quester, "quest_party_observed_zone", None)
+            quester_zone_stable_since = None
+            last_objective = None
+            objective_stable_since = None
+            blocked_instance_zone = None
+            blocked_instance_retry_at = 0.0
+            failure_count = 0
+            next_retry_at = 0.0
+            quest_reader = Quester(quester, [quester], None)
+
+            async def complete_zone_probe(solo_zone: bool):
+                if not is_probe_hitter:
+                    return
+                try:
+                    if solo_zone:
+                        quester.in_solo_zone = True
+                        if gear_switching_in_solo_zones and not getattr(
+                            quester, "quest_party_solo_gear_active", False
+                        ):
+                            update_party_status(hitter, quester, "单人区域，正在换装")
+                            logger.info(
+                                f"已确认 {quester.title} 进入单人区域，切换到第二套装备。"
+                            )
+                            if await change_party_equipment(quester, 1):
+                                quester.quest_party_solo_gear_active = True
+                    else:
+                        quester.in_solo_zone = False
+                        if getattr(quester, "quest_party_solo_gear_active", False):
+                            update_party_status(
+                                hitter, quester, "已离开单人区域，恢复装备"
+                            )
+                            logger.info(
+                                f"已确认 {quester.title} 离开单人区域，恢复第一套装备。"
+                            )
+                            if await change_party_equipment(quester, 0):
+                                quester.quest_party_solo_gear_active = False
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        f"{quester.title} 处理区域换装失败，将继续任务：{exc}"
+                    )
+                finally:
+                    # Probe completion must always release the movement gate,
+                    # even if the equipment UI times out or raises an error.
+                    quester.quest_party_quest_worker_zone = last_quester_zone
+                    quester.quest_party_probe_pending = False
+
+                if solo_zone:
+                    # The worker may still be awaiting an operation that began
+                    # before the zone transition.  Restart only that quester;
+                    # the hitter follower and the rest of the party stay alive.
+                    restart_quest_worker_after_probe(quester)
+
+            async def hitter_is_in_quester_area() -> bool:
+                """Confirm both clients are in the same live area/instance."""
+                try:
+                    quester_gid = await quester.client_object.global_id_full()
+                    entities = await SprintyClient(hitter).get_base_entity_list()
+                    for entity in entities:
+                        if await entity.global_id_full() == quester_gid:
+                            return True
+                except Exception as exc:
+                    logger.debug(
+                        f"暂时无法确认 {hitter.title} 与 {quester.title} "
+                        f"是否在同一区域，将保留好友传送检测：{exc}"
+                    )
+                return False
+
+            async def friend_ui_is_open(client: Client) -> bool:
+                try:
+                    for name in ("NewFriendsListWindow", "wndCharacter"):
+                        windows = await client.root_window.get_windows_with_name(name)
+                        for window in windows:
+                            if await window.is_visible():
+                                return True
+                except Exception:
+                    return False
+                return False
+
+            async def close_stale_friend_ui(client: Client):
+                """Close friend-list remnants without opening a closed list."""
+                for _ in range(3):
+                    if not await friend_ui_is_open(client):
+                        return
+                    await client.send_key(Keycode.ESC, 0.1)
+                    await asyncio.sleep(0.2)
+
+            async def teleport_to_quester_from_friend_list(
+                client: Client, wizard_name, friend_icon
+            ):
+                # Some versions expose only the first name in friend-list
+                # markup, while the character screen exposes the full name.
+                aliases = []
+                if wizard_name:
+                    aliases.append(wizard_name)
+                    first_name = wizard_name.split(maxsplit=1)[0]
+                    if first_name and first_name != wizard_name:
+                        aliases.append(first_name)
+
+                last_error = None
+                for alias in aliases:
+                    try:
+                        await teleport_to_friend_from_list(client, name=alias)
+                        if alias != wizard_name:
+                            logger.debug(
+                                f"打手 {client.title} 使用好友列表首名 {alias} "
+                                f"匹配任务客户端 {wizard_name}。"
+                            )
+                        return
+                    except ValueError as exc:
+                        last_error = exc
+
+                if friend_icon is not None:
+                    icon_list, icon_index = friend_icon
+                    try:
+                        await teleport_to_friend_from_list(
+                            client,
+                            icon_list=icon_list,
+                            icon_index=icon_index,
+                        )
+                        logger.debug(
+                            f"打手 {client.title} 名称匹配失败，已使用任务端好友图标 "
+                            f"{icon_list}:{icon_index} 作为保底。"
+                        )
+                        return
+                    except ValueError as exc:
+                        last_error = exc
+
+                if last_error is not None:
+                    raise last_error
+                raise ValueError("任务端没有可用的好友名称或好友图标")
+
+            update_party_status(hitter, quester, "准备跟随")
+            try:
+                while (
+                    members is not None or questing_status
+                ) and hitter.questing_status:
+                    await asyncio.sleep(0.5)
+                    if hitter not in walker.clients or quester not in walker.clients:
+                        return
+                    if not await hitter.is_loading() and await close_automation_popup(
+                        hitter
+                    ):
+                        update_party_status(hitter, quester, "正在关闭评价窗口")
+                        continue
+                    if (
+                        not await hitter.is_loading()
+                        and await Quester(
+                            hitter, [hitter], None
+                        ).handle_pending_dungeon_confirmation()
+                    ):
+                        update_party_status(hitter, quester, "正在确认地牢切换")
+                        failure_count = 0
+                        next_retry_at = 0.0
+                        continue
+                    if await quester.is_loading():
+                        quester_zone_stable_since = None
+                        objective_stable_since = None
+                        update_party_status(hitter, quester, "等待切换世界")
+                        continue
+
+                    quester_zone = await quester.zone_name()
+                    now = loop.time()
+                    if quester_zone != last_quester_zone:
+                        if last_quester_zone is not None:
+                            if is_probe_hitter:
+                                quester.quest_party_probe_pending = True
+                            logger.debug(
+                                f"做任务客户端 {quester.title} 已切换区域："
+                                f"{last_quester_zone} -> {quester_zone}；"
+                                "暂停下一次任务传送并等待打手探测。"
+                            )
+                        last_quester_zone = quester_zone
+                        quester.quest_party_observed_zone = quester_zone
+                        quester_zone_stable_since = now
+                        last_objective = None
+                        objective_stable_since = None
+                        blocked_instance_zone = None
+                        blocked_instance_retry_at = 0.0
+                        failure_count = 0
+                        next_retry_at = 0.0
+                    elif quester_zone_stable_since is None:
+                        quester_zone_stable_since = now
+
+                    if (
+                        await hitter.is_loading()
+                        or await hitter.in_battle()
+                        or hitter.entity_detect_combat_status
+                        or getattr(hitter, "quest_party_battle_rescue_active", False)
+                    ):
+                        update_party_status(hitter, quester, "等待战斗或加载")
+                        continue
+
+                    if use_potions and await is_free(hitter):
+                        await auto_potions(hitter, buy=False)
+                        if (
+                            buy_potions
+                            and await hitter.stats.potion_charge() < 1.0
+                            and await hitter.stats.reference_level() >= 6
+                        ):
+                            update_party_status(hitter, quester, "正在补充药水")
+                            logger.info(
+                                f"打手 {hitter.title} 药水不足，补充后将自动重新跟随 {quester.title}。"
+                            )
+                            await refill_potions(
+                                hitter,
+                                mark=False,
+                                recall=False,
+                                original_zone=await hitter.zone_name(),
+                            )
+                            failure_count = 0
+                            next_retry_at = 0.0
+                            continue
+
+                    hitter_zone = await hitter.zone_name()
+                    probe_pending = bool(
+                        is_probe_hitter
+                        and getattr(quester, "quest_party_probe_pending", False)
+                    )
+                    if not is_probe_hitter and getattr(
+                        quester, "quest_party_probe_pending", False
+                    ):
+                        update_party_status(hitter, quester, "等待单人区域探测")
+                        continue
+
+                    same_live_area = False
+                    if hitter_zone == quester_zone:
+                        # The normal path already treats an identical zone as
+                        # local.  During a solo-zone probe, additionally verify
+                        # that the quester is present in the hitter's entity
+                        # list so equal zone paths from separate instances are
+                        # not mistaken for the same area.
+                        same_live_area = (
+                            not probe_pending or await hitter_is_in_quester_area()
+                        )
+
+                    if same_live_area:
+                        if probe_pending:
+                            await complete_zone_probe(False)
+                        blocked_instance_zone = None
+                        blocked_instance_retry_at = 0.0
+                        failure_count = 0
+                        next_retry_at = 0.0
+                        if not await is_free(hitter):
+                            update_party_status(hitter, quester, "等待战斗")
+                            continue
+                        hitter_pos = await hitter.body.position()
+                        quester_pos = await quester.body.position()
+                        if calc_Distance(hitter_pos, quester_pos) > 900:
+                            update_party_status(hitter, quester, "正在跟随")
+                            try:
+                                await hitter.teleport(quester_pos)
+                            except ValueError:
+                                await asyncio.sleep(0.5)
+                        else:
+                            update_party_status(hitter, quester, "已归队")
+                        continue
+
+                    if blocked_instance_zone == quester_zone:
+                        if now < blocked_instance_retry_at:
+                            update_party_status(
+                                hitter, quester, "单人区域，任务端独立执行"
+                            )
+                            continue
+                        # Re-probe infrequently so a temporary busy/teleport-off
+                        # response cannot strand the hitter forever.
+                        blocked_instance_zone = None
+
+                    if await is_visible_by_path(quester, spiral_door_teleport_path):
+                        update_party_status(hitter, quester, "等待世界选择完成")
+                        continue
+
+                    try:
+                        objective = await quest_reader.get_truncated_quest_objectives(
+                            quester
+                        )
+                    except Exception:
+                        objective = ""
+                    if objective != last_objective:
+                        last_objective = objective
+                        objective_stable_since = now
+                    elif objective_stable_since is None:
+                        objective_stable_since = now
+
+                    objective_ready = bool(objective) and (
+                        objective_stable_since is not None
+                        and now - objective_stable_since >= 0.75
+                    )
+                    fallback_ready = (
+                        quester_zone_stable_since is not None
+                        and now - quester_zone_stable_since >= 5.0
+                    )
+                    if (
+                        quester_zone_stable_since is None
+                        or now - quester_zone_stable_since < 1.5
+                        or not (objective_ready or fallback_ready)
+                        or not await is_free(quester)
+                    ):
+                        update_party_status(
+                            hitter,
+                            quester,
+                            (
+                                "等待打手传送检测"
+                                if probe_pending
+                                else "等待区域和任务就绪"
+                            ),
+                        )
+                        continue
+
+                    friend_icon = resolve_quester_friend_icon(
+                        quester, quest_friend_icons
+                    )
+                    if (
+                        not quester.wizard_name
+                        and friend_icon is None
+                        and await is_free(quester)
+                    ):
+                        await prepare_quester_name(quester)
+                    if (
+                        not quester.wizard_name and friend_icon is None
+                    ) or not await is_free(hitter):
+                        update_party_status(hitter, quester, "等待好友传送可用")
+                        continue
+
+                    if now < next_retry_at:
+                        wait_seconds = max(1, int(next_retry_at - now + 0.99))
+                        update_party_status(
+                            hitter, quester, f"好友传送重试等待 {wait_seconds}s"
+                        )
+                        continue
+
+                    logger.debug(
+                        f"打手 {hitter.title} 尝试好友传送跟随/探测 {quester.title}。"
+                    )
+                    update_party_status(hitter, quester, "正在好友传送")
+                    try:
+                        hitter_zone_before_probe = hitter_zone
+                        await close_stale_friend_ui(hitter)
+                        async with hitter.mouse_handler:
+                            await asyncio.wait_for(
+                                teleport_to_quester_from_friend_list(
+                                    hitter, quester.wizard_name, friend_icon
+                                ),
+                                timeout=15.0,
+                            )
+                        same_zone_probe = bool(
+                            probe_pending and hitter_zone_before_probe == quester_zone
+                        )
+                        # Original leader mode waited long enough for the game's
+                        # "friend busy / closed instance" response to appear even
+                        # when both clients report the same zone path.
+                        await asyncio.sleep(6.0 if same_zone_probe else 1.0)
+                        if await is_friend_teleport_error(hitter):
+                            async with hitter.mouse_handler:
+                                await click_window_by_path(
+                                    hitter, friend_is_busy_and_dungeon_reset_path
+                                )
+                            raise FriendBusyOrInstanceClosed()
+
+                        if hitter_zone_before_probe != quester_zone:
+                            arrival_deadline = loop.time() + 15.0
+                            while loop.time() < arrival_deadline:
+                                if await is_friend_teleport_error(hitter):
+                                    async with hitter.mouse_handler:
+                                        await click_window_by_path(
+                                            hitter,
+                                            friend_is_busy_and_dungeon_reset_path,
+                                        )
+                                    raise FriendBusyOrInstanceClosed()
+                                if not await hitter.is_loading() and (
+                                    await hitter.zone_name() == quester_zone
+                                ):
+                                    break
+                                await asyncio.sleep(0.25)
+                            else:
+                                raise RuntimeError("好友传送未到达任务客户端所在区域")
+
+                        if probe_pending:
+                            await complete_zone_probe(False)
+                        failure_count = 0
+                        next_retry_at = 0.0
+                    except asyncio.CancelledError:
+                        raise
+                    except FriendBusyOrInstanceClosed as exc:
+                        await close_stale_friend_ui(hitter)
+                        blocked_instance_zone = quester_zone
+                        blocked_instance_retry_at = loop.time() + 60.0
+                        await complete_zone_probe(True)
+                        update_party_status(hitter, quester, "单人区域，任务端独立执行")
+                        logger.debug(
+                            f"打手 {hitter.title} 无法进入 {quester.title} 当前区域，"
+                            f"将在任务客户端离开该区域后重试：{exc}"
+                        )
+                    except Exception as exc:
+                        if await is_friend_teleport_error(hitter):
+                            async with hitter.mouse_handler:
+                                await click_window_by_path(
+                                    hitter, friend_is_busy_and_dungeon_reset_path
+                                )
+                            blocked_instance_zone = quester_zone
+                            blocked_instance_retry_at = loop.time() + 60.0
+                            await complete_zone_probe(True)
+                            update_party_status(
+                                hitter, quester, "单人区域，任务端独立执行"
+                            )
+                            logger.debug(
+                                f"打手 {hitter.title} 检测到无法进入的实例，"
+                                f"等待 {quester.title} 离开当前区域。"
+                            )
+                            continue
+                        await close_stale_friend_ui(hitter)
+                        failure_count += 1
+                        delay = friend_follow_retry_delay(failure_count)
+                        next_retry_at = loop.time() + delay
+                        update_party_status(
+                            hitter, quester, f"好友传送重试等待 {int(delay)}s"
+                        )
+                        logger.debug(
+                            f"打手 {hitter.title} 跟随 {quester.title} 暂未成功，"
+                            f"{delay:.0f} 秒后重试：{exc}"
+                        )
+            finally:
+                remove_party_status(hitter)

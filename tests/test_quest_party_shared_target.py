@@ -1,3 +1,4 @@
+from src.automation_ownership import automation_owner
 import ast
 import asyncio
 from contextlib import ExitStack
@@ -9,7 +10,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from wizwalker import XYZ
 from src.questing import Quester, claim_quest_recovery, release_quest_recovery
 from src.utils import FriendBusyOrInstanceClosed
-from src.paths import advance_dialog_path
+from src.paths import advance_dialog_path, spiral_door_exit_path
 
 
 class ClientState(SimpleNamespace):
@@ -18,6 +19,41 @@ class ClientState(SimpleNamespace):
 
 
 class SharedQuestTargetTests(unittest.IsolatedAsyncioTestCase):
+    async def test_leader_completing_first_does_not_cancel_slow_hitter(self):
+        hitter_started = asyncio.Event()
+        release_hitter = asyncio.Event()
+        finished = []
+        async def move(member, *args, **kwargs):
+            if member is self.hitter:
+                hitter_started.set()
+                await release_hitter.wait()
+            else:
+                self.quester_client.zone_name.return_value = 'Dungeon/NextRoom'
+            finished.append(member.title)
+        self.quester.teleport_to_quest_target.side_effect = move
+        task = asyncio.create_task(self.quester.teleport_party_to_quest_target(self.target))
+        await hitter_started.wait()
+        self.assertFalse(task.done())
+        self.assertEqual(finished, ['p1'])
+        self.assertTrue(self.hitter.quest_party_target_sync_active)
+        release_hitter.set()
+        self.assertTrue(await task)
+        self.assertEqual(finished, ['p1', 'p2'])
+
+    async def test_early_zone_and_goal_change_does_not_cancel_remaining_hitter(self):
+        self.quester_client.quest_id = AsyncMock(return_value=99)
+        self.quester_client.goal_id = AsyncMock(return_value=7)
+        async def move(member, *args, **kwargs):
+            if member is self.quester_client:
+                self.quester_client.zone_name.return_value = 'Dungeon/NextRoom'
+                self.quester_client.goal_id.return_value = 8
+            else:
+                await asyncio.sleep(.3)
+                self.hitter.zone_name.return_value = 'Dungeon/NextRoom'
+        self.quester.teleport_to_quest_target.side_effect = move
+        self.assertTrue(await self.quester.teleport_party_to_quest_target(self.target))
+        self.assertEqual(self.hitter.zone_name.return_value, 'Dungeon/NextRoom')
+
     def setUp(self):
         self.target = XYZ(1000, 2000, 3000)
         self.quester_client = self.client('p1')
@@ -36,6 +72,7 @@ class SharedQuestTargetTests(unittest.IsolatedAsyncioTestCase):
             quest_recovery_owner=None, in_solo_zone=False, potion_dungeon_returned=None,
             quest_party_target_sync_active=False,
             is_loading=AsyncMock(return_value=False), in_battle=AsyncMock(return_value=False),
+            quest_id=AsyncMock(return_value=42), goal_id=AsyncMock(return_value=7),
             zone_name=AsyncMock(return_value='Dungeon/Room'),
             quest_position=SimpleNamespace(position=AsyncMock(return_value=self.target)),
             body=SimpleNamespace(position=AsyncMock(return_value=XYZ(0, 0, 0))))
@@ -71,12 +108,12 @@ class SharedQuestTargetTests(unittest.IsolatedAsyncioTestCase):
         self.quester.teleport_to_quest_target.side_effect = move
         self.assertTrue(await self.quester.teleport_party_to_quest_target(self.target))
 
-    async def test_unproved_hitter_instance_does_not_block_quester_or_move_hitter(self):
+    async def test_unproved_hitter_instance_pauses_the_whole_party(self):
         self.proof.return_value = False
-        self.assertTrue(await self.quester.teleport_party_to_quest_target(self.target))
-        self.quester.teleport_to_quest_target.assert_awaited_once_with(self.quester_client, self.target, leader_client=self.quester_client)
+        self.assertFalse(await self.quester.teleport_party_to_quest_target(self.target))
+        self.quester.teleport_to_quest_target.assert_not_awaited()
 
-    async def test_busy_or_departed_hitter_is_skipped_without_pausing_quester(self):
+    async def test_busy_or_departed_hitter_pauses_the_whole_party(self):
         for attr, value in (('refilling_potions', True), ('questing_status', False),
                             ('quest_recovery_owner', 'potion_refill'),
                             ('quest_party_target_sync_active', True),
@@ -85,73 +122,110 @@ class SharedQuestTargetTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(attr=attr):
                 previous = getattr(self.hitter, attr, False)
                 setattr(self.hitter, attr, value)
-                self.quester.teleport_to_quest_target.reset_mock()
-                self.assertTrue(await self.quester.teleport_party_to_quest_target(self.target))
-                self.quester.teleport_to_quest_target.assert_awaited_once_with(self.quester_client, self.target, leader_client=self.quester_client)
+                self.assertFalse(await self.quester.teleport_party_to_quest_target(self.target))
+                self.quester.teleport_to_quest_target.assert_not_awaited()
                 setattr(self.hitter, attr, previous)
         self.hitter.zone_name.return_value = 'Other'
-        self.quester.teleport_to_quest_target.reset_mock()
-        self.assertTrue(await self.quester.teleport_party_to_quest_target(self.target))
-        self.quester.teleport_to_quest_target.assert_awaited_once_with(self.quester_client, self.target, leader_client=self.quester_client)
+        self.assertFalse(await self.quester.teleport_party_to_quest_target(self.target))
+        self.quester.teleport_to_quest_target.assert_not_awaited()
 
     async def test_source_post_combat_cleanup_does_not_start_group_movement(self):
         self.quester_client.post_combat_cleanup_active = True
         self.assertFalse(await self.quester.teleport_party_to_quest_target(self.target))
         self.quester.teleport_to_quest_target.assert_not_awaited()
 
-    async def test_transition_during_optional_hitter_proof_skips_only_hitter(self):
+    async def test_transition_during_preflight_prevents_all_old_input(self):
         async def proof(*args):
             self.quester_client.is_loading.return_value = True
             return True
         self.proof.side_effect = proof
-        self.assertTrue(await self.quester.teleport_party_to_quest_target(self.target))
-        self.quester.teleport_to_quest_target.assert_awaited_once_with(self.quester_client, self.target, leader_client=self.quester_client)
+        self.assertFalse(await self.quester.teleport_party_to_quest_target(self.target))
+        self.quester.teleport_to_quest_target.assert_not_awaited()
         self.assertIsNone(self.quester_client.quest_recovery_owner)
         self.assertIsNone(self.hitter.quest_recovery_owner)
 
-    async def test_normal_or_solo_zone_keeps_existing_quester_only_move(self):
-        for attr, value in (('in_solo_zone', True), ('quest_party_group_dungeon_zone', None)):
-            with self.subTest(attr=attr):
-                previous = getattr(self.quester_client, attr)
-                setattr(self.quester_client, attr, value)
-                self.assertTrue(await self.quester.teleport_party_to_quest_target(self.target))
-                self.quester.teleport_to_quest_target.assert_awaited_once_with(self.quester_client, self.target)
-                self.quester.teleport_to_quest_target.reset_mock()
-                setattr(self.quester_client, attr, previous)
+    async def test_confirmed_solo_zone_keeps_existing_quester_only_move(self):
+        self.quester_client.quest_party_group_dungeon_zone = None
+        self.quester_client.in_solo_zone = True
+        self.quester_client.quest_party_quest_worker_zone = 'Dungeon/Room'
+        self.quester_client.quest_party_probe_pending = False
+        self.assertTrue(await self.quester.teleport_party_to_quest_target(self.target))
+        self.quester.teleport_to_quest_target.assert_awaited_once_with(self.quester_client, self.target)
         self.proof.assert_not_awaited()
 
-    async def test_recovery_started_after_leader_move_during_optional_proof_skips_hitter(self):
+    async def test_normal_zone_moves_only_quester_and_leaves_independent_follow(self):
+        self.quester_client.quest_party_group_dungeon_zone = None
+        self.assertTrue(await self.quester.teleport_party_to_quest_target(self.target))
+        self.quester.teleport_to_quest_target.assert_awaited_once_with(self.quester_client, self.target)
+        self.proof.assert_not_awaited()
+        self.hitter.quest_position.position.assert_not_awaited()
+
+    async def test_ordinary_hitter_loading_refilling_stopped_or_behind_never_holds_quester(self):
+        self.quester_client.quest_party_group_dungeon_zone = None
+        for field, value in (('refilling_potions', True), ('questing_status', False),
+                             ('quest_recovery_owner', 'potion_refill')):
+            with self.subTest(field=field):
+                previous = getattr(self.hitter, field)
+                setattr(self.hitter, field, value)
+                self.assertTrue(await self.quester.teleport_party_to_quest_target(self.target))
+                setattr(self.hitter, field, previous)
+        self.hitter.is_loading.return_value = True
+        self.hitter.zone_name.return_value = 'Previous/Area'
+        self.assertTrue(await self.quester.teleport_party_to_quest_target(self.target))
+        self.assertEqual(self.quester.teleport_to_quest_target.await_count, 4)
+        self.proof.assert_not_awaited()
+
+    async def test_stale_solo_flag_cannot_turn_ordinary_travel_into_group_barrier(self):
+        self.quester_client.quest_party_group_dungeon_zone = None
+        self.quester_client.in_solo_zone = True
+        self.quester_client.quest_party_quest_worker_zone = 'Previous/Solo'
+        self.hitter.zone_name.return_value = 'Previous/Area'
+        self.assertTrue(await self.quester.teleport_party_to_quest_target(self.target))
+        self.quester.teleport_to_quest_target.assert_awaited_once_with(self.quester_client, self.target)
+
+    async def test_split_shared_room_never_falls_back_to_solo_movement(self):
+        self.quester_client.zone_name.return_value = 'Dungeon/NextRoom'
+        self.quester_client.in_solo_zone = True
+        self.assertFalse(await self.quester.teleport_party_to_quest_target(self.target))
+        self.quester.teleport_to_quest_target.assert_not_awaited()
+
+    async def test_whole_party_proof_overrides_stale_solo_flag(self):
+        self.quester_client.in_solo_zone = True
+        self.assertTrue(await self.quester.teleport_party_to_quest_target(self.target))
+        self.assertEqual(self.quester.teleport_to_quest_target.await_count, 2)
+        self.assertFalse(self.quester_client.in_solo_zone)
+
+    async def test_recovery_started_during_preflight_prevents_all_input(self):
         async def proof(*args):
             self.quester_client.quest_recovery_owner = 'lemuria_dungeon'
             return True
         self.proof.side_effect = proof
-        self.assertTrue(await self.quester.teleport_party_to_quest_target(self.target))
-        self.quester.teleport_to_quest_target.assert_awaited_once_with(self.quester_client, self.target, leader_client=self.quester_client)
+        self.assertFalse(await self.quester.teleport_party_to_quest_target(self.target))
+        self.quester.teleport_to_quest_target.assert_not_awaited()
         self.assertEqual(self.quester_client.quest_recovery_owner, 'lemuria_dungeon')
         self.assertFalse(self.quester_client.quest_party_target_sync_active)
         self.assertFalse(self.hitter.quest_party_target_sync_active)
 
-    async def test_hitter_failure_does_not_cancel_quester_and_releases_its_flags(self):
+    async def test_hitter_failure_cancels_and_drains_the_whole_movement(self):
         started = asyncio.Event()
-        failed = asyncio.Event()
-
+        cancelled = asyncio.Event()
         async def move(member, *args, **kwargs):
             if member is self.hitter:
                 await started.wait()
-                failed.set()
                 raise ValueError('rejected')
             started.set()
-            await failed.wait()
-
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
         self.quester.teleport_to_quest_target.side_effect = move
-        self.assertTrue(await self.quester.teleport_party_to_quest_target(self.target))
-        self.assertTrue(failed.is_set())
+        with self.assertRaises(ValueError):
+            await self.quester.teleport_party_to_quest_target(self.target)
+        self.assertTrue(cancelled.is_set())
         self.assertFalse(self.quester_client.quest_party_target_sync_active)
         self.assertFalse(self.hitter.quest_party_target_sync_active)
-        self.assertIsNone(self.quester_client.quest_recovery_owner)
-        self.assertIsNone(self.hitter.quest_recovery_owner)
 
-    async def test_slow_hitter_presence_read_does_not_delay_quester(self):
+    async def test_slow_presence_check_never_launches_the_quester_first(self):
         cancelled = asyncio.Event()
         async def blocked(*_):
             try:
@@ -159,9 +233,10 @@ class SharedQuestTargetTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 cancelled.set()
         self.proof.side_effect = blocked
-        self.assertTrue(await asyncio.wait_for(self.quester.teleport_party_to_quest_target(self.target), .2))
+        with self.assertRaises(TimeoutError):
+            await asyncio.wait_for(self.quester.teleport_party_to_quest_target(self.target), .2)
         self.assertTrue(cancelled.is_set())
-        self.quester.teleport_to_quest_target.assert_awaited_once_with(self.quester_client, self.target, leader_client=self.quester_client)
+        self.quester.teleport_to_quest_target.assert_not_awaited()
 
     async def test_quester_own_busy_state_still_blocks_its_input(self):
         for attr, value in (('refilling_potions', True), ('questing_status', False),
@@ -225,6 +300,9 @@ class SharedQuestTargetTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_auto_quest_reads_only_p1_target_and_runs_shared_movement(self):
         client = self.quester_client
+        client.body.position.return_value = self.hitter.body.position.return_value = self.target
+        client.send_key = AsyncMock()
+        self.hitter.send_key = AsyncMock()
         client.use_potions = False
         client.auto_pet_status = False
         client.entity_detect_combat_status = False
@@ -250,6 +328,8 @@ class SharedQuestTargetTests(unittest.IsolatedAsyncioTestCase):
             stack.enter_context(patch('src.mainline_progress.log_mainline_progress', AsyncMock()))
             await self.quester.auto_quest_solo()
         client.quest_position.position.assert_awaited_once()
+        client.send_key.assert_not_awaited()
+        self.hitter.send_key.assert_not_awaited()
         self.hitter.quest_position.position.assert_not_awaited()
         self.assertEqual(self.quester.teleport_to_quest_target.await_count, 2)
         for call in self.quester.teleport_to_quest_target.await_args_list:
@@ -263,6 +343,7 @@ class SharedQuestTargetTests(unittest.IsolatedAsyncioTestCase):
         client.entity_detect_combat_status = False
         client.quest_id = AsyncMock(return_value=42)
         client.goal_id = AsyncMock(return_value=0)
+        client.quest_party_shared_target = {'zone': 'Dungeon/Room', 'identity': (42, 0), 'xyz': self.target}
         client.send_key = AsyncMock()
         client.body.position.return_value = self.target
         self.quester.read_popup = AsyncMock()
@@ -302,6 +383,8 @@ class SharedQuestTargetTests(unittest.IsolatedAsyncioTestCase):
                 for text, name, prompt, world in (
                     ('Collect Mushrooms in Forest', 'Mushrooms', 'Press X to Collect', False),
                     ('Use Chest in Forest', 'Chest', 'Press X to Open', False),
+                    ('使用 旗杆操纵杆 地点：海象堡', '标志控制杆', '按X或<icon;mouse>使用', False),
+                    ('Use Console in Tower', 'Console', 'Press X to Activate', False),
                     ('Go To Boat in Harbor', 'Boat', 'Press X to Enter Boat', False),
                     ('使用 魔法艇 地点：湖边', '魔法艇', '按下 X 使用魔法艇', False),
                     ('前往 马利骨 地点：公共区', '世界之门', '按下 X 传送', True),
@@ -319,6 +402,7 @@ class SharedQuestTargetTests(unittest.IsolatedAsyncioTestCase):
                         self.quester._maybe_reenter_quest_trigger.assert_not_awaited()
                         self.quester.teleport_to_quest_target.assert_not_awaited()
                         self.assertFalse(peer.done())
+                self.assertFalse(peer.done())
                 self.quester.new_world_doors.assert_awaited_once_with(client)
                 self.hitter.quest_position.position.assert_not_awaited()
                 self.hitter.body.position.assert_not_awaited()
@@ -335,13 +419,22 @@ class SameInstanceFollowTests(unittest.IsolatedAsyncioTestCase):
                             if isinstance(node, ast.AsyncFunctionDef)
                             and node.name == '_follow_quester_session')
 
-    async def run_follow(self, proof, teleport_error=None, *, quest_ids=None, in_battle=True, distance=2000, interaction=None, recovery_owner=None, group_confirmed=True, friend_error=None, source_free=True, source_dialogue=False, source_loading=False, source_refill=False, character_selection=False, probe_pending=False, primary=False, extra_hitter=False):
+    async def run_follow(self, proof, teleport_error=None, *, quest_ids=None, in_battle=True, distance=2000, interaction=None, recovery_owner=None, group_confirmed=True, friend_error=None, source_free=True, source_dialogue=False, source_loading=False, source_refill=False, character_selection=False, probe_pending=False, primary=False, extra_hitter=False, group_source=None, zone_sequence=None, hitter_follows_zone=False, friend_ui_error=False, hitter_world_open=False, hitter_owner=None, hitter_loading=False, hitter_battle=False):
         hitter = ClientState(title='p2', questing_status=True, quest_party_battle_sync_state='failed',
             entity_detect_combat_status=False, just_entered_combat=None,
             is_loading=AsyncMock(return_value=False), in_battle=AsyncMock(return_value=False),
             zone_name=AsyncMock(return_value='Dungeon/Room'),
             body=SimpleNamespace(position=AsyncMock(return_value=distance)),
             teleport=AsyncMock(side_effect=teleport_error), mouse_handler=AsyncMock())
+        hitter.quest_recovery_owner = hitter_owner
+        hitter.is_loading.return_value = hitter_loading
+        hitter.in_battle.return_value = hitter_battle
+        world_ui = [hitter_world_open]
+        def close_world(member, path):
+            self.assertIs(member, hitter)
+            self.assertIn(path, (spiral_door_exit_path, spiral_door_exit_path[1:]))
+            world_ui[0] = False
+        self.world_ui_close = AsyncMock(side_effect=close_world)
         quester = ClientState(title='p1', questing_status=True, in_solo_zone=False,
             quest_party_observed_zone='Dungeon/Room', quest_party_quest_worker_zone='Dungeon/Room',
             quest_party_probe_pending=probe_pending, quest_party_group_dungeon_zone='Dungeon/Room' if group_confirmed else None,
@@ -351,6 +444,8 @@ class SameInstanceFollowTests(unittest.IsolatedAsyncioTestCase):
             zone_name=AsyncMock(return_value='Dungeon/Room'),
             body=SimpleNamespace(position=AsyncMock(return_value=0)))
         quester.quest_party_dungeon_interaction = interaction
+        if group_source is not None:
+            quester.quest_party_group_dungeon_zone = group_source
         quester.quest_party_hitters = [hitter]
         if extra_hitter:
             quester.quest_party_hitters.append(ClientState(title='p5', questing_status=True,
@@ -361,18 +456,21 @@ class SameInstanceFollowTests(unittest.IsolatedAsyncioTestCase):
             quester.quest_id = AsyncMock(side_effect=quest_ids)
             quester.goal_id = AsyncMock(return_value=7)
         reader = SimpleNamespace(handle_pending_dungeon_confirmation=AsyncMock(return_value=False),
+                                 party_hitters_confirmed_dungeon_transition=AsyncMock(return_value=False),
                                  _resume_party_dungeon_interaction=AsyncMock(return_value=bool(interaction and not interaction.get('warned'))),
                                  get_truncated_quest_objectives=AsyncMock(return_value='Defeat boss'))
         friend = AsyncMock(side_effect=friend_error)
         status = Mock()
         clock = Mock(time=Mock(side_effect=range(100, 10000, 100)))
-        namespace = dict(Client=object, asyncio=asyncio, time=SimpleNamespace(time=lambda: 0),
+        namespace = dict(automation_owner=automation_owner, Client=object, asyncio=asyncio, time=SimpleNamespace(time=lambda: 0),
             members=None, questing_status=True, use_potions=False, logger=Mock(),
             walker=SimpleNamespace(clients=[quester, hitter]),
             Quester=Mock(return_value=reader, overgrown_estate_paused=Quester.overgrown_estate_paused),
             observe_party_area=AsyncMock(), close_automation_popup=AsyncMock(return_value=False),
-            clients_share_live_area=AsyncMock(return_value=proof),
+            clients_share_live_area=AsyncMock(side_effect=proof) if isinstance(proof, list) else AsyncMock(return_value=proof),
             is_free=AsyncMock(side_effect=lambda client: source_free if client is quester else True),
+            is_spiral_door_open=AsyncMock(side_effect=lambda member: member is hitter and world_ui[0]),
+            safe_click_window=self.world_ui_close, spiral_door_exit_path=spiral_door_exit_path,
             update_party_status=status, remove_party_status=Mock(),
             claim_quest_recovery=claim_quest_recovery, release_quest_recovery=release_quest_recovery,
             calc_Distance=lambda a, b: abs(a - b), gear_switching_in_solo_zones=False,
@@ -380,7 +478,9 @@ class SameInstanceFollowTests(unittest.IsolatedAsyncioTestCase):
                 source_dialogue and client is quester and path == advance_dialog_path),
             advance_dialog_path=advance_dialog_path, spiral_door_teleport_path=[],
             resolve_quester_friend_icon=lambda *args: None, quest_friend_icons={},
-            teleport_to_friend_from_list=friend, is_friend_teleport_error=AsyncMock(return_value=False),
+            teleport_to_friend_from_list=friend, is_friend_teleport_error=AsyncMock(return_value=friend_ui_error),
+            click_window_by_path=AsyncMock(), friend_is_busy_and_dungeon_reset_path=[],
+            restart_quest_worker_after_probe=Mock(),
             close_friend_windows=AsyncMock(return_value=False),
             FriendBusyOrInstanceClosed=FriendBusyOrInstanceClosed,
             friend_follow_retry_delay=lambda failures: 5)
@@ -391,7 +491,11 @@ class SameInstanceFollowTests(unittest.IsolatedAsyncioTestCase):
             nonlocal ticks
             if delay == 0.5:
                 ticks += 1
-                if ticks > 3:
+                if zone_sequence and ticks <= len(zone_sequence):
+                    quester.zone_name.return_value = zone_sequence[ticks - 1]
+                    if hitter_follows_zone and (hitter_follows_zone is True or ticks <= hitter_follows_zone):
+                        hitter.zone_name.return_value = zone_sequence[ticks - 1]
+                if ticks > (len(zone_sequence) if zone_sequence else 3):
                     hitter.questing_status = False
 
         with patch.object(asyncio, 'sleep', tick), \
@@ -406,16 +510,118 @@ class SameInstanceFollowTests(unittest.IsolatedAsyncioTestCase):
         hitter.teleport.assert_awaited_with(0)
         self.assertNotIn('正在好友传送', [call.args[2] for call in status.call_args_list])
 
+    async def test_follower_closes_its_world_selector_before_resuming_follow(self):
+        hitter, friend, status = await self.run_follow(True, in_battle=False, distance=0,
+                                                     hitter_world_open=True)
+        self.world_ui_close.assert_awaited_once_with(hitter, spiral_door_exit_path)
+        self.assertIsNone(hitter.quest_recovery_owner)
+        friend.assert_not_awaited()
+        self.assertIn('关闭打手世界门界面，等待任务端切区', [c.args[2] for c in status.call_args_list])
+
+    async def test_follower_world_selector_closure_respects_loading_combat_and_other_owner(self):
+        for kwargs in ({'hitter_loading': True}, {'hitter_battle': True}, {'hitter_owner': 'potion_refill'}):
+            with self.subTest(kwargs=kwargs):
+                hitter, friend, _ = await self.run_follow(True, in_battle=False,
+                    hitter_world_open=True, **kwargs)
+                self.world_ui_close.assert_not_awaited()
+                friend.assert_not_awaited()
+                self.assertEqual(hitter.quest_recovery_owner, kwargs.get('hitter_owner'))
+
+    async def test_verified_entry_keeps_group_across_rooms_and_never_probes_friend(self):
+        palace = 'Polaris/Interiors/PL_Z00_Palace'
+        next_room = 'Polaris/Interiors/PL_Z00_Palace_02'
+        hitter, friend, status = await self.run_follow(True, in_battle=False,
+            group_confirmed=True, probe_pending=True, primary=True,
+            zone_sequence=(palace, palace, next_room, next_room), hitter_follows_zone=2,
+            friend_error=FriendBusyOrInstanceClosed())
+        friend.assert_not_awaited()
+        self.assertEqual(self.follow_quester.quest_party_group_dungeon_zone, palace)
+        self.assertTrue(self.follow_quester.quest_party_probe_pending)
+        self.assertFalse(self.follow_quester.in_solo_zone)
+        self.assertIn('等待同副本确认，可手动归队',
+                      [c.args[2] for c in status.call_args_list])
+
+    async def test_ordinary_interior_never_creates_group_marker(self):
+        interior = 'Polaris/Interiors/Z03_ZootsCave'
+        await self.run_follow(True, in_battle=False, group_confirmed=False,
+            probe_pending=True, primary=True, zone_sequence=(interior,) * 4,
+            hitter_follows_zone=True)
+        self.assertIsNone(self.follow_quester.quest_party_group_dungeon_zone)
+
+    async def test_ambiguous_friend_error_never_marks_unknown_area_as_solo(self):
+        hitter, friend, status = await self.run_follow(False, in_battle=False,
+            group_confirmed=False, probe_pending=True, primary=True,
+            friend_error=FriendBusyOrInstanceClosed())
+        friend.assert_awaited()
+        self.assertFalse(self.follow_quester.in_solo_zone)
+        self.assertTrue(self.follow_quester.quest_party_probe_pending)
+        self.assertNotIn('单人区域，任务端独立执行', [c.args[2] for c in status.call_args_list])
+
     async def test_local_teleport_rejection_never_falls_back_to_friend(self):
         hitter, friend, _ = await self.run_follow(True, ValueError('rejected'))
         friend.assert_not_awaited()
-        self.assertEqual(hitter.teleport.await_count, 3)
+        self.assertGreater(hitter.teleport.await_count, 0)
+        self.assertLessEqual(hitter.teleport.await_count, 3)
 
     async def test_unconfirmed_instance_still_allows_existing_friend_recovery(self):
-        hitter, friend, status = await self.run_follow(False)
+        hitter, friend, status = await self.run_follow(False, group_confirmed=False,
+            probe_pending=True, primary=True)
         hitter.teleport.assert_not_awaited()
         self.assertIn('正在好友传送', [call.args[2] for call in status.call_args_list])
         friend.assert_awaited()
+
+    async def test_confirmed_same_room_with_unreadable_proof_waits_without_friend_teleport(self):
+        hitter, friend, status = await self.run_follow(False, in_battle=False,
+            friend_error=FriendBusyOrInstanceClosed())
+        friend.assert_not_awaited()
+        hitter.teleport.assert_not_awaited()
+        self.assertFalse(self.follow_quester.in_solo_zone)
+        self.assertEqual(self.follow_quester.quest_party_group_dungeon_zone, 'Dungeon/Room')
+        self.assertIn('等待同副本确认，可手动归队', [c.args[2] for c in status.call_args_list])
+
+    async def test_post_battle_proof_recovers_without_friend_probe_or_losing_party_state(self):
+        hitter, friend, status = await self.run_follow([False, False] + [True] * 20,
+            in_battle=False, primary=True)
+        friend.assert_not_awaited()
+        hitter.teleport.assert_awaited()
+        self.assertFalse(self.follow_quester.in_solo_zone)
+        self.assertFalse(self.follow_quester.quest_party_probe_pending)
+        self.assertEqual(self.follow_quester.quest_party_group_dungeon_zone, 'Dungeon/Room')
+        self.assertIn('等待本组切区同步，可人工归队；地牢内不使用好友传送', [c.args[2] for c in status.call_args_list])
+
+    async def test_destination_live_proof_updates_last_confirmed_room_and_resumes_local_follow(self):
+        hitter, friend, _ = await self.run_follow(True, in_battle=False,
+            group_source='Dungeon/PreviousRoom', probe_pending=True, primary=True)
+        friend.assert_not_awaited()
+        hitter.teleport.assert_awaited()
+        self.assertEqual(self.follow_quester.quest_party_group_dungeon_zone, 'Dungeon/Room')
+        self.assertEqual(hitter.quest_party_group_dungeon_zone, 'Dungeon/Room')
+        self.assertFalse(self.follow_quester.quest_party_probe_pending)
+
+    async def test_continuous_room_changes_keep_party_history_and_friend_rejection_never_means_solo(self):
+        rooms = ('Dungeon/RoomB',) * 2 + ('Dungeon/RoomC',) * 2 + ('Dungeon/RoomD',) * 2
+        for friend_error, modal in ((FriendBusyOrInstanceClosed(), False),
+                                    (ValueError('friend window unreadable'), True)):
+            with self.subTest(error=type(friend_error).__name__):
+                hitter, friend, status = await self.run_follow(False, in_battle=False,
+                    friend_error=friend_error, friend_ui_error=modal,
+                    probe_pending=True, primary=True, zone_sequence=rooms)
+                friend.assert_not_awaited()
+                hitter.teleport.assert_not_awaited()
+                self.assertEqual(self.follow_quester.quest_party_group_dungeon_zone, 'Dungeon/Room')
+                self.assertTrue(self.follow_quester.quest_party_probe_pending)
+                self.assertFalse(self.follow_quester.in_solo_zone)
+                self.assertNotIn('单人区域，任务端独立执行', [c.args[2] for c in status.call_args_list])
+
+    async def test_whole_party_continuous_arrival_updates_each_room_without_friend_probe(self):
+        rooms = ('Dungeon/RoomB',) * 2 + ('Dungeon/RoomC',) * 2
+        hitter, friend, _ = await self.run_follow(True, in_battle=False,
+            probe_pending=True, primary=True, zone_sequence=rooms, hitter_follows_zone=True)
+        friend.assert_not_awaited()
+        self.assertEqual(self.follow_quester.quest_party_group_dungeon_zone, 'Dungeon/RoomC')
+        self.assertEqual(hitter.quest_party_group_dungeon_zone, 'Dungeon/RoomC')
+        self.assertFalse(self.follow_quester.quest_party_probe_pending)
+        self.assertFalse(self.follow_quester.in_solo_zone)
 
     async def test_source_dialogue_allows_independent_friend_probe(self):
         hitter, friend, status = await self.run_follow(False, in_battle=False,
@@ -429,7 +635,7 @@ class SameInstanceFollowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_primary_arrival_does_not_release_gate_before_another_assigned_hitter(self):
         hitter, _, _ = await self.run_follow(True, in_battle=False,
-            probe_pending=True, primary=True, group_confirmed=False, extra_hitter=True)
+            probe_pending=True, primary=True, group_confirmed=True, extra_hitter=True)
         self.assertTrue(self.follow_quester.quest_party_probe_pending)
         self.assertFalse(self.follow_quester.in_solo_zone)
         hitter.teleport.assert_awaited()
@@ -486,11 +692,11 @@ class SameInstanceFollowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hitter.teleport.await_count, 3)
         friend.assert_not_awaited()
 
-    async def test_expired_known_party_transition_retries_friend_without_classifying_quester_solo(self):
+    async def test_expired_same_room_party_transition_waits_for_proof_without_classifying_quester_solo(self):
         hitter, friend, status = await self.run_follow(False, in_battle=False,
             interaction={'phase': 'transition', 'warned': True}, group_confirmed=False,
             friend_error=FriendBusyOrInstanceClosed())
-        self.assertGreater(friend.await_count, 0, [call.args[2] for call in status.call_args_list])
+        friend.assert_not_awaited()
         hitter.teleport.assert_not_awaited()
         self.assertFalse(self.follow_quester.in_solo_zone)
         self.assertNotIn('单人区域，任务端独立执行', [call.args[2] for call in status.call_args_list])

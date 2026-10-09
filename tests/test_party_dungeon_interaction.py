@@ -60,6 +60,49 @@ class PartyDungeonInteractionTests(unittest.IsolatedAsyncioTestCase):
     def token(self, member):
         return (self.source, id(member), 7, getattr(member, '_party_area_generation', 0))
 
+    async def test_unknown_prompt_never_bypasses_generic_wait_guard(self):
+        self.prompt = '按X 未知动作'
+        self.assertFalse(await self.quester.handle_party_dungeon_interaction(self.target))
+        self.p1.send_key.assert_not_awaited()
+        self.p2.send_key.assert_not_awaited()
+
+    async def test_world_gate_uses_only_quester_input_and_world_selection(self):
+        self.prompt = '按下 X 或 <icon;mouse> 互动'
+        self.quester.quest_interaction_ready = AsyncMock(return_value=True)
+        self.quester._maybe_photo_giant_vat = AsyncMock(return_value=False)
+        self.quester.new_world_doors = AsyncMock(return_value=True)
+        with patch('src.questing.is_free_leader_questing', AsyncMock(return_value=True)), \
+                patch('src.questing.is_spiral_door_open', AsyncMock(return_value=True)):
+            for self.title in ('世界之门', 'World Gate'):
+                self.p1.zone_name.return_value = self.source
+                self.p1.send_key.reset_mock()
+                self.assertFalse(await self.quester.handle_party_dungeon_interaction(self.target))
+                self.assertTrue(await self.quester.handle_quest_interaction(self.p1, self.target))
+                self.p1.send_key.assert_awaited_once_with(Keycode.X, .1)
+                self.p2.send_key.assert_not_awaited()
+        self.quester.new_world_doors.assert_awaited()
+        self.proof.assert_not_awaited()
+
+    async def test_old_world_gate_recovery_never_replays_hitter_x(self):
+        self.p1.quest_party_dungeon_interaction = {'phase': 'transition', 'title': '世界之门'}
+        self.assertFalse(await self.quester._resume_party_dungeon_interaction(self.p2))
+        self.assertIsNone(self.p1.quest_party_dungeon_interaction)
+        self.p2.send_key.assert_not_awaited()
+
+    async def test_legacy_world_selector_never_selects_a_world_on_hitter(self):
+        self.quester.current_leader_client = self.p1
+        self.p1.process_id = self.quester.current_leader_pid = 1
+        self.p2.process_id = 2
+        self.quester.clients = [self.p1, self.p2]
+        self.quester.read_spiral_door_title = AsyncMock(return_value='世界之门')
+        self.quester.new_world_doors = AsyncMock(return_value=False)
+        with patch('src.questing.spiral_door_with_quest', AsyncMock()) as select, \
+                patch('src.questing.go_to_new_world', AsyncMock()) as follower_select:
+            await self.quester.handle_spiral_navigation()
+        select.assert_awaited_once_with(self.p1)
+        follower_select.assert_not_awaited()
+        self.p2.send_key.assert_not_awaited()
+
     def member(self, title):
         return Member(title=title, questing_status=True, in_solo_zone=False,
             refilling_potions=False, quest_recovery_owner=None, potion_dungeon_returned=None,
@@ -67,12 +110,67 @@ class PartyDungeonInteractionTests(unittest.IsolatedAsyncioTestCase):
             goal_id=AsyncMock(side_effect=lambda: self.identity[1]),
             zone_name=AsyncMock(return_value=self.source),
             is_loading=AsyncMock(return_value=False), in_battle=AsyncMock(return_value=False),
+            quest_position=SimpleNamespace(position=AsyncMock(return_value=self.target)),
             body=SimpleNamespace(position=AsyncMock(return_value=self.target)), send_key=AsyncMock())
 
     async def regroup(self):
         for _ in range(7):
             await self.quester._resume_party_dungeon_interaction(self.p2)
             self.now += .5
+
+    def automatic_transition(self):
+        self.p1.quest_party_shared_target = {
+            'zone': self.source, 'identity': self.identity, 'xyz': self.target,
+            'members': (id(self.p1), id(self.p2)),
+            'source_tokens': {id(self.p2): self.token(self.p2)},
+        }
+        self.p1.zone_name.return_value = self.destination
+        self.quester.teleport_to_quest_target = AsyncMock()
+
+    async def test_post_battle_automatic_transition_replays_source_target_for_lagging_hitter(self):
+        self.automatic_transition()
+        self.p1.quest_position = SimpleNamespace(position=AsyncMock(return_value=XYZ(9999, 9999, 0)))
+        async def catchup(member, xyz):
+            self.assertIs(member, self.p2)
+            self.assertIs(xyz, self.target)
+            self.assertTrue(member.quest_party_target_sync_active)
+            member.zone_name.return_value = self.destination
+        with patch('src.questing.collision_tp', AsyncMock(side_effect=catchup)) as move:
+            await self.regroup()
+            move.assert_awaited_once_with(self.p2, self.target)
+            self.assertFalse(await self.quester._resume_party_dungeon_interaction(self.p2))
+        self.p1.quest_position.position.assert_not_awaited()
+        self.p1.send_key.assert_not_awaited()
+        self.p2.send_key.assert_not_awaited()
+        self.assertFalse(self.p1.quest_party_probe_pending)
+        self.assertEqual(self.p1.quest_party_group_dungeon_zone, self.destination)
+        self.assertFalse(self.p2.quest_party_target_sync_active)
+
+    async def test_source_room_change_or_new_quest_never_replays_old_coordinates(self):
+        for changed in ('source_instance', 'quest'):
+            with self.subTest(changed=changed):
+                self.p1.quest_party_dungeon_interaction = None
+                self.automatic_transition()
+                if changed == 'source_instance':
+                    self.p2._party_area_generation = 1
+                else:
+                    self.identity = (100, 8)
+                with patch('src.questing.collision_tp', AsyncMock()) as move:
+                    await self.quester._resume_party_dungeon_interaction(self.p2)
+                    move.assert_not_awaited()
+
+    async def test_source_collision_move_can_finish_after_the_old_five_second_read_budget(self):
+        self.automatic_transition()
+        completed = []
+        async def catchup(member, xyz):
+            await self.real_sleep(5.1)
+            completed.append(member.title)
+            member.zone_name.return_value = self.destination
+        with patch('src.questing.collision_tp', AsyncMock(side_effect=catchup)):
+            await self.quester._resume_party_dungeon_interaction(self.p2)
+        self.assertEqual(completed, ['p2'])
+        self.assertEqual(self.p2.zone_name.return_value, self.destination)
+        self.assertFalse(self.p2.quest_party_target_sync_active)
 
     async def test_screenshot_quest_local_npc_never_requires_any_hitter_prompt(self):
         self.prompt = '按下 X 交谈'
@@ -88,50 +186,54 @@ class PartyDungeonInteractionTests(unittest.IsolatedAsyncioTestCase):
         self.proof.assert_not_awaited()
         self.p2.send_key.assert_not_awaited()
 
-    async def test_quester_interacts_without_waiting_for_missing_or_mismatched_hitter_prompt(self):
+    async def test_missing_hitter_prompt_blocks_shared_input_without_solo_fallback(self):
         self.visible.side_effect = lambda member, path: member is self.p1 and path == npc_range_path
         self.assertTrue(await self.quester.handle_party_dungeon_interaction(self.target))
-        self.p1.send_key.assert_awaited_once_with(Keycode.X, .1)
+        self.p1.send_key.assert_not_awaited()
         self.p2.send_key.assert_not_awaited()
-        self.p2.zone_name.assert_not_awaited()
         self.assertEqual(self.now, 0)
         self.assertFalse(await self.quester._resume_party_dungeon_interaction())
 
-    async def test_stopped_loading_refilling_or_distant_hitter_does_not_block_quester(self):
+    async def test_stopped_loading_refilling_or_distant_hitter_blocks_all_input(self):
         for attr, value in (('questing_status', False), ('refilling_potions', True),
                             ('quest_recovery_owner', 'potion_refill')):
             previous = getattr(self.p2, attr)
             setattr(self.p2, attr, value)
-            self.p1.zone_name.return_value = self.source
-            self.p1.quest_party_dungeon_interaction = None
             self.assertTrue(await self.quester.handle_party_dungeon_interaction(self.target))
             setattr(self.p2, attr, previous)
-        self.assertEqual(self.p1.send_key.await_count, 3)
+        self.p2.is_loading.return_value = True
+        self.assertTrue(await self.quester.handle_party_dungeon_interaction(self.target))
+        self.p2.is_loading.return_value = False
+        self.p2.body.position.return_value = XYZ(3000, 3000, 0)
+        self.assertTrue(await self.quester.handle_party_dungeon_interaction(self.target))
+        self.p1.send_key.assert_not_awaited()
         self.p2.send_key.assert_not_awaited()
 
-    async def test_climb_follower_uses_own_input_after_quester_changes_zone(self):
+    async def test_climb_both_inputs_start_in_the_same_group_operation(self):
         await self.quester.handle_party_dungeon_interaction(self.target)
-        self.assertEqual(self.events, ['p1'])
+        self.assertEqual(self.events, ['p1', 'p2'])
         await self.regroup()
         self.assertEqual(self.events, ['p1', 'p2'])
         self.assertEqual(self.p1.quest_party_group_dungeon_zone, self.destination)
         self.assertFalse(self.p1.quest_party_probe_pending)
         self.assertIsNone(self.p1.quest_party_dungeon_interaction)
         self.p1.send_key.assert_awaited_once()
+        self.p2.send_key.assert_awaited_once()
 
-    async def test_only_follower_retries_source_interaction_after_quester_goal_progresses(self):
-        await self.quester.handle_party_dungeon_interaction(self.target)
-        self.identity = (99, 8)
+    async def test_only_lagging_follower_may_retry_its_prevalidated_source_prompt(self):
         async def follower_press(*_):
             if self.p2.send_key.await_count == 2:
                 self.p2.zone_name.return_value = self.destination
         self.p2.send_key.side_effect = follower_press
+        await self.quester.handle_party_dungeon_interaction(self.target)
+        self.identity = (99, 8)
         await self.regroup()
         self.p1.send_key.assert_awaited_once()
         self.assertEqual(self.p2.send_key.await_count, 2)
         self.assertEqual(self.p1.quest_party_group_dungeon_zone, self.destination)
 
-    async def test_no_follower_prompt_expires_into_follow_retry_but_keeps_quester_paused(self):
+    async def test_failed_shared_transition_expires_into_manual_sync_wait(self):
+        self.p2.send_key.side_effect = None
         await self.quester.handle_party_dungeon_interaction(self.target)
         self.visible.side_effect = lambda member, path: member is self.p1 and path == npc_range_path
         self.assertTrue(await self.quester._resume_party_dungeon_interaction(self.p2))
@@ -140,7 +242,7 @@ class PartyDungeonInteractionTests(unittest.IsolatedAsyncioTestCase):
             for _ in range(3):
                 self.assertFalse(await self.quester._resume_party_dungeon_interaction(self.p2))
             log.warning.assert_called_once()
-        self.p2.send_key.assert_not_awaited()
+        self.p2.send_key.assert_awaited_once()
         self.assertFalse(await self.quester._resume_party_dungeon_interaction())
         self.assertEqual(self.p1.zone_name.return_value, self.destination)
         self.assertTrue(await self.quester._quest_party_probe_blocks_movement())
@@ -154,40 +256,44 @@ class PartyDungeonInteractionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await self.quester._resume_party_dungeon_interaction(self.p2))
         self.assertFalse(await self.quester._resume_party_dungeon_interaction())
 
-    async def test_changed_source_prompt_never_operates_another_button(self):
+    async def test_changed_source_prompt_never_replays_another_button(self):
+        self.p2.send_key.side_effect = None
         await self.quester.handle_party_dungeon_interaction(self.target)
         self.title_reader.side_effect = lambda member: '其他机关' if member is self.p2 else self.title
-        await self.regroup()
-        self.p2.send_key.assert_not_awaited()
-        self.p1.send_key.assert_awaited_once()
-
-    async def test_unproved_or_changed_source_instance_never_replays_follower_input(self):
-        await self.quester.handle_party_dungeon_interaction(self.target)
-        self.p2._party_area_generation = 1
-        await self.regroup()
-        self.p2.send_key.assert_not_awaited()
-        self.tokens.side_effect = ValueError('area unreadable')
-        await self.quester._resume_party_dungeon_interaction(self.p2)
-        self.p2.send_key.assert_not_awaited()
-
-    async def test_absent_retained_source_evidence_does_not_block_quester_but_disables_hitter_input(self):
-        self.p1._party_area_peers.clear()
-        await self.quester.handle_party_dungeon_interaction(self.target)
-        await self.regroup()
-        self.p1.send_key.assert_awaited_once()
-        self.p2.send_key.assert_not_awaited()
-
-    async def test_busy_hitter_can_resume_without_touching_quester(self):
-        await self.quester.handle_party_dungeon_interaction(self.target)
-        self.p2.quest_recovery_owner = 'potion_refill'
-        await self.regroup()
-        self.p2.send_key.assert_not_awaited()
-        self.p2.quest_recovery_owner = None
         await self.regroup()
         self.p2.send_key.assert_awaited_once()
         self.p1.send_key.assert_awaited_once()
 
-    async def test_follower_expiry_still_accepts_late_live_same_instance_arrival(self):
+    async def test_changed_source_instance_never_replays_follower_input(self):
+        self.p2.send_key.side_effect = None
+        await self.quester.handle_party_dungeon_interaction(self.target)
+        self.p2._party_area_generation = 1
+        await self.regroup()
+        self.p2.send_key.assert_awaited_once()
+        self.tokens.side_effect = ValueError('area unreadable')
+        await self.quester._resume_party_dungeon_interaction(self.p2)
+        self.p2.send_key.assert_awaited_once()
+
+    async def test_live_proof_allows_initial_group_input_but_no_retained_proof_disables_replay(self):
+        self.p1._party_area_peers.clear()
+        self.p2.send_key.side_effect = None
+        await self.quester.handle_party_dungeon_interaction(self.target)
+        await self.regroup()
+        self.p1.send_key.assert_awaited_once()
+        self.p2.send_key.assert_awaited_once()
+
+    async def test_busy_hitter_defers_entire_group_then_both_resume(self):
+        self.p2.quest_recovery_owner = 'potion_refill'
+        await self.quester.handle_party_dungeon_interaction(self.target)
+        self.p1.send_key.assert_not_awaited()
+        self.p2.send_key.assert_not_awaited()
+        self.p2.quest_recovery_owner = None
+        await self.quester.handle_party_dungeon_interaction(self.target)
+        self.p2.send_key.assert_awaited_once()
+        self.p1.send_key.assert_awaited_once()
+
+    async def test_follower_expiry_still_accepts_late_manual_same_instance_arrival(self):
+        self.p2.send_key.side_effect = None
         await self.quester.handle_party_dungeon_interaction(self.target)
         self.now = 31
         self.assertFalse(await self.quester._resume_party_dungeon_interaction(self.p2))
@@ -195,7 +301,7 @@ class PartyDungeonInteractionTests(unittest.IsolatedAsyncioTestCase):
         await self.regroup()
         self.assertEqual(self.p1.quest_party_group_dungeon_zone, self.destination)
         self.assertIsNone(self.p1.quest_party_dungeon_interaction)
-        self.p2.send_key.assert_not_awaited()
+        self.p2.send_key.assert_awaited_once()
 
     async def test_leader_can_advance_another_room_while_hitter_recovers(self):
         await self.quester.handle_party_dungeon_interaction(self.target)
@@ -216,24 +322,26 @@ class PartyDungeonInteractionTests(unittest.IsolatedAsyncioTestCase):
     async def test_dialogue_uses_only_quester_but_sigil_reuses_whole_party_entry(self):
         for kind in ('talk', 'enter'):
             with patch('src.questing.interaction_kind', return_value=kind), \
-                 patch('src.questing.is_dungeon_entry_prompt', return_value=kind == 'enter'):
+                 patch.object(self.quester, 'party_dungeon_entry_visible', AsyncMock(return_value=kind == 'enter')):
                 await self.quester.handle_party_dungeon_interaction(self.target)
         self.quester.handle_npc_talking_quests.assert_awaited_once_with(self.p1, [self.p1])
         self.quester.prepare_party_dungeon_entry.assert_awaited_once()
         self.quester.enter_party_dungeon.assert_awaited_once_with([self.p1, self.p2])
         self.p2.send_key.assert_not_awaited()
 
-    async def test_own_unchanged_shared_mechanism_is_not_blindly_repeated(self):
-        self.p1.send_key.side_effect = None
+    async def test_unchanged_shared_mechanism_is_not_repeated_after_worker_recreation(self):
+        self.p1.send_key.side_effect = self.p2.send_key.side_effect = None
         await self.quester.handle_party_dungeon_interaction(self.target)
         recreated = Quester(self.p1, [self.p1], None)
         for name in ('read_popup', 'read_quest_txt'):
             setattr(recreated, name, getattr(self.quester, name))
         await recreated.handle_party_dungeon_interaction(self.target)
         self.p1.send_key.assert_awaited_once()
+        self.p2.send_key.assert_awaited_once()
         self.identity = (99, 8)
         await recreated.handle_party_dungeon_interaction(self.target)
         self.assertEqual(self.p1.send_key.await_count, 2)
+        self.assertEqual(self.p2.send_key.await_count, 2)
 
     async def test_changed_landing_context_prevents_old_input(self):
         self.p1.quest_party_shared_target = {'zone': self.source, 'identity': (99, 6), 'xyz': self.target}
@@ -247,13 +355,14 @@ class PartyDungeonInteractionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.p1.quest_party_target_sync_active)
         self.assertFalse(get_client_automation_ownership(self.p1).locked)
 
-    async def test_follower_input_cancellation_releases_only_its_owner(self):
-        await self.quester.handle_party_dungeon_interaction(self.target)
+    async def test_shared_follower_input_cancellation_drains_group_and_releases_owners(self):
         self.p2.send_key.side_effect = asyncio.CancelledError()
         with self.assertRaises(asyncio.CancelledError):
-            await self.quester._resume_party_dungeon_interaction(self.p2)
+            await self.quester.handle_party_dungeon_interaction(self.target)
         self.assertFalse(get_client_automation_ownership(self.p2).locked)
+        self.assertFalse(get_client_automation_ownership(self.p1).locked)
         self.assertFalse(self.p1.quest_party_target_sync_active)
+        self.assertFalse(self.p2.quest_party_target_sync_active)
 
     async def test_solo_unmarked_and_no_prompt_keep_normal_quester_flow(self):
         self.p1.in_solo_zone = True
@@ -283,6 +392,7 @@ class PartyDungeonInteractionTests(unittest.IsolatedAsyncioTestCase):
         self.p1.quest_party_dungeon_interaction = {'phase': 'waiting'}
         self.p1.use_potions = self.p1.auto_pet_status = self.p1.entity_detect_combat_status = False
         self.p1.quest_position = SimpleNamespace(position=AsyncMock(return_value=self.target))
+        self.p1.quest_party_shared_target = {'zone': self.source, 'identity': self.identity, 'xyz': self.target}
         self.quester.teleport_to_quest_target = AsyncMock()
         self.visible.side_effect = lambda member, path: member is self.p1 and path == npc_range_path
         stack = ExitStack()
@@ -297,6 +407,27 @@ class PartyDungeonInteractionTests(unittest.IsolatedAsyncioTestCase):
         await self.quester.auto_quest_solo()
         self.quester.handle_npc_talking_quests.assert_awaited_once_with(self.p1, [self.p1])
         self.quester._resume_party_dungeon_interaction.assert_not_awaited()
+
+    async def test_new_target_moves_both_before_nearby_quester_npc_interaction(self):
+        self.prepare_solo_worker()
+        self.p1.quest_party_shared_target = None
+        self.quester.quest_interaction_ready = AsyncMock(return_value=True)
+        events = []
+        self.quester.teleport_to_quest_target.side_effect = lambda member, xyz, **kw: events.append(member.title)
+        self.quester.handle_npc_talking_quests.side_effect = lambda *args: events.append('NPC')
+        await self.quester.auto_quest_solo()
+        self.assertEqual(events, ['p1', 'p2', 'NPC'])
+        self.quester._maybe_reenter_quest_trigger.assert_not_awaited()
+
+    async def test_unready_shared_movement_never_falls_back_to_quester_only_npc(self):
+        self.prepare_solo_worker()
+        self.p1.quest_party_shared_target = None
+        self.quester.quest_interaction_ready = AsyncMock(return_value=True)
+        self.quester.teleport_party_to_quest_target = AsyncMock(return_value=False)
+        await self.quester.auto_quest_solo()
+        self.quester.teleport_party_to_quest_target.assert_awaited_once_with(self.target)
+        self.quester.handle_npc_talking_quests.assert_not_awaited()
+        self.quester._maybe_reenter_quest_trigger.assert_not_awaited()
 
     async def test_matching_npc_prompt_runs_dialogue_before_reentry_or_party_movement(self):
         self.prepare_solo_worker()
@@ -380,4 +511,3 @@ class PartyDungeonInteractionTests(unittest.IsolatedAsyncioTestCase):
         self.quester.handle_party_dungeon_interaction.assert_not_awaited()
         self.quester.handle_npc_talking_quests.assert_not_awaited()
         self.p2.send_key.assert_not_awaited()
-

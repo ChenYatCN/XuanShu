@@ -1,0 +1,28 @@
+test_local_teleport_rejection_never_falls_back_to_friend (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_local_teleport_rejection_never_falls_back_to_friend) ... ok
+test_confirmed_same_room_with_unreadable_proof_waits_without_friend_teleport (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_confirmed_same_room_with_unreadable_proof_waits_without_friend_teleport) ... FAIL
+test_primary_arrival_does_not_release_gate_before_another_assigned_hitter (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_primary_arrival_does_not_release_gate_before_another_assigned_hitter) ... ok
+test_415_walk_follows_old_waypoints_and_refines_reachable_target (tests.test_collision_approach.ApproachRuntimeTests.test_415_walk_follows_old_waypoints_and_refines_reachable_target) ... ok
+test_zone_change_stops_remaining_walk (tests.test_collision_approach.ApproachRuntimeTests.test_zone_change_stops_remaining_walk) ... ok
+test_dialogue_or_battle_stops_remaining_walk (tests.test_collision_approach.ApproachRuntimeTests.test_dialogue_or_battle_stops_remaining_walk) ... ok
+test_walk_timeout_cancels_pending_input (tests.test_collision_approach.ApproachRuntimeTests.test_walk_timeout_cancels_pending_input) ... ok
+test_external_cancellation_is_not_swallowed (tests.test_collision_approach.ApproachRuntimeTests.test_external_cancellation_is_not_swallowed) ... ok
+
+======================================================================
+FAIL: test_confirmed_same_room_with_unreadable_proof_waits_without_friend_teleport (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_confirmed_same_room_with_unreadable_proof_waits_without_friend_teleport)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 580, in test_confirmed_same_room_with_unreadable_proof_waits_without_friend_teleport
+    self.assertIn('等待本组切区同步，可人工归队；地牢内不使用好友传送', [c.args[2] for c in status.call_args_list])
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: '等待本组切区同步，可人工归队；地牢内不使用好友传送' not found in ['准备跟随', '等待同副本确认，可手动归队', '等待同副本确认，可手动归队', '等待同副本确认，可手动归队']
+
+----------------------------------------------------------------------
+Ran 8 tests in 0.174s
+
+FAILED (failures=1)

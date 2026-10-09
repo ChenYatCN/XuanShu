@@ -16,6 +16,15 @@ class CollectMatchingTests(unittest.TestCase):
         self.assertEqual(self.names.score('Sea Foam Crystals', '海洋泡沫水晶'), 100)
         self.assertGreaterEqual(self.names.score('海洋泡沫水晶', internal='CL-SeaFoam-Crystal_03'), 85)
 
+    def test_monkey_men_stolen_food_matches_food_stores_labels_and_entity(self):
+        for names in (self.names, CollectNames([])):
+            goal = parse_collect_goal('寻找 被偷走的食物 地点：盐土沼泽 (0 of 5)')
+            for label in ('食品店', 'Food Stores'):
+                self.assertEqual(names.score(goal.target, label), 100)
+            self.assertGreaterEqual(names.score(goal.target, internal='AZ-FoodStores'), 85)
+            self.assertEqual(names.score(goal.target, 'Food Vendor', internal='AZ-Guard'), 0)
+            self.assertEqual(names.score(goal.target, '海洋泡沫水晶'), 0)
+
     def test_leyden_jar_screenshot_names_and_goal(self):
         goal = parse_collect_goal('聚集 莱顿瓶 地点：科学中心 (2 of 3)')
         self.assertEqual((goal.target, goal.location, goal.current, goal.total),

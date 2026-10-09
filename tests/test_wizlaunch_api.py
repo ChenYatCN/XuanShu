@@ -1,10 +1,11 @@
 import ast
+import asyncio
 import os
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import wizlaunch
 
@@ -68,6 +69,45 @@ class WizlaunchAPITests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, 'nickname is empty'):
                     wizlaunch.create_steam_account('')
             self.assertEqual(list(Path(appdata).iterdir()), [])
+
+    def test_steam_metadata_without_credentials_is_not_launch_ready(self):
+        with tempfile.TemporaryDirectory() as appdata:
+            with patch.dict(os.environ, {'APPDATA': appdata}):
+                nickname = 'steam-login-validation-test'
+                wizlaunch.create_steam_account(nickname)
+                self.assertTrue(wizlaunch.get_account_steam(nickname))
+                self.assertIn('credentials are missing', wizlaunch.validate_account(nickname))
+
+    def test_saving_steam_account_collects_credentials_before_mode_flag(self):
+        tree = ast.parse((ROOT / 'XuanShu.py').read_text(encoding='utf-8'))
+        case = next(node for node in ast.walk(tree)
+                    if isinstance(node, ast.match_case)
+                    and isinstance(node.pattern, ast.MatchValue)
+                    and isinstance(node.pattern.value, ast.Attribute)
+                    and node.pattern.value.attr == 'SaveAccount')
+        function = ast.AsyncFunctionDef(name='save_account',
+            args=ast.arguments(posonlyargs=[], args=[], kwonlyargs=[],
+                               kw_defaults=[], defaults=[]),
+            body=case.body, decorator_list=[])
+        native = SimpleNamespace(has_account=Mock(return_value=False),
+            prompt_save_account=Mock(), set_account_steam=Mock(),
+            create_steam_account=Mock())
+        calls = Mock()
+        calls.attach_mock(native.prompt_save_account, 'credentials')
+        calls.attach_mock(native.set_account_steam, 'mode')
+        namespace = dict(asyncio=asyncio, wizlaunch=native,
+            com=SimpleNamespace(data=('Steam', True, False)),
+            set_account_private_server=Mock(), logger=Mock(), gui_send_queue=Mock(),
+            build_account_list_payload=Mock(return_value=[]),
+            xuanshu_gui=SimpleNamespace(GUICommand=Mock(),
+                GUICommandType=SimpleNamespace(UpdateAccountList=object())))
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[])),
+                     'XuanShu.py', 'exec'), namespace)
+        asyncio.run(namespace['save_account']())
+        self.assertEqual([call[0] for call in calls.mock_calls], ['credentials', 'mode'])
+        native.prompt_save_account.assert_called_once_with('Steam')
+        native.set_account_steam.assert_called_once_with('Steam', True)
+        native.create_steam_account.assert_not_called()
 
 
 if __name__ == '__main__':

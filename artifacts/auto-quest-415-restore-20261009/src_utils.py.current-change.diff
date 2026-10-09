@@ -1,0 +1,46 @@
+--- before/src/utils.py
++++ current/src/utils.py
+@@ -40,6 +40,7 @@
+     resolve_portal_destination,
+ )
+ from src.paths import *
++from src.automation_ownership import automation_owner
+ from src.sprinty_client import SprintyClient
+ from src.window_text import read_control_text
+ from src.interaction_prompts import plain_text
+@@ -529,8 +530,8 @@
+                     await c.mouse_handler.click_window(click_button)
+ 
+ 
+-async def close_npc_quest_menu(client: Client, *, select_mainlines=True) -> bool:
+-    """Let automation select indexed mainlines before dismissing a sidequest list."""
++async def close_npc_quest_menu(client: Client, *, select_mainlines=False) -> bool:
++    """Use the 4.1.5 Exit rule; indexed selection belongs to explicit recovery."""
+     if await client.is_loading() or await client.in_battle():
+         return False
+     if not await is_visible_by_path(client, cancel_multiple_quest_menu_path):
+@@ -538,14 +539,21 @@
+     # An active quest dialogue takes priority over the list behind it.
+     if await is_visible_by_path(client, advance_dialog_path):
+         return False
+-    if select_mainlines and (getattr(client, 'questing_status', False) is True
+-                             or getattr(client, 'auto_dialogue_running', False) is True):
++    if (select_mainlines and getattr(client, 'mainline_finder_enabled', False)
++            and (getattr(client, 'questing_status', False) is True
++                             or getattr(client, 'auto_dialogue_running', False) is True)):
+         # Runtime import keeps utils/questing module initialization acyclic.
+         from src.questing import Quester
+         if await Quester(client, [client], None)._select_npc_mainline_menu(client):
+             return True
+     client.npc_mainline_menu_selection = None
+-    await safe_click_window(client, cancel_multiple_quest_menu_path)
++    client.npc_mainline_menu_context = None
++    client.npc_mainline_menu_read_wait = None
++    async with automation_owner(client, 'npc-menu-exit'):
++        if (await client.is_loading() or await client.in_battle()
++                or await is_visible_by_path(client, advance_dialog_path)):
++            return False
++        await safe_click_window(client, cancel_multiple_quest_menu_path)
+     await asyncio.sleep(0.2)
+     return True
+ 

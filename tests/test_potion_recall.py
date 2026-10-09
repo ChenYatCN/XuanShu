@@ -393,8 +393,9 @@ class PotionSynchronizationTests(unittest.IsolatedAsyncioTestCase):
         quester = Quester(leader, roster, 1)
         quester.collect_wisps = AsyncMock()
         quester.guarantee_use_potion = AsyncMock()
-        with patch('src.questing.refill_potions', new=AsyncMock(return_value=False)):
+        with patch('src.questing.refill_potions', new=AsyncMock(side_effect=lambda c: c is leader)) as refill:
             self.assertFalse(await quester.heal_and_handle_potions())
+        self.assertEqual([call.args[0] for call in refill.await_args_list], [leader, other])
         self.assertTrue(leader.questing_status)
         self.assertFalse(other.questing_status)
         self.assertEqual(quester.clients, [leader])

@@ -1,0 +1,13 @@
+test_client_group_flag_overrides_global_default (tests.test_quest_415_baseline.OrdinaryDialogue415Tests.test_client_group_flag_overrides_global_default) ... ok
+test_global_side_accept_default_reaches_actual_acceptance (tests.test_quest_415_baseline.OrdinaryDialogue415Tests.test_global_side_accept_default_reaches_actual_acceptance) ... ok
+test_one_or_many_npc_choices_exit_without_choosing_indexed_quest (tests.test_quest_415_baseline.OrdinaryDialogue415Tests.test_one_or_many_npc_choices_exit_without_choosing_indexed_quest) ... ok
+test_side_accept_off_declines_without_changing_owned_quest (tests.test_quest_415_baseline.OrdinaryDialogue415Tests.test_side_accept_off_declines_without_changing_owned_quest) ... ok
+test_npc_current_goal_change_is_confirmed_without_index_lookup (tests.test_quest_415_baseline.OrdinaryQuest415Tests.test_npc_current_goal_change_is_confirmed_without_index_lookup) ... ok
+test_unindexed_and_side_quest_current_targets_continue_without_mainline_gate (tests.test_quest_415_baseline.OrdinaryQuest415Tests.test_unindexed_and_side_quest_current_targets_continue_without_mainline_gate) ... ok
+test_unknown_visible_nearby_prompt_uses_the_old_x_rule (tests.test_quest_415_baseline.OrdinaryQuest415Tests.test_unknown_visible_nearby_prompt_uses_the_old_x_rule) ... ok
+test_without_visible_interaction_window_no_x_is_sent (tests.test_quest_415_baseline.OrdinaryQuest415Tests.test_without_visible_interaction_window_no_x_is_sent) ... ok
+
+----------------------------------------------------------------------
+Ran 8 tests in 0.878s
+
+OK

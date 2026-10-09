@@ -112,7 +112,7 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
                 and row['number'] in (30, 31, 32)]
         self.client.zone_name.return_value = 'Darkmoor/DM_Z02_MortalPlain'
         targets = self.set_choices([(row['chinese'][0], row) for row in reversed(rows)])
-        self.assertTrue(await close_npc_quest_menu(self.client))
+        self.assertTrue(await close_npc_quest_menu(self.client, select_mainlines=True))
         self.click.assert_awaited_once_with(self.client, targets[-1])
         self.assertEqual(self.client.npc_mainline_menu_selection['row'], rows[0])
         self.assertTrue(await self.quester._advance_npc_dialogue(self.client))
@@ -123,7 +123,7 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unowned_mainline_is_selected_accepted_and_confirmed_not_cancelled(self):
         target = self.choices.children.return_value[1]
-        self.assertTrue(await close_npc_quest_menu(self.client))
+        self.assertTrue(await close_npc_quest_menu(self.client, select_mainlines=True))
         self.click.assert_awaited_once_with(self.client, target)
         self.assertEqual(self.quests.keys(), {99})
         self.assertTrue(await self.quester._advance_npc_dialogue(self.client))
@@ -135,25 +135,25 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_two_distinct_mainline_branches_choose_index_order_then_next_branch(self):
         first, last = self.set_choices([(self.later['english'], self.later), ('额外生命', self.row)])
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         self.click.assert_awaited_once_with(self.client, last)
         await self.quester._advance_npc_dialogue(self.client)
         await self.quester._advance_npc_dialogue(self.client)
         self.menu.is_visible.return_value = self.exit.is_visible.return_value = True
         next_target = self.set_choices([(self.later['english'], self.later)])[0]
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         self.assertIs(self.click.await_args.args[1], next_target)
         self.assertEqual(self.client.npc_mainline_menu_selection['row'], self.later)
         self.cancel.assert_not_awaited()
 
     async def test_button_and_child_title_are_one_option(self):
         target = self.set_choices([('额外生命', self.row)], nested=True)[0].children.return_value[0]
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         self.click.assert_awaited_once_with(self.client, target)
 
     async def test_duplicate_separate_titles_are_preserved_without_guessing(self):
         self.set_choices([('额外生命', self.row), ('Extra Life', self.row)])
-        self.assertTrue(await close_npc_quest_menu(self.client))
+        self.assertTrue(await close_npc_quest_menu(self.client, select_mainlines=True))
         self.click.assert_not_awaited()
         self.cancel.assert_not_awaited()
         self.assertTrue(self.client.npc_mainline_menu_selection['failed'])
@@ -161,28 +161,28 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
     async def test_mixed_worlds_use_current_world_and_unknown_context_keeps_menu(self):
         targets = self.set_choices([(self.other['english'], self.other), ('额外生命', self.row)])
         self.client.zone_name.return_value = 'Arcanum/Area'
-        self.assertTrue(await close_npc_quest_menu(self.client))
+        self.assertTrue(await close_npc_quest_menu(self.client, select_mainlines=True))
         self.click.assert_not_awaited()
         self.cancel.assert_not_awaited()
         self.client.zone_name.return_value = 'Empyrea/Area'
-        self.assertTrue(await close_npc_quest_menu(self.client))
+        self.assertTrue(await close_npc_quest_menu(self.client, select_mainlines=True))
         self.click.assert_awaited_once_with(self.client, targets[1])
 
     async def test_sidequest_only_list_keeps_existing_cancel_behavior(self):
         self.set_choices([('About PvP', None), ('Unindexed sidequest', None)])
-        self.assertTrue(await close_npc_quest_menu(self.client))
+        self.assertTrue(await close_npc_quest_menu(self.client, select_mainlines=True))
         self.cancel.assert_awaited_once_with(self.client, cancel_multiple_quest_menu_path)
         self.click.assert_not_awaited()
 
     async def test_selected_mainline_does_not_accept_different_indexed_offer(self):
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         self.offer_title.maybe_text.return_value = self.later['english']
         await self.quester._advance_npc_dialogue(self.client)
         self.assertEqual(self.click.await_count, 1)
         self.assertTrue(self.client.npc_mainline_menu_selection['failed'])
 
     async def test_dialogue_and_quest_workers_cannot_double_select(self):
-        await asyncio.gather(close_npc_quest_menu(self.client),
+        await asyncio.gather(close_npc_quest_menu(self.client, select_mainlines=True),
                              self.quester._advance_npc_dialogue(self.client))
         # The second worker can accept the now-visible invitation, but never reselects.
         self.assertEqual([call.args[1] for call in self.click.await_args_list].count(
@@ -193,14 +193,14 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
         self.click.side_effect = None
         for now in (0, .2, 1.6, 3.2, 9.0):
             self.now = now
-            self.assertTrue(await close_npc_quest_menu(self.client))
+            self.assertTrue(await close_npc_quest_menu(self.client, select_mainlines=True))
         self.assertEqual(self.click.await_count, 2)
         self.cancel.assert_not_awaited()
         self.assertTrue(self.client.npc_mainline_menu_selection['failed'])
 
     async def test_complete_dialogue_is_response_not_a_failed_list_click(self):
         self.click.side_effect = None
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         self.accept.is_visible.return_value = True
         self.accept.maybe_text.return_value = '完成'
         await self.quester._advance_npc_dialogue(self.client)
@@ -209,7 +209,7 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(state['failed'])
         self.accept.is_visible.return_value = False
         self.now = 2
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         self.assertEqual(state['attempts'], 1)
         self.assertFalse(state['failed'])
         self.assertEqual(self.click.await_count, 3)
@@ -220,7 +220,7 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
         self.click.side_effect = None
         for now in (0, 1.6, 3.2):
             self.now = now
-            await close_npc_quest_menu(self.client)
+            await close_npc_quest_menu(self.client, select_mainlines=True)
         self.assertTrue(self.client.npc_mainline_menu_selection['failed'])
         self.click.side_effect = click
         self.chosen = self.row
@@ -232,7 +232,7 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.client.npc_mainline_menu_selection['failed'])
 
     async def test_wrong_offer_failure_is_not_revived_by_dialogue(self):
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         self.offer_title.maybe_text.return_value = self.later['english']
         await self.quester._advance_npc_dialogue(self.client)
         await self.quester._advance_npc_dialogue(self.client)
@@ -244,20 +244,20 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
         self.click.side_effect = None
         for index in range(4):
             self.now = index * 2
-            await close_npc_quest_menu(self.client)
+            await close_npc_quest_menu(self.client, select_mainlines=True)
             self.accept.is_visible.return_value = True
             self.accept.maybe_text.return_value = '完成'
             await self.quester._advance_npc_dialogue(self.client)
             self.accept.is_visible.return_value = False
         self.now = 10
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         self.assertEqual([call.args[1] for call in self.click.await_args_list].count(self.accept), 3)
         self.assertEqual(self.click.await_count, 7)
         self.assertEqual(self.client.npc_mainline_menu_selection['failure_reason'], 'unconfirmed_response')
         self.cancel.assert_not_awaited()
 
     async def test_complete_button_click_confirms_goal_progress_without_new_quest_id(self):
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         self.accept.maybe_text.return_value = '完成'
         self.decline.is_visible.return_value = False
         self.offer_title.is_visible.return_value = False
@@ -313,7 +313,7 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
         self.quests[99].name_lang_key.return_value = '任务搜寻'
         for now in (0, 1.6, 3.2):
             self.now = now
-            await close_npc_quest_menu(self.client)
+            await close_npc_quest_menu(self.client, select_mainlines=True)
         self.click.side_effect = click
         self.chosen = self.row
         self.accept.is_visible.return_value = self.decline.is_visible.return_value = True
@@ -344,12 +344,12 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_other_recovery_preserves_menu_without_clicks(self):
         self.client.quest_recovery_owner = 'callisto'
-        self.assertTrue(await close_npc_quest_menu(self.client))
+        self.assertTrue(await close_npc_quest_menu(self.client, select_mainlines=True))
         self.click.assert_not_awaited()
         self.cancel.assert_not_awaited()
 
     async def test_stopping_automation_before_acceptance_does_not_click_accept(self):
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         self.client.questing_status = False
         await self.quester._advance_npc_dialogue(self.client)
         self.assertEqual(self.click.await_count, 1)
@@ -360,7 +360,7 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
         self.quests[99].mainline.return_value = True
         self.client.zone_name.return_value = 'Arcanum/Area'
         self.objective = 'Talk To Amara Blackmane'
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         self.click.assert_awaited_once_with(self.client, targets[1])
 
     async def test_owned_quest_with_non_npc_goal_closes_menu_without_selecting_next_offer(self):
@@ -377,14 +377,14 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
     async def test_owned_quest_talks_to_other_npc_so_menu_is_closed(self):
         self.quests[99].name_lang_key.return_value = self.row['keys'][0]
         self.objective = 'Talk To Merle Ambrose'
-        self.assertTrue(await close_npc_quest_menu(self.client))
+        self.assertTrue(await close_npc_quest_menu(self.client, select_mainlines=True))
         self.click.assert_not_awaited()
         self.cancel.assert_awaited_once()
 
     async def test_owned_quest_can_still_turn_in_to_this_npc_then_close_returned_menu(self):
         self.quests[99].name_lang_key.return_value = self.row['keys'][0]
         self.objective = 'Talk To Amara Blackmane'
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         self.accept.maybe_text.return_value = '完成'
         self.decline.is_visible.return_value = False
         self.assertEqual(self.client.npc_mainline_menu_selection['before_goal'], 7)
@@ -404,12 +404,12 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.client.npc_mainline_menu_selection)
 
     async def test_acceptance_returning_directly_to_list_does_not_require_another_id_change(self):
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         await self.quester._advance_npc_dialogue(self.client)
         self.assertEqual(self.client.quest_id.return_value, 42)
         self.menu.is_visible.return_value = self.exit.is_visible.return_value = True
         self.now = 2
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         self.assertEqual(self.click.await_count, 2)
         self.cancel.assert_awaited_once()
         self.assertIsNone(self.client.npc_mainline_menu_selection)
@@ -417,7 +417,7 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
     async def test_unreadable_owned_goal_preserves_menu_without_guessing(self):
         self.quests[99].name_lang_key.return_value = self.row['keys'][0]
         self.objective = ''
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         self.click.assert_not_awaited()
         self.cancel.assert_not_awaited()
 
@@ -435,7 +435,7 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_gold_screenshot_hidden_popup_reads_menu_actor_and_selects_turn_in(self):
         _, target = self.owned_gold_menu()
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         self.click.assert_awaited_once_with(self.client, target)
         self.assertEqual(self.client.npc_mainline_menu_selection['before_goal'], 7)
         self.cancel.assert_not_awaited()
@@ -444,7 +444,7 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
     async def test_actual_menu_actor_takes_priority_over_stale_nearby_popup(self):
         _, target = self.owned_gold_menu()
         self.npc = '另一个 NPC'
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         self.click.assert_awaited_once_with(self.client, target)
 
     async def test_hidden_or_other_menu_actor_is_not_used_as_turn_in_proof(self):
@@ -455,21 +455,21 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
                 header.maybe_text.return_value = '其他 NPC' if mode == 'other' else '派克·德拉格'
                 header.maybe_read_type_name.return_value = 'ControlButton' if mode == 'button' else 'ControlText'
                 header.name.return_value = 'txtMessage' if mode == 'message' else 'liveActorHeader'
-                await close_npc_quest_menu(self.client)
+                await close_npc_quest_menu(self.client, select_mainlines=True)
                 self.click.assert_not_awaited()
                 self.cancel.assert_not_awaited()
 
     async def test_menu_actor_changed_during_final_read_prevents_click(self):
         header, _ = self.owned_gold_menu()
         header.maybe_text.side_effect = ['派克·德拉格', '派克·德拉格', '其他 NPC']
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         self.click.assert_not_awaited()
         self.cancel.assert_not_awaited()
 
     async def test_goal_changed_after_menu_actor_read_prevents_click(self):
         _, _ = self.owned_gold_menu()
         self.client.goal_id.side_effect = [7, 8]
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         self.click.assert_not_awaited()
 
     async def test_unreadable_actor_logs_bounded_wait_and_recovers_across_quester_recreation(self):
@@ -477,13 +477,13 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
         with patch('src.questing.logger') as log:
             for now in (0, 1, 5, 7):
                 self.now = now
-                await close_npc_quest_menu(self.client)
+                await close_npc_quest_menu(self.client, select_mainlines=True)
             log.warning.assert_called_once()
         self.assertTrue(self.client.npc_mainline_menu_read_wait['warned'])
         self.click.assert_not_awaited()
         self.cancel.assert_not_awaited()
         header.maybe_text.return_value = '派克·德拉格'
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         self.click.assert_awaited_once_with(self.client, target)
         self.assertIsNone(self.client.npc_mainline_menu_read_wait)
 
@@ -499,7 +499,7 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_hidden_hud_uses_same_pre_x_goal_and_actual_menu_actor(self):
         _, target = self.cached_gold_goal()
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         self.click.assert_awaited_once_with(self.client, target)
         self.assertEqual(self.client.npc_mainline_menu_selection['before_goal'], 7)
 
@@ -517,7 +517,7 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
                     self.client.body.position.return_value = XYZ(1000, 20, 30)
                 else:
                     self.now = 61
-                await close_npc_quest_menu(self.client)
+                await close_npc_quest_menu(self.client, select_mainlines=True)
                 self.click.assert_not_awaited()
                 self.cancel.assert_not_awaited()
 
@@ -533,12 +533,12 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_old_click_limit_does_not_keep_an_already_accepted_quest_stuck(self):
         self.click.side_effect = None
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         state = self.client.npc_mainline_menu_selection
         state.update(failed=True, failure_reason='unconfirmed_response', click_count=4)
         self.quests[99].name_lang_key.return_value = self.row['keys'][0]
         self.now = 20
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         self.assertEqual(self.click.await_count, 1)
         self.cancel.assert_awaited_once()
         self.assertIsNone(self.client.npc_mainline_menu_selection)
@@ -546,14 +546,14 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
     async def test_loading_or_battle_does_not_click_list_or_cancel(self):
         for name in ('is_loading', 'in_battle'):
             getattr(self.client, name).return_value = True
-            self.assertFalse(await close_npc_quest_menu(self.client))
+            self.assertFalse(await close_npc_quest_menu(self.client, select_mainlines=True))
             self.click.assert_not_awaited()
             self.cancel.assert_not_awaited()
             getattr(self.client, name).return_value = False
 
     async def test_failed_finder_cleanup_does_not_cancel_preserved_mainline_list(self):
         self.set_choices([('额外生命', self.row), ('Extra Life', self.row)])
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         identity = await self.quester._mainline_identity(self.client)
         zone = await self.client.zone_name()
         self.quester._mainline_finder_observations[id(self.client)] = {
@@ -578,7 +578,7 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
         row = next(r for r in quest_rows() if 'QuestTitle_17D615' in r['keys'])
         target = self.set_choices([('Monkey Business', row)])[0]
         self.client.zone_name.return_value = 'Novus/Area'
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         self.click.assert_awaited_once_with(self.client, target)
         self.assertEqual(self.client.npc_mainline_menu_selection['row'], row)
 
@@ -586,7 +586,7 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
         row = next(r for r in quest_rows() if 'QuestTitle_17D615' in r['keys'])
         self.set_choices([('Monkey Business', row)])
         self.client.zone_name.return_value = 'Arcanum/Area'
-        await close_npc_quest_menu(self.client)
+        await close_npc_quest_menu(self.client, select_mainlines=True)
         self.click.assert_not_awaited()
         self.cancel.assert_not_awaited()
         self.assertTrue(self.client.npc_mainline_menu_selection['failed'])
@@ -611,7 +611,7 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.client.quest_id.return_value, 42)
         self.cancel.assert_not_awaited()
 
-    async def test_auto_dialogue_alone_selects_and_accepts_mainline_with_side_accept_off(self):
+    async def test_auto_dialogue_alone_exits_list_without_selecting_a_quest(self):
         self.client.questing_status = False
         tree = ast.parse(Path('XuanShu.py').read_text(encoding='utf-8'))
         function = next(n for n in ast.walk(tree)
@@ -627,12 +627,19 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
         namespace.update(gather_owned=gather_owned, is_visible_by_path=is_visible_by_path)
         exec(compile('from __future__ import annotations\n' + ast.unparse(function),
                      'XuanShu.py', 'exec'), namespace)
+        closed = asyncio.Event()
+        previous_cancel = self.cancel.side_effect
+        async def cancel(client, path):
+            await previous_cancel(client, path)
+            closed.set()
+        self.cancel.side_effect = cancel
         task = asyncio.create_task(namespace['dialogue_loop']())
         try:
-            await asyncio.wait_for(self.accepted.wait(), 1)
-            self.assertEqual(self.click.await_count, 2)
+            await asyncio.wait_for(closed.wait(), 1)
+            self.click.assert_not_awaited()
             self.client.send_key.assert_not_awaited()
-            self.cancel.assert_not_awaited()
+            self.cancel.assert_awaited_once()
+            self.assertEqual(self.client.quest_id.return_value, 99)
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)

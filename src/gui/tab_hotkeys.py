@@ -224,6 +224,9 @@ def build_hotkeys_tab(ctx):
         status_snapshot.clear()
         status_snapshot.update(snapshot)
         _refresh_status()
+        questing = any(status_snapshot.get('toggle_questing', {}).values())
+        version_label.setVisible(not questing)
+        repo_links_widget.setVisible(not questing)
 
     def sync_all_check():
         if updating_checks[0]:
@@ -769,6 +772,7 @@ def build_hotkeys_tab(ctx):
 
     # --- Right panel: Tool info ---
     info_widget = QWidget()
+    info_widget.setMinimumWidth(238)
     info_layout = QVBoxLayout(info_widget)
     info_layout.setContentsMargins(4, 4, 4, 4)
 
@@ -791,7 +795,9 @@ def build_hotkeys_tab(ctx):
     version_label.setOpenExternalLinks(True)
     info_layout.addWidget(version_label)
 
-    repo_links_row = QHBoxLayout()
+    repo_links_widget = QWidget()
+    repo_links_row = QHBoxLayout(repo_links_widget)
+    repo_links_row.setContentsMargins(0, 0, 0, 0)
     repo_links_row.setSpacing(4)
     repo_links_row.addStretch()
     repo_links_row.addWidget(
@@ -822,7 +828,7 @@ def build_hotkeys_tab(ctx):
         )
     )
     repo_links_row.addStretch()
-    info_layout.addLayout(repo_links_row)
+    info_layout.addWidget(repo_links_widget)
 
     quest_party_status = QLabel()
     quest_party_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -862,7 +868,10 @@ def build_hotkeys_tab(ctx):
         quest_status_parts[tag] = str(value or '')
         text = '\n'.join(part for part in quest_status_parts.values() if part)
         quest_party_status.setText(text)
-        quest_party_status.setMinimumHeight(max(58, quest_party_status.heightForWidth(230)))
+        # Reserve the full wrapped height, including the styled frame/padding.
+        # A minimum alone lets the surrounding fixed-height panel clip text.
+        quest_party_status.ensurePolished()
+        quest_party_status.setFixedHeight(max(58, quest_party_status.heightForWidth(230)))
         quest_party_status.setVisible(bool(text))
         quest_party_status.updateGeometry()
 

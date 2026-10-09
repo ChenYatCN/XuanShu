@@ -68,6 +68,27 @@ class HotkeyGroupUITests(unittest.TestCase):
         self.assertEqual(command.com_type, GUICommandType.ToggleHotkeyGroup)
         self.assertEqual(command.data, {'action': 'toggle_combat', 'clients': ['p1', 'p2']})
 
+    def test_questing_hides_version_links_but_preserves_logo_and_full_status(self):
+        self.tab.resize(680, 520)
+        self.tab.show()
+        version = next(label for label in self.tab.findChildren(QLabel) if '<b>XuanShu</b>' in label.text())
+        links = version.parentWidget().layout().itemAt(3).widget()
+        self.api['update_client_states']({'toggle_questing': {'p3': True, 'p4': True}})
+        self.api['update_quest_status']('QuestMainlineProgress', 'p1 · Azteca 120/197\np3 · polaris 34/98')
+        self.api['update_quest_status']('QuestPartyRuntimeStatus', 'p2 → p1｜等待本组切区\np4 → p3｜等待本组切区')
+        self.app.processEvents()
+        label = self.ctx.widget_tags['QuestPartyRuntimeStatus']
+        self.assertFalse(version.isVisible())
+        self.assertFalse(links.isVisible())
+        self.assertTrue(self.ctx.tool_info_logo_label.isVisible())
+        self.assertTrue(label.isVisible())
+        self.assertGreaterEqual(label.height(), label.heightForWidth(label.width()))
+        self.assertTrue(label.parentWidget().rect().contains(label.geometry()))
+        self.api['update_client_states']({'toggle_questing': {'p3': False, 'p4': False}})
+        self.app.processEvents()
+        self.assertTrue(version.isVisible())
+        self.assertTrue(links.isVisible())
+
     def test_reset_button_is_narrower_without_changing_hotkey_rows(self):
         self.tab.resize(680, 500)
         self.tab.show()

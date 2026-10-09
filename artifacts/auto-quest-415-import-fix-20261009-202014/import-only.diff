@@ -1,0 +1,10 @@
+--- XuanShu.py.before
++++ XuanShu.py
+@@ -30,6 +30,7 @@
+ from src import wizpatch_runner
+ from src.auto_fish_original_adapter import fish_bot
+ from src.auto_pet import nomnom
++from src.automation_ownership import automation_owner
+ from src.bot_targeting import (
+     bot_group_key,
+     normalize_client_titles,

@@ -40,6 +40,7 @@ from src.interaction_prompts import (
     resolve_portal_destination,
 )
 from src.paths import *
+from src.automation_ownership import automation_owner
 from src.sprinty_client import SprintyClient
 from src.window_text import read_control_text
 from src.interaction_prompts import plain_text
@@ -529,8 +530,8 @@ async def exit_menus(c: Client, paths):
                     await c.mouse_handler.click_window(click_button)
 
 
-async def close_npc_quest_menu(client: Client, *, select_mainlines=True) -> bool:
-    """Let automation select indexed mainlines before dismissing a sidequest list."""
+async def close_npc_quest_menu(client: Client, *, select_mainlines=False) -> bool:
+    """Use the 4.1.5 Exit rule; indexed selection belongs to explicit recovery."""
     if await client.is_loading() or await client.in_battle():
         return False
     if not await is_visible_by_path(client, cancel_multiple_quest_menu_path):
@@ -538,14 +539,21 @@ async def close_npc_quest_menu(client: Client, *, select_mainlines=True) -> bool
     # An active quest dialogue takes priority over the list behind it.
     if await is_visible_by_path(client, advance_dialog_path):
         return False
-    if select_mainlines and (getattr(client, 'questing_status', False) is True
-                             or getattr(client, 'auto_dialogue_running', False) is True):
+    if (select_mainlines and getattr(client, 'mainline_finder_enabled', False)
+            and (getattr(client, 'questing_status', False) is True
+                             or getattr(client, 'auto_dialogue_running', False) is True)):
         # Runtime import keeps utils/questing module initialization acyclic.
         from src.questing import Quester
         if await Quester(client, [client], None)._select_npc_mainline_menu(client):
             return True
     client.npc_mainline_menu_selection = None
-    await safe_click_window(client, cancel_multiple_quest_menu_path)
+    client.npc_mainline_menu_context = None
+    client.npc_mainline_menu_read_wait = None
+    async with automation_owner(client, 'npc-menu-exit'):
+        if (await client.is_loading() or await client.in_battle()
+                or await is_visible_by_path(client, advance_dialog_path)):
+            return False
+        await safe_click_window(client, cancel_multiple_quest_menu_path)
     await asyncio.sleep(0.2)
     return True
 
@@ -947,8 +955,32 @@ async def prepare_potion_dungeon_return(client: Client, zone: str, require_snaps
     return True
 
 
+async def _potion_dungeon_room_tp(client: Client, zone: str, *, reenter: bool):
+    from src.teleport_math import navmap_tp
+    from src.task_lifecycle import gather_owned
+
+    # Keep the refill owner throughout recovery; stop movement on loading,
+    # combat, a room transition or the user stopping this client's task.
+    movement = asyncio.create_task(navmap_tp(client, reenter=reenter))
+    async def watch_room():
+        while (getattr(client, 'questing_status', True)
+               and not getattr(client, '_xuanshu_dungeon_closed', False)
+               and await is_free(client) and await client.zone_name() == zone):
+            await asyncio.sleep(.1)
+    watcher = asyncio.create_task(watch_room())
+    try:
+        async with asyncio.timeout(15.0):
+            done, _ = await asyncio.wait((movement, watcher), return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                await task
+    finally:
+        movement.cancel()
+        watcher.cancel()
+        await gather_owned(movement, watcher, return_exceptions=True)
+
+
 async def return_to_dungeon_after_potions(client: Client, original_zone: str) -> bool:
-    """Use the game's Resume Instance button, never a quest/friend teleport."""
+    """Resume the instance, then follow the quest arrow through rooms to a peer."""
     context = getattr(client, 'potion_return_context', None)
     if (not isinstance(context, dict) or context.get('zone') != original_zone
             or context.get('snapshot') is None and context.get('zone_id') is None):
@@ -989,13 +1021,38 @@ async def return_to_dungeon_after_potions(client: Client, original_zone: str) ->
         logger.error(f"自动任务：{client.title} 点击地牢返回按钮后未观察到区域切换。")
         return False
 
-    deadline = time.monotonic() + 45.0
+    deadline = time.monotonic() + 90.0
     stable_reads = 0
+    stable_area = None
+    last_tp_zone = None
+    next_tp_at = 0.0
+    peers = [getattr(client, 'quest_party_quester', None),
+             *getattr(client, 'quest_party_hitters', [])]
+    # Only follow this party's peers that were proved present before departure.
+    peers = [peer for peer in peers if peer is not None and peer is not client
+             and id(peer) in context.get('peer_areas', {})]
     while time.monotonic() < deadline:
+        if getattr(client, 'questing_status', True) is False:
+            return False
         if await closed_dungeon_popup(client, dismiss=True) or getattr(client, '_xuanshu_dungeon_closed', False):
             return False
         snapshot = None
-        if await is_free(client) and await client.zone_name() == original_zone:
+        peer = None
+        for candidate in peers:
+            if (getattr(candidate, 'questing_status', False)
+                    and not getattr(candidate, 'refilling_potions', False)
+                    and not getattr(candidate, 'in_solo_zone', False)
+                    and not await candidate.is_loading()):
+                peer = candidate
+                break
+        target_zone = await peer.zone_name() if peer is not None else original_zone
+        current_zone = await client.zone_name()
+        area = (current_zone, id(peer))
+        if area != stable_area:
+            stable_reads = 0
+            stable_area = area
+        if (not await client.is_loading() and current_zone != departure_zone
+                and (await is_free(client) or peer is not None and await client.in_battle())):
             snapshot = await potion_quest_snapshot(client)
             if (snapshot is not None and context.get('snapshot') is not None
                     and snapshot[0] != context['snapshot'][0]):
@@ -1003,13 +1060,32 @@ async def return_to_dungeon_after_potions(client: Client, original_zone: str) ->
                 return False
             before_id = context.get('zone_id') if isinstance(context, dict) else None
             after_id = await potion_zone_id(client)
-            if before_id is not None and after_id != before_id:
+            if current_zone == original_zone and before_id is not None and after_id != before_id:
                 logger.error(f'自动任务：{client.title} 返回同名区域但 Zone ID 不匹配，停止恢复任务。')
                 return False
+            if (snapshot is not None and peer is not None and target_zone
+                    and target_zone != departure_zone and current_zone != target_zone):
+                stable_reads = 0
+                if await is_free(client) and time.monotonic() >= next_tp_at:
+                    logger.info(f'自动任务：{client.title} 补药返回后位于 {current_zone}，沿任务目标追赶 {peer.title} 所在的 {target_zone}。')
+                    try:
+                        await _potion_dungeon_room_tp(client, current_zone,
+                                                     reenter=last_tp_zone == current_zone)
+                    except (TimeoutError, ValueError) as exc:
+                        logger.debug(f'自动任务：{client.title} 本轮追赶房间未完成：{exc}')
+                    last_tp_zone = current_zone
+                    next_tp_at = time.monotonic() + 2.0
+                await asyncio.sleep(.5)
+                continue
+            if (current_zone != target_zone
+                    or peer is not None and not await clients_share_live_area(client, peer)):
+                snapshot = None
         if snapshot is not None:
             stable_reads += 1
             if stable_reads >= 3:
                 if isinstance(context, dict):
+                    context['zone'] = current_zone
+                    context['zone_id'] = after_id
                     context['returned_snapshot'] = snapshot
                     try:
                         await observe_party_area(client)
@@ -1018,16 +1094,17 @@ async def return_to_dungeon_after_potions(client: Client, original_zone: str) ->
                         context['returned_area_token'] = None
                     saved = context.get('dungeon_state')
                     if isinstance(saved, dict):
-                        client.quest_dungeon_recovery = dict(saved, zone=original_zone,
+                        client.quest_dungeon_recovery = dict(saved, zone=current_zone,
                             snapshot=snapshot, since=None, active=False, attempted=False)
-                    client.quest_party_group_dungeon_zone = context.get('group_zone')
+                    client.quest_party_group_dungeon_zone = (current_zone
+                        if context.get('group_zone') is not None else None)
                 pending_hitters = {
                     id(h) for h in getattr(client, "quest_party_hitters", [])
                     if getattr(h, "questing_status", False)
                     and not getattr(client, 'in_solo_zone', False)
                 }
                 client.potion_dungeon_returned = (
-                    original_zone, time.monotonic(), pending_hitters,
+                    current_zone, time.monotonic(), pending_hitters,
                 ) if pending_hitters or getattr(client, "quest_party_status_session", None) is not None else None
                 client.quest_party_battle_sync_state = None
                 logger.info(f"自动任务：{client.title} 地牢返回按钮已完成回传，任务状态可读；恢复前仍需确认队伍同副本。")
@@ -2333,52 +2410,48 @@ async def get_friend_popup_wizard_name(client: Client):
         return ""
 
 
-async def collect_wisps(client: Client, nothing_but_safe_entities=True):
+async def collect_wisps(client: Client, nothing_but_safe_entities=True, *, limit=None):
     # Collects all the wisps in the current area, only works within the entity draw distance.
+    if limit is not None and limit <= 0:
+        return
+    sprinter = SprintyClient(client)
     entities = []
-    entities = await SprintyClient(client).get_base_entities_with_vague_name(
-        "WispHealth"
-    )
-    entities += await SprintyClient(client).get_base_entities_with_vague_name(
-        "WispMana"
-    )
-    entities += await SprintyClient(client).get_base_entities_with_vague_name(
-        "WispGold"
-    )
+    resource_readers = {}
+    for name, current, maximum in (
+            ('WispHealth', client.stats.current_hitpoints, client.stats.max_hitpoints),
+            ('WispMana', client.stats.current_mana, client.stats.max_mana)):
+        if await current() < await maximum():
+            found = await sprinter.get_base_entities_with_vague_name(name)
+            entities.extend(found)
+            resource_readers.update({id(entity): (current, maximum) for entity in found})
+    if limit is None:
+        entities += await sprinter.get_base_entities_with_vague_name('WispGold')
+    if not entities:
+        return
 
     if nothing_but_safe_entities:
-        safe_entities = await SprintyClient(client).find_safe_entities_from(entities)
+        safe_entities = await sprinter.find_safe_entities_from(entities)
     else:
         safe_entities = entities
 
-    if safe_entities:
-        for entity in safe_entities:
-            wisp_xyz = await entity.location()
-            await client.teleport(wisp_xyz)
-            await asyncio.sleep(0.1)
+    zone = await client.zone_name()
+    total_collected = 0
+    for entity in safe_entities:
+        readers = resource_readers.get(id(entity))
+        if readers is not None and await readers[0]() >= await readers[1]():
+            continue  # A previous pickup can fill this resource.
+        wisp_xyz = await entity.location()
+        if not await is_free(client) or await client.zone_name() != zone:
+            return
+        await client.teleport(wisp_xyz)
+        total_collected += 1
+        if limit is not None and total_collected >= limit:
+            return
+        await asyncio.sleep(0.1)
 
 
 async def collect_wisps_with_limit(client: Client, limit=3):
-    # Collects all the wisps in the current area, only works within the entity draw distance.
-    entities = []
-    entities = await SprintyClient(client).get_base_entities_with_vague_name(
-        "WispHealth"
-    )
-    entities += await SprintyClient(client).get_base_entities_with_vague_name(
-        "WispMana"
-    )
-
-    total_collected = 0
-
-    for entity in entities:
-        wisp_xyz = await entity.location()
-        await client.teleport(wisp_xyz)
-        total_collected += 1
-
-        if total_collected == limit:
-            break
-
-        await asyncio.sleep(0.1)
+    return await collect_wisps(client, limit=limit)
 
 
 async def pid_to_client(clients: List[Client], pid: int) -> Client:

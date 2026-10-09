@@ -1,0 +1,34 @@
+{
+  "XuanShu.py": {
+    "matches_current_code": true,
+    "source_sha256": "1f91140dfb3e42edee55f01c82413c512e64e8b070d6589cd02e4b7ed98d52f6",
+    "code_fingerprint": "1dbc70d476a8114f2448bd4b5a468f8c6b2af2c4e191850ee18987b121e6a241"
+  },
+  "src/questing.py": {
+    "matches_current_code": true,
+    "source_sha256": "d1fc51172808d4cb626d9e7698ce28d2bba9b753d7c565bc508e736f55b9b36c",
+    "code_fingerprint": "eb3e6fd8b178adb63418fb0938902653cd12aeaa07b25d22eba4f725d1263e11"
+  },
+  "src/utils.py": {
+    "matches_current_code": true,
+    "source_sha256": "4d0dee7854199458b6f2289e4d1bd32e48801ada429aa83346034f5d2e4e8193",
+    "code_fingerprint": "f2449d557fd1aeaaa566a2f8f59a6c235918998b99cd278777eff0838436b808"
+  },
+  "src/teleport_math.py": {
+    "matches_current_code": true,
+    "source_sha256": "b3d77509e3d5acdc4bb52862dcc04ccd0f62f113f325ef4fcf737c084ee4bb12",
+    "code_fingerprint": "a350bab238b149ce61ed2ac6bf6a5e7415014653b5ff86756f920b690dc56ad7"
+  },
+  "src/automation_ownership.py": {
+    "matches_current_code": true,
+    "source_sha256": "eb89299d3cad6e7eebc6a67a4fa899ee4531da540d2bc4506ae4d648f87eb373",
+    "code_fingerprint": "a6d39ad1da1c302c8c551dfb878e15c2b51eeae2f0f5f86282003b184f61d154"
+  },
+  "src/task_lifecycle.py": {
+    "matches_current_code": true,
+    "source_sha256": "b160ab8d48b8b179c33a8c776750fc31f77922e0a63c15e1e11da8aab4b08615",
+    "code_fingerprint": "40099a210860087481c0c91fc25683e86ec8a8a31309b0eb0ea44281d48d8d6a"
+  },
+  "embedded_main_import_confirmed": true,
+  "comparison": "Structural compiled code at optimize=2; only build-path filenames excluded."
+}

@@ -1,0 +1,21 @@
+{
+  "XuanShu.py": {
+    "matches_current_code": true,
+    "fingerprint": "54b0ce50bccbc3d3ce3a17fefa179994df3833679c60049a300d5e891471d109"
+  },
+  "src/questing.py": {
+    "matches_current_code": true,
+    "fingerprint": "3ee73936ee7c043f4880248c0dde0f56f0c04bc5b6a22092f7db212dd47191fe"
+  },
+  "src/utils.py": {
+    "matches_current_code": true,
+    "fingerprint": "8e56353ec16e9097b7b0ad5f90c2b44184b3bcbc9f1a833b8e7beb926bf49b15"
+  },
+  "src/teleport_math.py": {
+    "matches_current_code": true,
+    "fingerprint": "aaf3684cc2b1b247dccb9432cc56e48e2c0996c7eb86d1bdec8322f71f02f87e"
+  },
+  "comparison": "Structural bytecode, constants, names and line/exception tables; existing optimize=2; only build-path filenames excluded.",
+  "exe_size": 72001527,
+  "exe_sha256": "70287493b760531cec8c68dfbebe8683958057e82d9a1188d659989cba73b8a9"
+}

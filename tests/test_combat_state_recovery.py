@@ -1,3 +1,4 @@
+from src.task_lifecycle import gather_owned
 import ast
 import asyncio
 from pathlib import Path
@@ -176,6 +177,7 @@ class CombatStateRecoveryTests(unittest.IsolatedAsyncioTestCase):
         quester = SimpleNamespace(auto_quest=AsyncMock(side_effect=start))
         run = source_function('run_questing_worker', {
             'Client': object, 'party_enabled': True, 'logger': Mock(),
+            'gather_owned': gather_owned, 'dialogue_loop': AsyncMock(),
             'reconcile_combat_state': reconcile_combat_state,
             'original_client_locations': locations, 'Quester': Mock(return_value=quester),
             'ignore_pet_level_up': False, 'only_play_dance_game': False})
@@ -185,11 +187,14 @@ class CombatStateRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
 class PostCombatCleanupTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        self.now = 100.0
+        self.delays = []
         self.client = ClientState(
             title='p3', process_id=3, questing_status=True,
             just_entered_combat=None, entity_detect_combat_status=True,
             just_left_combat=False, client_being_helped=None,
             invincible_combat_timer=False, original_location_before_combat='old safe',
+            post_combat_cleanup_active=False,
             is_loading=AsyncMock(return_value=False), in_battle=AsyncMock(return_value=False),
             teleport=AsyncMock())
         self.locations = {3: 'old safe', 1: 'other group'}
@@ -199,6 +204,7 @@ class PostCombatCleanupTests(unittest.IsolatedAsyncioTestCase):
             self.timeouts.append(timeout)
             return await asyncio.wait_for(awaitable, min(timeout, .05))
         async def tick(delay):
+            self.delays.append(delay)
             if delay == .25:
                 self.ticks += 1
                 if self.ticks > 1:
@@ -206,6 +212,7 @@ class PostCombatCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.ticks = 0
         self.namespace = {
             'Client': object, 'SprintyClient': lambda client: client,
+            'time': SimpleNamespace(time=lambda: self.now),
             'asyncio': SimpleNamespace(sleep=tick, wait_for=bounded, TimeoutError=asyncio.TimeoutError),
             'combat_group_for': lambda client: [client], 'original_client_locations': self.locations,
             'nearest_duel_circle_distance_and_xyz': AsyncMock(return_value=(None, None)),
@@ -217,70 +224,58 @@ class PostCombatCleanupTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await self.detect(self.client)
 
-    def assert_released(self):
+    def assert_movement_released(self):
         self.assertFalse(self.client.entity_detect_combat_status)
         self.assertFalse(self.client.post_combat_cleanup_active)
-        self.assertFalse(self.client.invincible_combat_timer)
         self.assertEqual(self.locations, {1: 'other group'})
 
-    async def test_wisp_timeout_drains_collection_and_restores_movement(self):
-        drained = asyncio.Event()
-        async def collect(*args, **kwargs):
-            try:
-                await asyncio.Future()
-            finally:
-                drained.set()
-        self.wisps.side_effect = collect
+    async def test_questing_handoff_skips_wisps_old_position_and_standing_wait(self):
         await self.once()
-        self.assertTrue(drained.is_set())
-        self.assertEqual(self.timeouts, [3, 3, 3])
-        self.assert_released()
-        self.client.teleport.assert_awaited_once_with('old safe')
+        self.assert_movement_released()
+        self.wisps.assert_not_awaited()
+        self.client.teleport.assert_not_awaited()
+        self.assertNotIn(6.5, self.delays)
+        self.assertNotIn(.3, self.delays)
+        self.assertTrue(self.client.invincible_combat_timer)
+        self.assertEqual(self.client.post_combat_invulnerable_until, self.now + 6.5)
 
-    async def test_collection_read_error_releases_cleanup_for_supervisor_retry(self):
-        self.wisps.side_effect = ValueError('stale wisp')
-        with self.assertRaisesRegex(ValueError, 'stale wisp'):
-            await self.detect(self.client)
-        self.assert_released()
+    async def test_battle_pull_protection_expires_without_waiting_at_battle_point(self):
+        self.client.entity_detect_combat_status = False
+        self.client.original_location_before_combat = None
+        self.client.invincible_combat_timer = True
+        self.client.post_combat_invulnerable_until = self.now - .1
+        await self.once()
+        self.assertFalse(self.client.invincible_combat_timer)
+        self.assert_movement_released()
+        self.wisps.assert_not_awaited()
         self.client.teleport.assert_not_awaited()
 
-    async def test_cancelled_collection_drains_and_releases_own_state(self):
-        started, drained = asyncio.Event(), asyncio.Event()
-        async def collect(*args, **kwargs):
-            started.set()
-            try:
-                await asyncio.Future()
-            finally:
-                drained.set()
-        self.wisps.side_effect = collect
-        task = asyncio.create_task(self.detect(self.client))
-        await asyncio.wait_for(started.wait(), 1)
-        task.cancel()
-        with self.assertRaises(asyncio.CancelledError):
-            await task
-        self.assertTrue(drained.is_set())
-        self.assert_released()
-
-    async def test_old_safe_position_timeout_cancels_move_and_releases_state(self):
-        drained = asyncio.Event()
-        async def teleport(*args):
-            try:
-                await asyncio.Future()
-            finally:
-                drained.set()
-        self.client.teleport.side_effect = teleport
+    async def test_unexpired_protection_does_not_block_detection(self):
+        self.client.entity_detect_combat_status = False
+        self.client.original_location_before_combat = None
+        self.client.invincible_combat_timer = True
+        self.client.post_combat_invulnerable_until = self.now + 6
         await self.once()
-        self.assertTrue(drained.is_set())
-        self.assert_released()
+        self.assertTrue(self.client.invincible_combat_timer)
+        self.namespace['nearest_duel_circle_distance_and_xyz'].assert_awaited_once()
+        self.assert_movement_released()
 
-    async def test_refill_started_during_cleanup_never_returns_to_old_position(self):
-        async def collect(*args, **kwargs):
-            self.client.refilling_potions = True
-        self.wisps.side_effect = collect
+    async def test_battle_pull_protection_also_expires_after_questing_stops(self):
+        self.client.questing_status = False
+        self.client.invincible_combat_timer = True
+        self.client.post_combat_invulnerable_until = self.now - .1
         await self.once()
+        self.assertFalse(self.client.invincible_combat_timer)
+        self.wisps.assert_not_awaited()
         self.client.teleport.assert_not_awaited()
-        self.assertTrue(self.client.refilling_potions)
-        self.assert_released()
+
+    async def test_refill_keeps_its_own_movement_protection(self):
+        self.client.refilling_potions = True
+        await self.once()
+        self.wisps.assert_not_awaited()
+        self.client.teleport.assert_not_awaited()
+        self.assertTrue(self.client.entity_detect_combat_status)
+        self.assertEqual(self.locations, {3: 'old safe', 1: 'other group'})
 
     async def test_loading_or_dialogue_after_nudge_does_not_collect_or_move(self):
         self.namespace['is_free'].side_effect = [True, False]

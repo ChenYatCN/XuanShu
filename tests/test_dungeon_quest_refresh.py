@@ -1,4 +1,5 @@
 import unittest
+from src.paths import npc_range_path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -127,6 +128,59 @@ class DungeonQuestRefreshTests(unittest.IsolatedAsyncioTestCase):
         self.now = 180.0
         self.assertFalse(await self.quester._maybe_refresh_stalled_dungeon_quest(self.client))
         self.client.send_key.assert_not_awaited()
+
+    async def test_shared_dungeon_refreshes_once_then_waits_for_manual_progress(self):
+        self.client.quest_party_hitters = [SimpleNamespace()]
+        self.client.quest_party_group_dungeon_zone = 'Dungeon/RoomA'
+        await self.arm()
+        self.now = 180
+        self.assertTrue(await self.quester._maybe_refresh_stalled_dungeon_quest(self.client))
+        self.card_click.assert_awaited_once()
+        self.now = self.client.quest_dungeon_recovery['since'] + 180
+        self.assertTrue(await self.quester._maybe_refresh_stalled_dungeon_quest(self.client))
+        self.assertTrue(self.client.quest_dungeon_recovery['manual_wait'])
+        self.now += 1000
+        self.assertTrue(await self.quester._maybe_refresh_stalled_dungeon_quest(self.client))
+        self.card_click.assert_awaited_once()
+        self.quester.read_quest_txt.return_value = 'Defeat 1/3'
+        self.assertFalse(await self.quester._maybe_refresh_stalled_dungeon_quest(self.client))
+        self.assertFalse(self.client.quest_dungeon_recovery['manual_wait'])
+
+    async def test_shared_room_auto_arms_even_with_finder_disabled(self):
+        self.client.mainline_finder_enabled = False
+        self.client.quest_party_hitters = [SimpleNamespace()]
+        self.client.quest_party_group_dungeon_zone = 'Dungeon/RoomA'
+        self.assertFalse(await self.quester._maybe_refresh_stalled_dungeon_quest(self.client))
+        self.assertEqual(self.client.quest_dungeon_recovery['zone'], 'Dungeon/RoomA')
+        self.now = 180
+        self.quester._refresh_dungeon_quest = AsyncMock(return_value=True)
+        self.assertTrue(await self.quester._maybe_refresh_stalled_dungeon_quest(self.client))
+        self.quester._refresh_dungeon_quest.assert_awaited_once()
+
+    async def test_shared_refresh_failure_waits_immediately_without_repeat(self):
+        self.client.quest_party_hitters = [SimpleNamespace()]
+        self.client.quest_party_group_dungeon_zone = 'Dungeon/RoomA'
+        await self.arm()
+        self.quester._refresh_dungeon_quest = AsyncMock(return_value=False)
+        self.now = 180
+        self.assertTrue(await self.quester._maybe_refresh_stalled_dungeon_quest(self.client))
+        self.now += 1
+        self.assertTrue(await self.quester._maybe_refresh_stalled_dungeon_quest(self.client))
+        self.now += 1000
+        self.assertTrue(await self.quester._maybe_refresh_stalled_dungeon_quest(self.client))
+        self.quester._refresh_dungeon_quest.assert_awaited_once()
+        self.assertTrue(self.client.quest_dungeon_recovery['manual_wait'])
+
+    async def test_unknown_object_prompt_does_not_disable_shared_long_stall_recovery(self):
+        self.client.quest_party_hitters = [SimpleNamespace()]
+        self.client.quest_party_group_dungeon_zone = 'Dungeon/RoomA'
+        self.quester.read_popup = AsyncMock(return_value='按X 未知动作')
+        await self.arm()
+        self.quester._refresh_dungeon_quest = AsyncMock(return_value=True)
+        self.now = 180
+        with patch('src.questing.is_visible_by_path', AsyncMock(side_effect=lambda client, path: path == npc_range_path)):
+            self.assertTrue(await self.quester._maybe_refresh_stalled_dungeon_quest(self.client))
+        self.quester._refresh_dungeon_quest.assert_awaited_once()
 
     async def test_confirmed_dungeon_card_recovery_preempts_mainline_finder(self):
         self.client.mainline_finder_enabled = True
@@ -432,8 +486,9 @@ class DungeonQuestRefreshTests(unittest.IsolatedAsyncioTestCase):
             tree = ast.parse(textwrap.dedent(inspect.getsource(worker)))
             branch = tree if worker == Quester.enter_party_dungeon else next(
                 node for node in ast.walk(tree) if isinstance(node, ast.If)
-                and isinstance(node.test, ast.Call) and isinstance(node.test.func, ast.Name)
-                and node.test.func.id == 'is_dungeon_entry_prompt')
+                and isinstance(node.test, ast.Await) and isinstance(node.test.value, ast.Call)
+                and isinstance(node.test.value.func, ast.Attribute)
+                and node.test.value.func.attr == 'party_dungeon_entry_visible')
             capture = next(node for node in ast.walk(branch) if isinstance(node, ast.Assign)
                            and any(isinstance(target, ast.Name) and target.id == 'entry_mainline'
                                    for target in node.targets))

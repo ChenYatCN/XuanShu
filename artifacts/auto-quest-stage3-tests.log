@@ -1,0 +1,139 @@
+2026-10-09 15:59:42.809 | DEBUG    | src.questing:_note_quest_entry_wait:3875 - p1 入口检查：进入提示读取失败；{'detail': "'ClientState' object has no attribute 'root_window'"}
+2026-10-09 15:59:42.901 | DEBUG    | src.questing:_note_quest_entry_wait:3875 - p1 入口检查：共享房间等待本组空闲并确认同实例；加载/补药完成后继续，掉队端可手动归队；{'member': 'p2'}
+2026-10-09 15:59:43.444 | INFO     | src.questing:teleport_party_to_quest_target:8427 - p1 地牢任务目标已改变或本组已停止，取消整组旧目标移动。
+2026-10-09 15:59:43.497 | DEBUG    | src.questing:_note_quest_entry_wait:3875 - p1 入口检查：共享房间等待本组空闲并确认同实例；加载/补药完成后继续，掉队端可手动归队；{'member': 'p1'}
+2026-10-09 15:59:43.713 | DEBUG    | src.questing:_note_quest_entry_wait:3875 - p1 入口检查：共享房间等待本组空闲并确认同实例；加载/补药完成后继续，掉队端可手动归队；{'member': 'p1'}
+2026-10-09 15:59:43.717 | DEBUG    | src.questing:_note_quest_entry_wait:3875 - p1 入口检查：共享房间尚未完成切区；等待入口补跟或手动归队；{}
+2026-10-09 15:59:43.730 | DEBUG    | src.questing:_note_quest_entry_wait:3875 - p1 入口检查：共享房间等待本组空闲并确认同实例；加载/补药完成后继续，掉队端可手动归队；{'member': 'p2'}
+2026-10-09 15:59:43.765 | INFO     | src.questing:prepare_party_dungeon_entry:8030 - Synchronized dungeon entry: p1, p2
+2026-10-09 15:59:44.281 | WARNING  | src.questing:prepare_party_dungeon_entry:8025 - The following hitters missed the synchronized dungeon entrance: p2
+2026-10-09 15:59:44.281 | WARNING  | src.questing:prepare_party_dungeon_entry:8025 - The following hitters missed the synchronized dungeon entrance: p2
+2026-10-09 15:59:44.336 | INFO     | src.questing:enter_party_dungeon:8207 - Client p1 and assigned hitters entered the dungeon; resuming party zone sync.
+2026-10-09 15:59:44.345 | DEBUG    | src.questing:_note_quest_entry_wait:3875 - p1 入口检查：进入前成员状态已改变，继续等待本组；{'member': 'p2'}
+2026-10-09 15:59:44.350 | DEBUG    | src.questing:_note_quest_entry_wait:3875 - p1 入口检查：共享房间等待打手归队；打手将继续入口补跟或好友传送，必要时手动归队；{'member': 'p2'}
+2026-10-09 15:59:44.371 | DEBUG    | src.questing:_note_quest_entry_wait:3875 - p1 入口检查：共享房间等待打手归队；打手将继续入口补跟或好友传送，必要时手动归队；{'member': 'p2'}
+2026-10-09 15:59:44.377 | DEBUG    | src.questing:_note_quest_entry_wait:3875 - p1 入口检查：共享房间等待打手归队；打手将继续入口补跟或好友传送，必要时手动归队；{'member': 'p2'}
+2026-10-09 15:59:44.392 | INFO     | src.questing:enter_party_dungeon:8207 - Client p1 and assigned hitters entered the dungeon; resuming party zone sync.
+2026-10-09 15:59:44.399 | DEBUG    | src.questing:_note_quest_entry_wait:3875 - p1 入口检查：入口集合缺少本组成员；{'ready': ['p1'], 'expected': ['p1', 'p2']}
+2026-10-09 15:59:44.402 | DEBUG    | src.questing:_note_quest_entry_wait:3875 - p1 入口检查：成员不在入口区域；{'member': 'p2', 'zone': 'Dungeon/RoomB', 'expected': 'Dungeon/RoomA'}
+2026-10-09 15:59:44.412 | DEBUG    | src.questing:_note_quest_entry_wait:3875 - p1 入口检查：入口集合缺少本组成员；{'ready': ['p1'], 'expected': ['p1', 'p2']}
+2026-10-09 15:59:44.414 | DEBUG    | src.questing:_note_quest_entry_wait:3875 - p1 入口检查：成员任务停止或由补药/战后恢复占用；{'member': 'p2'}
+2026-10-09 15:59:44.416 | DEBUG    | src.questing:_note_quest_entry_wait:3875 - p1 入口检查：成员同实例证据未通过；{'member': 'p2'}
+2026-10-09 15:59:44.418 | DEBUG    | src.questing:_note_quest_entry_wait:3875 - p1 入口检查：成员未显示可确认的组队进入提示；{'member': 'p2', 'prompt': 'Press X to Talk'}
+2026-10-09 15:59:44.419 | DEBUG    | src.questing:_note_quest_entry_wait:3875 - p1 入口检查：成员入口标题不同或未显示；{'member': 'p2', 'title': 'Other Entrance', 'expected': 'Dungeon Entrance'}
+2026-10-09 15:59:44.424 | DEBUG    | src.questing:handle_pending_dungeon_confirmation:7810 - Client p1 - confirming pending dungeon transition.
+2026-10-09 15:59:44.937 | DEBUG    | src.questing:enter_party_dungeon:8211 - Client p1 entered a dungeon; waiting for assigned hitters to sync.
+2026-10-09 15:59:44.937 | DEBUG    | src.questing:_note_quest_entry_wait:3875 - p1 入口检查：共享房间等待打手归队；打手将继续入口补跟或好友传送，必要时手动归队；{'member': 'p2'}
+2026-10-09 15:59:44.942 | DEBUG    | src.questing:_note_quest_entry_wait:3875 - p1 入口检查：共享房间等待打手归队；打手将继续入口补跟或好友传送，必要时手动归队；{'member': 'p2'}
+2026-10-09 15:59:44.950 | DEBUG    | src.questing:_note_quest_entry_wait:3875 - p1 入口检查：进入前成员状态已改变，继续等待本组；{'member': 'p1'}
+2026-10-09 15:59:44.965 | INFO     | src.questing:enter_party_dungeon:8207 - Client p1 and assigned hitters entered the dungeon; resuming party zone sync.
+2026-10-09 15:59:45.476 | INFO     | src.questing:handle_party_dungeon_interaction:8730 - p1 整组已执行地牢交互；等待整组切区确认，NPC 对话仍独立。
+2026-10-09 15:59:45.503 | INFO     | src.questing:handle_party_dungeon_interaction:8730 - p1 整组已执行地牢交互；等待整组切区确认，NPC 对话仍独立。
+2026-10-09 15:59:45.557 | INFO     | src.questing:handle_party_dungeon_interaction:8730 - p1 整组已执行地牢交互；等待整组切区确认，NPC 对话仍独立。
+2026-10-09 15:59:45.609 | INFO     | src.questing:handle_party_dungeon_interaction:8730 - p1 整组已执行地牢交互；等待整组切区确认，NPC 对话仍独立。
+2026-10-09 15:59:45.624 | INFO     | src.questing:_resume_party_dungeon_interaction:8548 - p1 全组已确认交互切区 Avalon/Interiors/AV_Z04_WOwlGarden -> Avalon/Interiors/AV_Z04_WhiteOwlTower，打手恢复跟随。
+2026-10-09 15:59:45.673 | INFO     | src.questing:handle_party_dungeon_interaction:8730 - p1 整组已执行地牢交互；等待整组切区确认，NPC 对话仍独立。
+2026-10-09 15:59:45.679 | DEBUG    | src.questing:_note_quest_entry_wait:3875 - p1 入口检查：共享房间等待打手归队；打手将继续入口补跟或好友传送，必要时手动归队；{'member': 'p2'}
+2026-10-09 15:59:45.698 | INFO     | src.questing:handle_party_dungeon_interaction:8730 - p1 整组已执行地牢交互；等待整组切区确认，NPC 对话仍独立。
+2026-10-09 15:59:45.698 | WARNING  | src.questing:_resume_party_dungeon_interaction:8559 - p1 整组交互切区超过 30 秒，停止重复按键和好友传送，本组等待区域同步或人工归队。
+2026-10-09 15:59:45.701 | INFO     | src.questing:_resume_party_dungeon_interaction:8548 - p1 全组已确认交互切区 Avalon/Interiors/AV_Z04_WOwlGarden -> Avalon/Interiors/AV_Z04_WhiteOwlTower，打手恢复跟随。
+2026-10-09 15:59:45.742 | INFO     | src.questing:handle_party_dungeon_interaction:8730 - p1 整组已执行地牢交互；等待整组切区确认，NPC 对话仍独立。
+2026-10-09 15:59:45.756 | INFO     | src.questing:_resume_party_dungeon_interaction:8548 - p1 全组已确认交互切区 Avalon/Interiors/AV_Z04_WOwlGarden -> Avalon/Interiors/NextRoom，打手恢复跟随。
+2026-10-09 15:59:45.781 | INFO     | src.questing:handle_party_dungeon_interaction:8730 - p1 整组已执行地牢交互；等待整组切区确认，NPC 对话仍独立。
+2026-10-09 15:59:45.901 | INFO     | src.questing:handle_party_dungeon_interaction:8730 - p1 整组已执行地牢交互；等待整组切区确认，NPC 对话仍独立。
+2026-10-09 15:59:45.921 | INFO     | src.questing:_resume_party_dungeon_interaction:8548 - p1 全组已确认交互切区 Avalon/Interiors/AV_Z04_WOwlGarden -> Avalon/Interiors/AV_Z04_WhiteOwlTower，打手恢复跟随。
+2026-10-09 15:59:45.926 | INFO     | src.questing:_resume_party_dungeon_interaction:8476 - p1 自动切区后等待整组到齐；保留 Avalon/Interiors/AV_Z04_WOwlGarden 的原任务目标供打手补跟。
+2026-10-09 15:59:45.927 | INFO     | src.questing:_resume_party_dungeon_interaction:8599 - p2 在原房间 Avalon/Interiors/AV_Z04_WOwlGarden 补跟整组任务 TP：<XYZ (894.631, 253.874, -385.131)>。
+2026-10-09 15:59:45.930 | INFO     | src.questing:_resume_party_dungeon_interaction:8548 - p1 全组已确认交互切区 Avalon/Interiors/AV_Z04_WOwlGarden -> Avalon/Interiors/AV_Z04_WhiteOwlTower，打手恢复跟随。
+2026-10-09 15:59:45.968 | INFO     | src.questing:handle_party_dungeon_interaction:8730 - p1 整组已执行地牢交互；等待整组切区确认，NPC 对话仍独立。
+2026-10-09 15:59:46.063 | INFO     | src.questing:_resume_party_dungeon_interaction:8476 - p1 自动切区后等待整组到齐；保留 Avalon/Interiors/AV_Z04_WOwlGarden 的原任务目标供打手补跟。
+2026-10-09 15:59:46.064 | INFO     | src.questing:_resume_party_dungeon_interaction:8599 - p2 在原房间 Avalon/Interiors/AV_Z04_WOwlGarden 补跟整组任务 TP：<XYZ (894.631, 253.874, -385.131)>。
+2026-10-09 15:59:51.178 | INFO     | src.questing:_resume_party_dungeon_interaction:8476 - p1 自动切区后等待整组到齐；保留 Avalon/Interiors/AV_Z04_WOwlGarden 的原任务目标供打手补跟。
+2026-10-09 15:59:51.197 | DEBUG    | src.questing:_note_quest_entry_wait:3875 - p1 入口检查：共享房间等待打手归队；打手将继续入口补跟或好友传送，必要时手动归队；{'member': 'p2'}
+2026-10-09 15:59:51.197 | DEBUG    | src.utils:get_quest_name:1916 - Client p1 - Quest HUD unavailable; retry next iteration: 'Member' object has no attribute 'root_window'
+2026-10-09 15:59:51.199 | DEBUG    | src.questing:_note_quest_entry_wait:3875 - p1 入口检查：附近 NPC 不是当前任务目标，继续任务传送；{'title': '魔法藤', 'objective': ''}
+2026-10-09 15:59:51.335 | INFO     | src.questing:handle_party_dungeon_interaction:8730 - p1 整组已执行地牢交互；等待整组切区确认，NPC 对话仍独立。
+2026-10-09 15:59:51.378 | INFO     | src.questing:handle_party_dungeon_interaction:8730 - p1 整组已执行地牢交互；等待整组切区确认，NPC 对话仍独立。
+2026-10-09 15:59:51.433 | INFO     | src.questing:handle_party_dungeon_interaction:8730 - p1 整组已执行地牢交互；等待整组切区确认，NPC 对话仍独立。
+2026-10-09 15:59:51.434 | DEBUG    | src.questing:_resume_party_dungeon_interaction:8624 - p2 打手切区恢复状态暂不可读，本组保持区域同步等待：zone unreadable
+2026-10-09 15:59:51.434 | DEBUG    | src.questing:_resume_party_dungeon_interaction:8624 - p2 打手切区恢复状态暂不可读，本组保持区域同步等待：zone unreadable
+2026-10-09 15:59:51.514 | DEBUG    | src.utils:get_quest_name:1916 - Client p1 - Quest HUD unavailable; retry next iteration: 'Member' object has no attribute 'root_window'
+2026-10-09 15:59:51.514 | DEBUG    | src.questing:_note_quest_entry_wait:3875 - p1 入口检查：附近 NPC 不是当前任务目标，继续任务传送；{'title': '魔法藤', 'objective': ''}
+Executing <Task finished name='Task-789' coro=<PartyAreaProofTests.test_automatic_battle_sync_checks_instance_before_coordinates() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_area_proof.py:302> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.189 seconds
+Executing <Task pending name='Task-824' coro=<PartyAreaProofTests.test_loading_after_xyz_read_prevents_manual_sync() running at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_area_proof.py:326> wait_for=<Future pending cb=[Task.task_wakeup()] created at D:\program files\Python\python313\Lib\asyncio\base_events.py:459> cb=[_run_until_complete_cb() at D:\program files\Python\python313\Lib\asyncio\base_events.py:181] created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.175 seconds
+Executing <Task finished name='Task-834' coro=<PartyAreaProofTests.test_manual_sync_accepts_shared_battle_with_no_entities() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_area_proof.py:117> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.178 seconds
+Executing <Task finished name='Task-839' coro=<PartyAreaProofTests.test_manual_sync_does_not_compare_target_zone_or_battle() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_area_proof.py:267> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.185 seconds
+Executing <Task pending name='Task-844' coro=<PartyAreaProofTests.test_manual_sync_without_foreground_keeps_turning_selected_peers_only() running at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_area_proof.py:296> wait_for=<_GatheringFuture pending cb=[Task.task_wakeup()] created at D:\program files\Python\python313\Lib\asyncio\tasks.py:765> cb=[_run_until_complete_cb() at D:\program files\Python\python313\Lib\asyncio\base_events.py:181] created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.175 seconds
+Executing <Task pending name='Task-850' coro=<PartyAreaProofTests.test_manual_xyz_sync_does_not_require_live_area_proof() running at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_area_proof.py:262> wait_for=<Future pending cb=[Task.task_wakeup()] created at D:\program files\Python\python313\Lib\asyncio\base_events.py:459> cb=[_run_until_complete_cb() at D:\program files\Python\python313\Lib\asyncio\base_events.py:181] created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.169 seconds
+Executing <Task finished name='Task-885' coro=<PartyAreaProofTests.test_recovery_and_refill_remain_blocked_and_report_exact_cause() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_area_proof.py:122> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.740 seconds
+Executing <Task finished name='Task-890' coro=<PartyAreaProofTests.test_recovery_started_during_coordinate_read_prevents_sync() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_area_proof.py:136> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.180 seconds
+Executing <Task finished name='Task-900' coro=<PartyAreaProofTests.test_return_confirmation_timeout_keeps_follower_alive() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_area_proof.py:329> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.185 seconds
+Executing <Task finished name='Task-920' coro=<PartyAreaProofTests.test_source_transition_during_coordinate_read_still_prevents_sync() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_area_proof.py:277> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.182 seconds
+2026-10-09 15:59:55.151 | DEBUG    | src.utils:clients_share_live_area:913 - 同场战斗证据暂时不可读，继续检查返回证据：old duel
+2026-10-09 15:59:55.183 | INFO     | src.hotkey_groups:_start:86 - 快捷键 toggle_questing 已启动：p1, p2
+2026-10-09 15:59:55.183 | INFO     | src.hotkey_groups:_start:86 - 快捷键 toggle_questing 已启动：p3, p4
+2026-10-09 15:59:55.194 | INFO     | src.hotkey_groups:_start:86 - 快捷键 toggle_questing 已启动：p1, p2
+2026-10-09 15:59:55.195 | INFO     | src.hotkey_groups:_start:86 - 快捷键 toggle_questing 已启动：p3, p4
+2026-10-09 15:59:55.205 | INFO     | src.hotkey_groups:_start:86 - 快捷键 toggle_questing 已启动：p1, p2
+2026-10-09 15:59:55.206 | INFO     | src.hotkey_groups:_start:86 - 快捷键 toggle_questing 已启动：p3, p4
+2026-10-09 15:59:55.216 | INFO     | src.hotkey_groups:_start:86 - 快捷键 toggle_questing 已启动：p1, p2
+2026-10-09 15:59:55.217 | INFO     | src.hotkey_groups:_start:86 - 快捷键 toggle_questing 已启动：p3, p4
+Executing <Task pending name='Task-988' coro=<QuestTaskLifecycleTests.test_cancelled_supervisor_drains_quest_worker() running at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_task_lifecycle.py:122> wait_for=<Future pending cb=[Task.task_wakeup()] created at D:\program files\Python\python313\Lib\asyncio\base_events.py:459> cb=[_run_until_complete_cb() at D:\program files\Python\python313\Lib\asyncio\base_events.py:181] created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.179 seconds
+Executing <Task finished name='Task-1002' coro=<QuestTaskLifecycleTests.test_multiple_questers_do_not_enable_finder_implicitly() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_task_lifecycle.py:19> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.169 seconds
+Executing <Task finished name='Task-1007' coro=<QuestTaskLifecycleTests.test_queued_quest_loop_cannot_reenable_after_stop() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_task_lifecycle.py:162> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.185 seconds
+Executing <Task finished name='Task-1012' coro=<QuestTaskLifecycleTests.test_stop_clears_run_state_and_restart_reassigns_current_clients() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_task_lifecycle.py:33> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.181 seconds
+2026-10-09 15:59:59.089 | ERROR    | src.utils:closed_dungeon_popup:748 - 自动任务：p1 区域加载失败，地下城已关闭；停止标记回传重试。
+2026-10-09 15:59:59.100 | INFO     | src.utils:return_to_dungeon_after_potions:1004 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 15:59:59.101 | INFO     | src.utils:return_to_dungeon_after_potions:1070 - 自动任务：p1 补药返回后位于 Dungeon/Room，沿任务目标追赶 p2 所在的 Dungeon/Next。
+2026-10-09 15:59:59.102 | INFO     | src.utils:return_to_dungeon_after_potions:1110 - 自动任务：p1 地牢返回按钮已完成回传，任务状态可读；恢复前仍需确认队伍同副本。
+2026-10-09 15:59:59.111 | INFO     | src.utils:return_to_dungeon_after_potions:1004 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 15:59:59.120 | INFO     | src.utils:return_to_dungeon_after_potions:1004 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 15:59:59.121 | ERROR    | src.utils:return_to_dungeon_after_potions:1059 - 自动任务：p1 返回区域的任务身份与原记录不符，停止恢复任务。
+2026-10-09 15:59:59.130 | ERROR    | src.utils:return_to_dungeon_after_potions:1001 - 自动任务：p1 未找到地牢返回按钮，停止本次回传。
+2026-10-09 15:59:59.139 | INFO     | src.utils:return_to_dungeon_after_potions:1004 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 15:59:59.141 | INFO     | src.utils:return_to_dungeon_after_potions:1070 - 自动任务：p1 补药返回后位于 Dungeon/Entrance，沿任务目标追赶 p2 所在的 Dungeon/Room。
+2026-10-09 15:59:59.142 | INFO     | src.utils:return_to_dungeon_after_potions:1070 - 自动任务：p1 补药返回后位于 Dungeon/Middle，沿任务目标追赶 p2 所在的 Dungeon/Room。
+2026-10-09 15:59:59.143 | INFO     | src.utils:return_to_dungeon_after_potions:1110 - 自动任务：p1 地牢返回按钮已完成回传，任务状态可读；恢复前仍需确认队伍同副本。
+2026-10-09 15:59:59.151 | ERROR    | src.utils:return_to_dungeon_after_potions:1001 - 自动任务：p1 未找到地牢返回按钮，停止本次回传。
+2026-10-09 15:59:59.161 | ERROR    | src.utils:return_to_dungeon_after_potions:987 - 自动任务：p1 缺少原地牢任务记录，无法可靠确认返回，停止回传。
+2026-10-09 15:59:59.186 | INFO     | src.utils:return_to_dungeon_after_potions:1004 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 15:59:59.187 | ERROR    | src.utils:return_to_dungeon_after_potions:1064 - 自动任务：p1 返回同名区域但 Zone ID 不匹配，停止恢复任务。
+2026-10-09 15:59:59.196 | INFO     | src.utils:return_to_dungeon_after_potions:1004 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 15:59:59.203 | ERROR    | src.utils:return_to_dungeon_after_potions:1115 - 自动任务：p1 未确认返回原地牢 'Dungeon/Room'。
+2026-10-09 15:59:59.211 | INFO     | src.utils:return_to_dungeon_after_potions:1004 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 15:59:59.217 | ERROR    | src.utils:return_to_dungeon_after_potions:1115 - 自动任务：p1 未确认返回原地牢 'Dungeon/Room'。
+2026-10-09 15:59:59.226 | INFO     | src.utils:return_to_dungeon_after_potions:1004 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 15:59:59.228 | INFO     | src.utils:return_to_dungeon_after_potions:1110 - 自动任务：p1 地牢返回按钮已完成回传，任务状态可读；恢复前仍需确认队伍同副本。
+2026-10-09 15:59:59.236 | INFO     | src.utils:return_to_dungeon_after_potions:1004 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 15:59:59.238 | INFO     | src.utils:return_to_dungeon_after_potions:1070 - 自动任务：p1 补药返回后位于 Dungeon/Room，沿任务目标追赶 p2 所在的 Dungeon/Next。
+2026-10-09 15:59:59.239 | INFO     | src.utils:return_to_dungeon_after_potions:1070 - 自动任务：p1 补药返回后位于 Dungeon/Room，沿任务目标追赶 p2 所在的 Dungeon/Next。
+2026-10-09 15:59:59.239 | INFO     | src.utils:return_to_dungeon_after_potions:1070 - 自动任务：p1 补药返回后位于 Dungeon/Room，沿任务目标追赶 p2 所在的 Dungeon/Next。
+2026-10-09 15:59:59.239 | INFO     | src.utils:return_to_dungeon_after_potions:1070 - 自动任务：p1 补药返回后位于 Dungeon/Room，沿任务目标追赶 p2 所在的 Dungeon/Next。
+2026-10-09 15:59:59.240 | INFO     | src.utils:return_to_dungeon_after_potions:1070 - 自动任务：p1 补药返回后位于 Dungeon/Room，沿任务目标追赶 p2 所在的 Dungeon/Next。
+2026-10-09 15:59:59.240 | INFO     | src.utils:return_to_dungeon_after_potions:1070 - 自动任务：p1 补药返回后位于 Dungeon/Room，沿任务目标追赶 p2 所在的 Dungeon/Next。
+2026-10-09 15:59:59.240 | INFO     | src.utils:return_to_dungeon_after_potions:1070 - 自动任务：p1 补药返回后位于 Dungeon/Room，沿任务目标追赶 p2 所在的 Dungeon/Next。
+2026-10-09 15:59:59.241 | INFO     | src.utils:return_to_dungeon_after_potions:1070 - 自动任务：p1 补药返回后位于 Dungeon/Room，沿任务目标追赶 p2 所在的 Dungeon/Next。
+2026-10-09 15:59:59.241 | INFO     | src.utils:return_to_dungeon_after_potions:1070 - 自动任务：p1 补药返回后位于 Dungeon/Room，沿任务目标追赶 p2 所在的 Dungeon/Next。
+2026-10-09 15:59:59.241 | INFO     | src.utils:return_to_dungeon_after_potions:1070 - 自动任务：p1 补药返回后位于 Dungeon/Room，沿任务目标追赶 p2 所在的 Dungeon/Next。
+2026-10-09 15:59:59.241 | ERROR    | src.utils:return_to_dungeon_after_potions:1115 - 自动任务：p1 未确认返回原地牢 'Dungeon/Room'。
+2026-10-09 15:59:59.249 | INFO     | src.utils:buy_potions:1223 - 自动任务：p1 药水补充完成，优先通过地牢返回按钮回传。
+2026-10-09 15:59:59.250 | INFO     | src.utils:return_to_dungeon_after_potions:1004 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 15:59:59.251 | ERROR    | src.utils:return_to_dungeon_after_potions:1064 - 自动任务：p1 返回同名区域但 Zone ID 不匹配，停止恢复任务。
+2026-10-09 15:59:59.259 | INFO     | src.utils:buy_potions:1223 - 自动任务：p1 药水补充完成，优先通过地牢返回按钮回传。
+2026-10-09 15:59:59.260 | INFO     | src.utils:return_to_dungeon_after_potions:1004 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 15:59:59.262 | INFO     | src.utils:return_to_dungeon_after_potions:1110 - 自动任务：p1 地牢返回按钮已完成回传，任务状态可读；恢复前仍需确认队伍同副本。
+2026-10-09 15:59:59.273 | INFO     | src.utils:return_to_dungeon_after_potions:1004 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 15:59:59.275 | INFO     | src.utils:return_to_dungeon_after_potions:1110 - 自动任务：p1 地牢返回按钮已完成回传，任务状态可读；恢复前仍需确认队伍同副本。
+2026-10-09 15:59:59.285 | INFO     | src.utils:return_to_dungeon_after_potions:1004 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 15:59:59.286 | INFO     | src.utils:return_to_dungeon_after_potions:1070 - 自动任务：p1 补药返回后位于 Dungeon/Room，沿任务目标追赶 p2 所在的 Dungeon/Next。
+2026-10-09 15:59:59.294 | INFO     | src.utils:return_to_dungeon_after_potions:1004 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 15:59:59.296 | INFO     | src.utils:return_to_dungeon_after_potions:1110 - 自动任务：p1 地牢返回按钮已完成回传，任务状态可读；恢复前仍需确认队伍同副本。
+2026-10-09 15:59:59.305 | INFO     | src.utils:return_to_dungeon_after_potions:1004 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 15:59:59.306 | ERROR    | src.utils:return_to_dungeon_after_potions:1059 - 自动任务：p1 返回区域的任务身份与原记录不符，停止恢复任务。
+2026-10-09 15:59:59.313 | INFO     | src.utils:refill_potions:1685 - 自动任务：p1 开始补充药水，暂时退出地牢同步。
+2026-10-09 15:59:59.351 | INFO     | src.utils:refill_potions:1685 - 自动任务：p1 开始补充药水，暂时退出地牢同步。
+2026-10-09 15:59:59.351 | ERROR    | src.utils:prepare_potion_dungeon_return:932 - 自动任务：p1 原地牢任务状态不可读，取消补药出发。
+----------------------------------------------------------------------
+Ran 215 tests in 16.995s
+
+OK

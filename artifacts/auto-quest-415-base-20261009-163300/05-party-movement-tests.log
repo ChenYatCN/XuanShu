@@ -1,0 +1,1331 @@
+test_cancellation_during_countdown_releases_only_this_entry_lock (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_cancellation_during_countdown_releases_only_this_entry_lock) ... FAIL
+test_confirmed_solo_area_keeps_independent_quester_policy (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_confirmed_solo_area_keeps_independent_quester_policy) ... ok
+test_delayed_confirmation_requires_every_hitter_to_change_zone (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_delayed_confirmation_requires_every_hitter_to_change_zone) ... ok
+test_entrance_collection_uses_only_ready_same_instance_assigned_hitters (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_entrance_collection_uses_only_ready_same_instance_assigned_hitters) ... ok
+test_entry_requires_same_destination_and_live_instance_not_merely_leaving_source (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_entry_requires_same_destination_and_live_instance_not_merely_leaving_source) ... ok
+test_fast_zone_change_without_loading_sample_is_not_an_entry_timeout (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_fast_zone_change_without_loading_sample_is_not_an_entry_timeout) ... FAIL
+test_first_hitter_departing_during_later_prompt_read_blocks_all_entry_keys (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_first_hitter_departing_during_later_prompt_read_blocks_all_entry_keys) ... ok
+test_full_party_return_to_verified_entry_zone_releases_dungeon_marker (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_full_party_return_to_verified_entry_zone_releases_dungeon_marker) ... ok
+test_hidden_team_up_never_enters_or_marks_group (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_hidden_team_up_never_enters_or_marks_group) ... ok
+test_incomplete_entry_keeps_the_existing_probe (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_incomplete_entry_keeps_the_existing_probe) ... ok
+test_new_room_keeps_verified_entry_source (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_new_room_keeps_verified_entry_source) ... ok
+test_next_zone_waits_for_this_partys_hitters_before_releasing_movement (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_next_zone_waits_for_this_partys_hitters_before_releasing_movement) ... ok
+test_one_arrived_hitter_cannot_release_multi_hitter_party_or_block_other_group (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_one_arrived_hitter_cannot_release_multi_hitter_party_or_block_other_group) ... ok
+test_ordinary_entrance_sends_both_keys_without_claiming_sigil_evidence (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_ordinary_entrance_sends_both_keys_without_claiming_sigil_evidence) ... FAIL
+test_ordinary_entrance_without_team_up_still_waits_for_assigned_hitter (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_ordinary_entrance_without_team_up_still_waits_for_assigned_hitter) ... ok
+test_ordinary_zone_probe_does_not_hold_quester_for_slow_or_disconnected_hitter (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_ordinary_zone_probe_does_not_hold_quester_for_slow_or_disconnected_hitter) ... ok
+test_partial_or_unready_entrance_list_never_sends_quester_x (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_partial_or_unready_entrance_list_never_sends_quester_x) ... ok
+test_pending_dungeon_confirmation_records_real_zone_change (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_pending_dungeon_confirmation_records_real_zone_change) ... ok
+test_real_entry_sends_both_x_and_waits_for_late_hitter_before_next_step (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_real_entry_sends_both_x_and_waits_for_late_hitter_before_next_step) ... FAIL
+test_same_named_separate_instance_and_read_failure_keep_transition_pending (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_same_named_separate_instance_and_read_failure_keep_transition_pending) ... ok
+test_source_transition_during_hitter_proof_prevents_both_entry_inputs (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_source_transition_during_hitter_proof_prevents_both_entry_inputs) ... ok
+test_ten_second_countdown_keeps_both_members_locked_through_loading (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_ten_second_countdown_keeps_both_members_locked_through_loading) ... FAIL
+test_busy_hitter_defers_entire_group_then_both_resume (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_busy_hitter_defers_entire_group_then_both_resume) ... ok
+test_changed_landing_context_prevents_old_input (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_changed_landing_context_prevents_old_input) ... ok
+test_changed_source_instance_never_replays_follower_input (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_changed_source_instance_never_replays_follower_input) ... ok
+test_changed_source_prompt_never_replays_another_button (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_changed_source_prompt_never_replays_another_button) ... ok
+test_climb_both_inputs_start_in_the_same_group_operation (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_climb_both_inputs_start_in_the_same_group_operation) ... ok
+test_dialogue_opened_before_reentry_is_handled_without_movement (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_dialogue_opened_before_reentry_is_handled_without_movement) ... FAIL
+test_dialogue_opened_during_movement_is_handled_before_more_input (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_dialogue_opened_during_movement_is_handled_before_more_input) ... ERROR
+test_dialogue_uses_only_quester_but_sigil_reuses_whole_party_entry (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_dialogue_uses_only_quester_but_sigil_reuses_whole_party_entry) ... ok
+test_failed_shared_transition_expires_into_manual_sync_wait (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_failed_shared_transition_expires_into_manual_sync_wait) ... ok
+test_follower_expiry_still_accepts_late_manual_same_instance_arrival (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_follower_expiry_still_accepts_late_manual_same_instance_arrival) ... ok
+test_leader_can_advance_another_room_while_hitter_recovers (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_leader_can_advance_another_room_while_hitter_recovers) ... ok
+test_legacy_world_selector_never_selects_a_world_on_hitter (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_legacy_world_selector_never_selects_a_world_on_hitter) ... ok
+test_live_proof_allows_initial_group_input_but_no_retained_proof_disables_replay (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_live_proof_allows_initial_group_input_but_no_retained_proof_disables_replay) ... ok
+test_matching_npc_prompt_runs_dialogue_before_reentry_or_party_movement (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_matching_npc_prompt_runs_dialogue_before_reentry_or_party_movement) ... FAIL
+test_missing_hitter_prompt_blocks_shared_input_without_solo_fallback (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_missing_hitter_prompt_blocks_shared_input_without_solo_fallback) ... ok
+test_new_target_moves_both_before_nearby_quester_npc_interaction (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_new_target_moves_both_before_nearby_quester_npc_interaction) ... ERROR
+test_old_world_gate_recovery_never_replays_hitter_x (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_old_world_gate_recovery_never_replays_hitter_x) ... ok
+test_only_lagging_follower_may_retry_its_prevalidated_source_prompt (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_only_lagging_follower_may_retry_its_prevalidated_source_prompt) ... ok
+test_post_battle_automatic_transition_replays_source_target_for_lagging_hitter (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_post_battle_automatic_transition_replays_source_target_for_lagging_hitter) ... ok
+test_quester_input_cancellation_releases_owner_and_sync_flag (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_quester_input_cancellation_releases_owner_and_sync_flag) ... ok
+test_same_named_destination_without_live_proof_does_not_mark_shared_instance (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_same_named_destination_without_live_proof_does_not_mark_shared_instance) ... ok
+test_screenshot_quest_local_npc_never_requires_any_hitter_prompt (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_screenshot_quest_local_npc_never_requires_any_hitter_prompt) ... ok
+test_shared_follower_input_cancellation_drains_group_and_releases_owners (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_shared_follower_input_cancellation_drains_group_and_releases_owners) ... ok
+test_solo_unmarked_and_no_prompt_keep_normal_quester_flow (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_solo_unmarked_and_no_prompt_keep_normal_quester_flow) ... ok
+test_source_collision_move_can_finish_after_the_old_five_second_read_budget (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_source_collision_move_can_finish_after_the_old_five_second_read_budget) ... ok
+test_source_room_change_or_new_quest_never_replays_old_coordinates (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_source_room_change_or_new_quest_never_replays_old_coordinates) ... ok
+test_split_party_actual_worker_waits_but_other_group_keeps_moving (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_split_party_actual_worker_waits_but_other_group_keeps_moving) ... ok
+test_stopped_loading_refilling_or_distant_hitter_blocks_all_input (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_stopped_loading_refilling_or_distant_hitter_blocks_all_input) ... ok
+test_unchanged_shared_mechanism_is_not_repeated_after_worker_recreation (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_unchanged_shared_mechanism_is_not_repeated_after_worker_recreation) ... ok
+test_unknown_prompt_never_bypasses_generic_wait_guard (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_unknown_prompt_never_bypasses_generic_wait_guard) ... ok
+test_unreadable_follower_recovery_cannot_hold_follow_forever_after_deadline (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_unreadable_follower_recovery_cannot_hold_follow_forever_after_deadline) ... ok
+test_unready_shared_movement_never_falls_back_to_quester_only_npc (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_unready_shared_movement_never_falls_back_to_quester_only_npc) ... FAIL
+test_waiting_party_can_talk_to_current_npc_but_never_start_new_movement (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_waiting_party_can_talk_to_current_npc_but_never_start_new_movement) ... FAIL
+test_worker_continues_own_npc_without_running_hitter_recovery (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_worker_continues_own_npc_without_running_hitter_recovery) ... ERROR
+test_world_gate_uses_only_quester_input_and_world_selection (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_world_gate_uses_only_quester_input_and_world_selection) ... ok
+test_active_split_recovery_runs_on_follower_loop_only (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_active_split_recovery_runs_on_follower_loop_only) ... FAIL
+test_ambiguous_friend_error_never_marks_unknown_area_as_solo (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_ambiguous_friend_error_never_marks_unknown_area_as_solo) ... FAIL
+test_confirmed_same_room_with_unreadable_proof_waits_without_friend_teleport (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_confirmed_same_room_with_unreadable_proof_waits_without_friend_teleport) ... FAIL
+test_continuous_room_changes_keep_party_history_and_friend_rejection_never_means_solo (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_continuous_room_changes_keep_party_history_and_friend_rejection_never_means_solo) ... 
+  test_continuous_room_changes_keep_party_history_and_friend_rejection_never_means_solo (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_continuous_room_changes_keep_party_history_and_friend_rejection_never_means_solo) (error='FriendBusyOrInstanceClosed') ... FAIL
+  test_continuous_room_changes_keep_party_history_and_friend_rejection_never_means_solo (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_continuous_room_changes_keep_party_history_and_friend_rejection_never_means_solo) (error='ValueError') ... FAIL
+test_destination_live_proof_updates_last_confirmed_room_and_resumes_local_follow (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_destination_live_proof_updates_last_confirmed_room_and_resumes_local_follow) ... ERROR
+test_dialogue_battle_does_not_enable_unconfirmed_coordinate_sync (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_dialogue_battle_does_not_enable_unconfirmed_coordinate_sync) ... ok
+test_dialogue_follow_keeps_loading_refill_and_recovery_guards (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_dialogue_follow_keeps_loading_refill_and_recovery_guards) ... ok
+test_expired_same_room_party_transition_waits_for_proof_without_classifying_quester_solo (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_expired_same_room_party_transition_waits_for_proof_without_classifying_quester_solo) ... FAIL
+test_failed_battle_sync_stays_local_in_confirmed_instance (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_failed_battle_sync_stays_local_in_confirmed_instance) ... ERROR
+test_follower_closes_its_world_selector_before_resuming_follow (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_follower_closes_its_world_selector_before_resuming_follow) ... ERROR
+test_follower_world_selector_closure_respects_loading_combat_and_other_owner (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_follower_world_selector_closure_respects_loading_combat_and_other_owner) ... 
+  test_follower_world_selector_closure_respects_loading_combat_and_other_owner (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_follower_world_selector_closure_respects_loading_combat_and_other_owner) (kwargs={'hitter_loading': True}) ... ERROR
+  test_follower_world_selector_closure_respects_loading_combat_and_other_owner (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_follower_world_selector_closure_respects_loading_combat_and_other_owner) (kwargs={'hitter_battle': True}) ... ERROR
+test_local_teleport_rejection_never_falls_back_to_friend (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_local_teleport_rejection_never_falls_back_to_friend) ... ERROR
+test_non_dialogue_busy_source_still_blocks_friend_probe (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_non_dialogue_busy_source_still_blocks_friend_probe) ... ok
+test_old_prompt_wait_no_longer_blocks_local_follow_or_battle_rescue (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_old_prompt_wait_no_longer_blocks_local_follow_or_battle_rescue) ... ERROR
+test_ordinary_interior_never_creates_group_marker (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_ordinary_interior_never_creates_group_marker) ... ERROR
+test_post_battle_proof_recovers_without_friend_probe_or_losing_party_state (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_post_battle_proof_recovers_without_friend_probe_or_losing_party_state) ... ERROR
+test_primary_arrival_does_not_release_gate_before_another_assigned_hitter (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_primary_arrival_does_not_release_gate_before_another_assigned_hitter) ... ERROR
+test_prompt_wait_does_not_block_existing_special_recovery_collaboration (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_prompt_wait_does_not_block_existing_special_recovery_collaboration) ... FAIL
+test_secondary_hitter_can_catch_up_while_primary_probe_is_pending (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_secondary_hitter_can_catch_up_while_primary_probe_is_pending) ... FAIL
+test_source_dialogue_allows_independent_friend_probe (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_source_dialogue_allows_independent_friend_probe) ... FAIL
+test_task_change_follows_quester_coordinates_even_inside_old_distance_limit (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_task_change_follows_quester_coordinates_even_inside_old_distance_limit) ... FAIL
+test_unconfirmed_instance_still_allows_existing_friend_recovery (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_unconfirmed_instance_still_allows_existing_friend_recovery) ... ok
+test_verified_entry_keeps_group_across_rooms_and_never_probes_friend (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_verified_entry_keeps_group_across_rooms_and_never_probes_friend) ... ERROR
+test_whole_party_continuous_arrival_updates_each_room_without_friend_probe (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_whole_party_continuous_arrival_updates_each_room_without_friend_probe) ... ERROR
+test_auto_quest_reads_only_p1_target_and_runs_shared_movement (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_auto_quest_reads_only_p1_target_and_runs_shared_movement) ... ERROR
+test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement) ... 
+  test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement) (prompt='Press X to Collect') ... ERROR
+  test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement) (prompt='Press X to Open') ... ERROR
+  test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement) (prompt='按X或<icon;mouse>使用') ... ERROR
+  test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement) (prompt='Press X to Activate') ... ERROR
+  test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement) (prompt='Press X to Enter Boat') ... ERROR
+  test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement) (prompt='按下 X 使用魔法艇') ... ERROR
+  test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement) (prompt='按下 X 传送') ... ERROR
+test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement) ... FAIL
+test_both_start_concurrently_with_same_target_and_quester_context (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_both_start_concurrently_with_same_target_and_quester_context) ... ok
+test_busy_or_departed_hitter_pauses_the_whole_party (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_busy_or_departed_hitter_pauses_the_whole_party) ... ok
+test_cancellation_releases_both_owners (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_cancellation_releases_both_owners) ... ok
+test_confirmed_solo_zone_keeps_existing_quester_only_move (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_confirmed_solo_zone_keeps_existing_quester_only_move) ... ok
+test_early_zone_and_goal_change_does_not_cancel_remaining_hitter (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_early_zone_and_goal_change_does_not_cancel_remaining_hitter) ... ok
+test_existing_target_recovery_can_still_claim_ownership (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_existing_target_recovery_can_still_claim_ownership) ... ok
+test_goal_change_cancels_both_old_movements (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_goal_change_cancels_both_old_movements) ... ok
+test_hitter_failure_cancels_and_drains_the_whole_movement (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_hitter_failure_cancels_and_drains_the_whole_movement) ... ok
+test_leader_completing_first_does_not_cancel_slow_hitter (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_leader_completing_first_does_not_cancel_slow_hitter) ... ok
+test_normal_zone_moves_only_quester_and_leaves_independent_follow (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_normal_zone_moves_only_quester_and_leaves_independent_follow) ... ok
+test_ordinary_hitter_loading_refilling_stopped_or_behind_never_holds_quester (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_ordinary_hitter_loading_refilling_stopped_or_behind_never_holds_quester) ... ok
+test_quester_failure_still_cancels_outstanding_hitter_movement (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_quester_failure_still_cancels_outstanding_hitter_movement) ... ok
+test_quester_own_busy_state_still_blocks_its_input (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_quester_own_busy_state_still_blocks_its_input) ... ok
+test_recovery_started_during_preflight_prevents_all_input (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_recovery_started_during_preflight_prevents_all_input) ... ok
+test_slow_presence_check_never_launches_the_quester_first (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_slow_presence_check_never_launches_the_quester_first) ... ok
+test_source_post_combat_cleanup_does_not_start_group_movement (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_source_post_combat_cleanup_does_not_start_group_movement) ... ok
+test_split_shared_room_never_falls_back_to_solo_movement (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_split_shared_room_never_falls_back_to_solo_movement) ... ok
+test_stale_solo_flag_cannot_turn_ordinary_travel_into_group_barrier (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_stale_solo_flag_cannot_turn_ordinary_travel_into_group_barrier) ... ok
+test_transition_during_preflight_prevents_all_old_input (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_transition_during_preflight_prevents_all_old_input) ... ok
+test_unproved_hitter_instance_pauses_the_whole_party (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_unproved_hitter_instance_pauses_the_whole_party) ... ok
+test_whole_party_proof_overrides_stale_solo_flag (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_whole_party_proof_overrides_stale_solo_flag) ... ok
+test_client_group_flag_overrides_global_default (tests.test_quest_415_baseline.OrdinaryDialogue415Tests.test_client_group_flag_overrides_global_default) ... Executing <Task pending name='Task-603' coro=<OrdinaryDialogue415Tests.test_client_group_flag_overrides_global_default() running at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_415_baseline.py:186> wait_for=<Future pending cb=[Task.task_wakeup()] created at D:\program files\Python\python313\Lib\asyncio\base_events.py:459> cb=[_run_until_complete_cb() at D:\program files\Python\python313\Lib\asyncio\base_events.py:181] created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.174 seconds
+Executing <Task pending name='Task-603' coro=<OrdinaryDialogue415Tests.test_client_group_flag_overrides_global_default() running at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_415_baseline.py:188> wait_for=<Future pending cb=[Task.task_wakeup()] created at D:\program files\Python\python313\Lib\asyncio\base_events.py:459> cb=[_run_until_complete_cb() at D:\program files\Python\python313\Lib\asyncio\base_events.py:181] created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.181 seconds
+ok
+test_global_side_accept_default_reaches_actual_acceptance (tests.test_quest_415_baseline.OrdinaryDialogue415Tests.test_global_side_accept_default_reaches_actual_acceptance) ... Executing <Task pending name='Task-612' coro=<OrdinaryDialogue415Tests.test_global_side_accept_default_reaches_actual_acceptance() running at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_415_baseline.py:176> wait_for=<Future pending cb=[Task.task_wakeup()] created at D:\program files\Python\python313\Lib\asyncio\base_events.py:459> cb=[_run_until_complete_cb() at D:\program files\Python\python313\Lib\asyncio\base_events.py:181] created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.168 seconds
+ok
+test_one_or_many_npc_choices_exit_without_choosing_indexed_quest (tests.test_quest_415_baseline.OrdinaryDialogue415Tests.test_one_or_many_npc_choices_exit_without_choosing_indexed_quest) ... ok
+test_side_accept_off_declines_without_changing_owned_quest (tests.test_quest_415_baseline.OrdinaryDialogue415Tests.test_side_accept_off_declines_without_changing_owned_quest) ... Executing <Task pending name='Task-624' coro=<OrdinaryDialogue415Tests.test_side_accept_off_declines_without_changing_owned_quest() running at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_415_baseline.py:181> wait_for=<Future pending cb=[Task.task_wakeup()] created at D:\program files\Python\python313\Lib\asyncio\base_events.py:459> cb=[_run_until_complete_cb() at D:\program files\Python\python313\Lib\asyncio\base_events.py:181] created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.170 seconds
+ok
+test_npc_current_goal_change_is_confirmed_without_index_lookup (tests.test_quest_415_baseline.OrdinaryQuest415Tests.test_npc_current_goal_change_is_confirmed_without_index_lookup) ... ok
+test_stop_after_waiting_for_input_lock_does_not_move_or_press_x (tests.test_quest_415_baseline.OrdinaryQuest415Tests.test_stop_after_waiting_for_input_lock_does_not_move_or_press_x) ... ok
+test_stop_during_loop_sleep_does_not_start_another_iteration (tests.test_quest_415_baseline.OrdinaryQuest415Tests.test_stop_during_loop_sleep_does_not_start_another_iteration) ... ok
+test_stopped_loading_and_battle_clients_do_not_interact (tests.test_quest_415_baseline.OrdinaryQuest415Tests.test_stopped_loading_and_battle_clients_do_not_interact) ... ok
+test_target_change_during_move_does_not_interact_with_old_target (tests.test_quest_415_baseline.OrdinaryQuest415Tests.test_target_change_during_move_does_not_interact_with_old_target) ... ok
+test_unindexed_and_side_quest_current_targets_continue_without_mainline_gate (tests.test_quest_415_baseline.OrdinaryQuest415Tests.test_unindexed_and_side_quest_current_targets_continue_without_mainline_gate) ... ok
+test_unknown_visible_nearby_prompt_uses_the_old_x_rule (tests.test_quest_415_baseline.OrdinaryQuest415Tests.test_unknown_visible_nearby_prompt_uses_the_old_x_rule) ... ok
+test_without_visible_interaction_window_no_x_is_sent (tests.test_quest_415_baseline.OrdinaryQuest415Tests.test_without_visible_interaction_window_no_x_is_sent) ... ok
+test_alternate_landings_are_separated_and_connected (tests.test_collision_approach.ApproachGeometryTests.test_alternate_landings_are_separated_and_connected) ... ok
+test_can_stop_near_a_goal_inside_an_object (tests.test_collision_approach.ApproachGeometryTests.test_can_stop_near_a_goal_inside_an_object) ... ok
+test_cliff_is_not_a_connected_edge (tests.test_collision_approach.ApproachGeometryTests.test_cliff_is_not_a_connected_edge) ... ok
+test_far_reentry_landings_obey_distance_bounds (tests.test_collision_approach.ApproachGeometryTests.test_far_reentry_landings_obey_distance_bounds) ... ok
+test_flat_walk_path_reaches_goal (tests.test_collision_approach.ApproachGeometryTests.test_flat_walk_path_reaches_goal) ... ok
+test_forced_small_radius_refines_only_on_connected_ground (tests.test_collision_approach.ApproachGeometryTests.test_forced_small_radius_refines_only_on_connected_ground) ... ok
+test_routes_around_a_blocked_step_not_through_it (tests.test_collision_approach.ApproachGeometryTests.test_routes_around_a_blocked_step_not_through_it) ... ok
+test_same_xy_on_other_floor_is_not_arrival (tests.test_collision_approach.ApproachGeometryTests.test_same_xy_on_other_floor_is_not_arrival) ... ok
+test_search_budget_is_respected (tests.test_collision_approach.ApproachGeometryTests.test_search_budget_is_respected) ... ok
+test_small_mesh_gap_between_valid_nodes_is_rejected (tests.test_collision_approach.ApproachGeometryTests.test_small_mesh_gap_between_valid_nodes_is_rejected) ... ok
+test_unreachable_goal_has_no_alternate_landing (tests.test_collision_approach.ApproachGeometryTests.test_unreachable_goal_has_no_alternate_landing) ... ok
+test_upper_floor_path_stays_upper (tests.test_collision_approach.ApproachGeometryTests.test_upper_floor_path_stays_upper) ... ok
+test_walk_cache_keeps_both_floors (tests.test_collision_approach.ApproachGeometryTests.test_walk_cache_keeps_both_floors) ... ok
+test_wrong_floor_has_no_alternate_landing (tests.test_collision_approach.ApproachGeometryTests.test_wrong_floor_has_no_alternate_landing) ... ok
+test_actual_blocked_steps_are_never_relaxed (tests.test_collision_approach.ApproachRuntimeTests.test_actual_blocked_steps_are_never_relaxed) ... ERROR
+test_close_xy_on_wrong_floor_is_not_success (tests.test_collision_approach.ApproachRuntimeTests.test_close_xy_on_wrong_floor_is_not_success) ... ok
+test_cooldown_expiry_retries_fresh (tests.test_collision_approach.ApproachRuntimeTests.test_cooldown_expiry_retries_fresh) ... FAIL
+test_cooldown_skips_repeated_same_target_movement (tests.test_collision_approach.ApproachRuntimeTests.test_cooldown_skips_repeated_same_target_movement) ... FAIL
+test_dialogue_or_battle_stops_remaining_walk (tests.test_collision_approach.ApproachRuntimeTests.test_dialogue_or_battle_stops_remaining_walk) ... FAIL
+test_entire_walk_has_a_time_budget (tests.test_collision_approach.ApproachRuntimeTests.test_entire_walk_has_a_time_budget) ... ok
+test_exact_point_is_not_reported_reached_without_a_final_path (tests.test_collision_approach.ApproachRuntimeTests.test_exact_point_is_not_reported_reached_without_a_final_path) ... ERROR
+test_external_cancellation_is_not_swallowed (tests.test_collision_approach.ApproachRuntimeTests.test_external_cancellation_is_not_swallowed) ... FAIL
+test_forced_walk_closes_gap_previously_counted_as_arrival (tests.test_collision_approach.ApproachRuntimeTests.test_forced_walk_closes_gap_previously_counted_as_arrival) ... ERROR
+test_last_twenty_units_are_walked_to_the_actual_quest_point (tests.test_collision_approach.ApproachRuntimeTests.test_last_twenty_units_are_walked_to_the_actual_quest_point) ... ERROR
+test_missing_geometry_keeps_existing_navmap_fallback (tests.test_collision_approach.ApproachRuntimeTests.test_missing_geometry_keeps_existing_navmap_fallback) ... ok
+test_new_target_clears_old_blocked_state_immediately (tests.test_collision_approach.ApproachRuntimeTests.test_new_target_clears_old_blocked_state_immediately) ... FAIL
+test_no_candidate_does_not_teleport_blindly (tests.test_collision_approach.ApproachRuntimeTests.test_no_candidate_does_not_teleport_blindly) ... ok
+test_no_path_is_failure_not_zero_waypoint_success (tests.test_collision_approach.ApproachRuntimeTests.test_no_path_is_failure_not_zero_waypoint_success) ... ok
+test_nonfree_client_does_not_move (tests.test_collision_approach.ApproachRuntimeTests.test_nonfree_client_does_not_move) ... FAIL
+test_normal_success_does_not_run_recovery (tests.test_collision_approach.ApproachRuntimeTests.test_normal_success_does_not_run_recovery) ... ERROR
+test_overshot_timed_walk_corrects_instead_of_claiming_a_wall (tests.test_collision_approach.ApproachRuntimeTests.test_overshot_timed_walk_corrects_instead_of_claiming_a_wall) ... ERROR
+test_partial_timed_walk_keeps_correcting_until_arrival (tests.test_collision_approach.ApproachRuntimeTests.test_partial_timed_walk_keeps_correcting_until_arrival) ... ERROR
+test_progress_callback_stops_before_another_waypoint (tests.test_collision_approach.ApproachRuntimeTests.test_progress_callback_stops_before_another_waypoint) ... ERROR
+test_real_stall_is_recorded_and_not_walked_forever (tests.test_collision_approach.ApproachRuntimeTests.test_real_stall_is_recorded_and_not_walked_forever) ... ERROR
+test_recovery_attempts_are_bounded_and_then_cool_down (tests.test_collision_approach.ApproachRuntimeTests.test_recovery_attempts_are_bounded_and_then_cool_down) ... ok
+test_recovery_callback_stops_before_teleport (tests.test_collision_approach.ApproachRuntimeTests.test_recovery_callback_stops_before_teleport) ... ok
+test_recovery_skips_rejected_candidates_then_walks (tests.test_collision_approach.ApproachRuntimeTests.test_recovery_skips_rejected_candidates_then_walks) ... ok
+test_small_underwalk_gets_only_two_attempts (tests.test_collision_approach.ApproachRuntimeTests.test_small_underwalk_gets_only_two_attempts) ... FAIL
+test_strict_landing_with_no_walk_progress_counts_failure (tests.test_collision_approach.ApproachRuntimeTests.test_strict_landing_with_no_walk_progress_counts_failure) ... ERROR
+test_tp_blocking_volume_does_not_force_zero_waypoint_walk (tests.test_collision_approach.ApproachRuntimeTests.test_tp_blocking_volume_does_not_force_zero_waypoint_walk) ... FAIL
+test_two_failures_switch_to_alternate_approach (tests.test_collision_approach.ApproachRuntimeTests.test_two_failures_switch_to_alternate_approach) ... ERROR
+test_walk_stops_in_range_without_exact_target_refinement (tests.test_collision_approach.ApproachRuntimeTests.test_walk_stops_in_range_without_exact_target_refinement) ... FAIL
+test_walk_timeout_cancels_pending_input (tests.test_collision_approach.ApproachRuntimeTests.test_walk_timeout_cancels_pending_input) ... FAIL
+test_zone_change_clears_cooldown_immediately (tests.test_collision_approach.ApproachRuntimeTests.test_zone_change_clears_cooldown_immediately) ... FAIL
+test_zone_change_stops_remaining_walk (tests.test_collision_approach.ApproachRuntimeTests.test_zone_change_stops_remaining_walk) ... FAIL
+
+======================================================================
+ERROR: test_dialogue_opened_during_movement_is_handled_before_more_input (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_dialogue_opened_during_movement_is_handled_before_more_input)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_dungeon_interaction.py", line 508, in test_dialogue_opened_during_movement_is_handled_before_more_input
+    await self.quester.auto_quest_solo()
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\src\questing.py", line 8361, in auto_quest_solo
+    if not await self.teleport_party_to_quest_target(self.client, quest_xyz):
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: Quester.teleport_party_to_quest_target() takes 2 positional arguments but 3 were given
+
+======================================================================
+ERROR: test_new_target_moves_both_before_nearby_quester_npc_interaction (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_new_target_moves_both_before_nearby_quester_npc_interaction)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_dungeon_interaction.py", line 418, in test_new_target_moves_both_before_nearby_quester_npc_interaction
+    await self.quester.auto_quest_solo()
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\src\questing.py", line 8361, in auto_quest_solo
+    if not await self.teleport_party_to_quest_target(self.client, quest_xyz):
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: Quester.teleport_party_to_quest_target() takes 2 positional arguments but 3 were given
+
+======================================================================
+ERROR: test_worker_continues_own_npc_without_running_hitter_recovery (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_worker_continues_own_npc_without_running_hitter_recovery)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_dungeon_interaction.py", line 407, in test_worker_continues_own_npc_without_running_hitter_recovery
+    await self.quester.auto_quest_solo()
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\src\questing.py", line 8361, in auto_quest_solo
+    if not await self.teleport_party_to_quest_target(self.client, quest_xyz):
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: Quester.teleport_party_to_quest_target() takes 2 positional arguments but 3 were given
+
+======================================================================
+ERROR: test_destination_live_proof_updates_last_confirmed_room_and_resumes_local_follow (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_destination_live_proof_updates_last_confirmed_room_and_resumes_local_follow)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 591, in test_destination_live_proof_updates_last_confirmed_room_and_resumes_local_follow
+    hitter, friend, _ = await self.run_follow(True, in_battle=False,
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        group_source='Dungeon/PreviousRoom', probe_pending=True, primary=True)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 502, in run_follow
+    await namespace['_follow_quester_session'](hitter, quester, primary)
+  File "XuanShu.py", line 2320, in _follow_quester_session
+    async with automation_owner(hitter, 'party-coordinate-follow'):
+               ^^^^^^^^^^^^^^^^
+NameError: name 'automation_owner' is not defined
+
+======================================================================
+ERROR: test_failed_battle_sync_stays_local_in_confirmed_instance (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_failed_battle_sync_stays_local_in_confirmed_instance)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 506, in test_failed_battle_sync_stays_local_in_confirmed_instance
+    hitter, friend, status = await self.run_follow(True)
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 502, in run_follow
+    await namespace['_follow_quester_session'](hitter, quester, primary)
+  File "XuanShu.py", line 2320, in _follow_quester_session
+    async with automation_owner(hitter, 'party-coordinate-follow'):
+               ^^^^^^^^^^^^^^^^
+NameError: name 'automation_owner' is not defined
+
+======================================================================
+ERROR: test_follower_closes_its_world_selector_before_resuming_follow (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_follower_closes_its_world_selector_before_resuming_follow)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 513, in test_follower_closes_its_world_selector_before_resuming_follow
+    hitter, friend, status = await self.run_follow(True, in_battle=False, distance=0,
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                                                 hitter_world_open=True)
+                                                 ^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 502, in run_follow
+    await namespace['_follow_quester_session'](hitter, quester, primary)
+  File "XuanShu.py", line 2205, in _follow_quester_session
+    async with automation_owner(hitter, 'party-world-gate-close'):
+               ^^^^^^^^^^^^^^^^
+NameError: name 'automation_owner' is not defined
+
+======================================================================
+ERROR: test_follower_world_selector_closure_respects_loading_combat_and_other_owner (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_follower_world_selector_closure_respects_loading_combat_and_other_owner) (kwargs={'hitter_loading': True})
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 523, in test_follower_world_selector_closure_respects_loading_combat_and_other_owner
+    hitter, friend, _ = await self.run_follow(True, in_battle=False,
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        hitter_world_open=True, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 502, in run_follow
+    await namespace['_follow_quester_session'](hitter, quester, primary)
+  File "XuanShu.py", line 2205, in _follow_quester_session
+    async with automation_owner(hitter, 'party-world-gate-close'):
+               ^^^^^^^^^^^^^^^^
+NameError: name 'automation_owner' is not defined
+
+======================================================================
+ERROR: test_follower_world_selector_closure_respects_loading_combat_and_other_owner (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_follower_world_selector_closure_respects_loading_combat_and_other_owner) (kwargs={'hitter_battle': True})
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 523, in test_follower_world_selector_closure_respects_loading_combat_and_other_owner
+    hitter, friend, _ = await self.run_follow(True, in_battle=False,
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        hitter_world_open=True, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 502, in run_follow
+    await namespace['_follow_quester_session'](hitter, quester, primary)
+  File "XuanShu.py", line 2205, in _follow_quester_session
+    async with automation_owner(hitter, 'party-world-gate-close'):
+               ^^^^^^^^^^^^^^^^
+NameError: name 'automation_owner' is not defined
+
+======================================================================
+ERROR: test_local_teleport_rejection_never_falls_back_to_friend (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_local_teleport_rejection_never_falls_back_to_friend)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 560, in test_local_teleport_rejection_never_falls_back_to_friend
+    hitter, friend, _ = await self.run_follow(True, ValueError('rejected'))
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 502, in run_follow
+    await namespace['_follow_quester_session'](hitter, quester, primary)
+  File "XuanShu.py", line 2320, in _follow_quester_session
+    async with automation_owner(hitter, 'party-coordinate-follow'):
+               ^^^^^^^^^^^^^^^^
+NameError: name 'automation_owner' is not defined
+
+======================================================================
+ERROR: test_old_prompt_wait_no_longer_blocks_local_follow_or_battle_rescue (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_old_prompt_wait_no_longer_blocks_local_follow_or_battle_rescue)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 686, in test_old_prompt_wait_no_longer_blocks_local_follow_or_battle_rescue
+    hitter, friend, _ = await self.run_follow(True, in_battle=False, interaction={'phase': 'waiting'})
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 502, in run_follow
+    await namespace['_follow_quester_session'](hitter, quester, primary)
+  File "XuanShu.py", line 2320, in _follow_quester_session
+    async with automation_owner(hitter, 'party-coordinate-follow'):
+               ^^^^^^^^^^^^^^^^
+NameError: name 'automation_owner' is not defined
+
+======================================================================
+ERROR: test_ordinary_interior_never_creates_group_marker (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_ordinary_interior_never_creates_group_marker)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 545, in test_ordinary_interior_never_creates_group_marker
+    await self.run_follow(True, in_battle=False, group_confirmed=False,
+        probe_pending=True, primary=True, zone_sequence=(interior,) * 4,
+        hitter_follows_zone=True)
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 502, in run_follow
+    await namespace['_follow_quester_session'](hitter, quester, primary)
+  File "XuanShu.py", line 2320, in _follow_quester_session
+    async with automation_owner(hitter, 'party-coordinate-follow'):
+               ^^^^^^^^^^^^^^^^
+NameError: name 'automation_owner' is not defined
+
+======================================================================
+ERROR: test_post_battle_proof_recovers_without_friend_probe_or_losing_party_state (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_post_battle_proof_recovers_without_friend_probe_or_losing_party_state)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 581, in test_post_battle_proof_recovers_without_friend_probe_or_losing_party_state
+    hitter, friend, status = await self.run_follow([False, False] + [True] * 20,
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        in_battle=False, primary=True)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 502, in run_follow
+    await namespace['_follow_quester_session'](hitter, quester, primary)
+  File "XuanShu.py", line 2320, in _follow_quester_session
+    async with automation_owner(hitter, 'party-coordinate-follow'):
+               ^^^^^^^^^^^^^^^^
+NameError: name 'automation_owner' is not defined
+
+======================================================================
+ERROR: test_primary_arrival_does_not_release_gate_before_another_assigned_hitter (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_primary_arrival_does_not_release_gate_before_another_assigned_hitter)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 635, in test_primary_arrival_does_not_release_gate_before_another_assigned_hitter
+    hitter, _, _ = await self.run_follow(True, in_battle=False,
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        probe_pending=True, primary=True, group_confirmed=False, extra_hitter=True)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 502, in run_follow
+    await namespace['_follow_quester_session'](hitter, quester, primary)
+  File "XuanShu.py", line 2320, in _follow_quester_session
+    async with automation_owner(hitter, 'party-coordinate-follow'):
+               ^^^^^^^^^^^^^^^^
+NameError: name 'automation_owner' is not defined
+
+======================================================================
+ERROR: test_verified_entry_keeps_group_across_rooms_and_never_probes_friend (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_verified_entry_keeps_group_across_rooms_and_never_probes_friend)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 532, in test_verified_entry_keeps_group_across_rooms_and_never_probes_friend
+    hitter, friend, status = await self.run_follow(True, in_battle=False,
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        friend_error=FriendBusyOrInstanceClosed())
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 502, in run_follow
+    await namespace['_follow_quester_session'](hitter, quester, primary)
+  File "XuanShu.py", line 2320, in _follow_quester_session
+    async with automation_owner(hitter, 'party-coordinate-follow'):
+               ^^^^^^^^^^^^^^^^
+NameError: name 'automation_owner' is not defined
+
+======================================================================
+ERROR: test_whole_party_continuous_arrival_updates_each_room_without_friend_probe (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_whole_party_continuous_arrival_updates_each_room_without_friend_probe)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 616, in test_whole_party_continuous_arrival_updates_each_room_without_friend_probe
+    hitter, friend, _ = await self.run_follow(True, in_battle=False,
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        probe_pending=True, primary=True, zone_sequence=rooms, hitter_follows_zone=True)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 502, in run_follow
+    await namespace['_follow_quester_session'](hitter, quester, primary)
+  File "XuanShu.py", line 2320, in _follow_quester_session
+    async with automation_owner(hitter, 'party-coordinate-follow'):
+               ^^^^^^^^^^^^^^^^
+NameError: name 'automation_owner' is not defined
+
+======================================================================
+ERROR: test_auto_quest_reads_only_p1_target_and_runs_shared_movement (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_auto_quest_reads_only_p1_target_and_runs_shared_movement)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 328, in test_auto_quest_reads_only_p1_target_and_runs_shared_movement
+    await self.quester.auto_quest_solo()
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\src\questing.py", line 8361, in auto_quest_solo
+    if not await self.teleport_party_to_quest_target(self.client, quest_xyz):
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: Quester.teleport_party_to_quest_target() takes 2 positional arguments but 3 were given
+
+======================================================================
+ERROR: test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement) (prompt='Press X to Collect')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 398, in test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement
+    await self.quester.auto_quest_solo()
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\src\questing.py", line 8361, in auto_quest_solo
+    if not await self.teleport_party_to_quest_target(self.client, quest_xyz):
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: Quester.teleport_party_to_quest_target() takes 2 positional arguments but 3 were given
+
+======================================================================
+ERROR: test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement) (prompt='Press X to Open')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 398, in test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement
+    await self.quester.auto_quest_solo()
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\src\questing.py", line 8361, in auto_quest_solo
+    if not await self.teleport_party_to_quest_target(self.client, quest_xyz):
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: Quester.teleport_party_to_quest_target() takes 2 positional arguments but 3 were given
+
+======================================================================
+ERROR: test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement) (prompt='按X或<icon;mouse>使用')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 398, in test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement
+    await self.quester.auto_quest_solo()
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\src\questing.py", line 8361, in auto_quest_solo
+    if not await self.teleport_party_to_quest_target(self.client, quest_xyz):
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: Quester.teleport_party_to_quest_target() takes 2 positional arguments but 3 were given
+
+======================================================================
+ERROR: test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement) (prompt='Press X to Activate')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 398, in test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement
+    await self.quester.auto_quest_solo()
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\src\questing.py", line 8361, in auto_quest_solo
+    if not await self.teleport_party_to_quest_target(self.client, quest_xyz):
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: Quester.teleport_party_to_quest_target() takes 2 positional arguments but 3 were given
+
+======================================================================
+ERROR: test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement) (prompt='Press X to Enter Boat')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 398, in test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement
+    await self.quester.auto_quest_solo()
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\src\questing.py", line 8361, in auto_quest_solo
+    if not await self.teleport_party_to_quest_target(self.client, quest_xyz):
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: Quester.teleport_party_to_quest_target() takes 2 positional arguments but 3 were given
+
+======================================================================
+ERROR: test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement) (prompt='按下 X 使用魔法艇')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 398, in test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement
+    await self.quester.auto_quest_solo()
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\src\questing.py", line 8361, in auto_quest_solo
+    if not await self.teleport_party_to_quest_target(self.client, quest_xyz):
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: Quester.teleport_party_to_quest_target() takes 2 positional arguments but 3 were given
+
+======================================================================
+ERROR: test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement) (prompt='按下 X 传送')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 398, in test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement
+    await self.quester.auto_quest_solo()
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\src\questing.py", line 8361, in auto_quest_solo
+    if not await self.teleport_party_to_quest_target(self.client, quest_xyz):
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: Quester.teleport_party_to_quest_target() takes 2 positional arguments but 3 were given
+
+======================================================================
+ERROR: test_actual_blocked_steps_are_never_relaxed (tests.test_collision_approach.ApproachRuntimeTests.test_actual_blocked_steps_are_never_relaxed)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 243, in test_actual_blocked_steps_are_never_relaxed
+    self.assertFalse(await self.remaining(avoid=[box(100, -100, 600, 100)],
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                                           blocked_steps=[XYZ(100, 0, 0)]))
+                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 154, in remaining
+    return await tm._walk_remaining_to_target(
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        self.client, XYZ(500, 0, 0), object(), 'Test/Zone', 55, **kwargs
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+TypeError: _walk_remaining_to_target() got an unexpected keyword argument 'blocked_steps'
+
+======================================================================
+ERROR: test_exact_point_is_not_reported_reached_without_a_final_path (tests.test_collision_approach.ApproachRuntimeTests.test_exact_point_is_not_reported_reached_without_a_final_path)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 191, in test_exact_point_is_not_reported_reached_without_a_final_path
+    self.assertFalse(await self.remaining(goal_radius=5))
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 154, in remaining
+    return await tm._walk_remaining_to_target(
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        self.client, XYZ(500, 0, 0), object(), 'Test/Zone', 55, **kwargs
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+TypeError: _walk_remaining_to_target() got an unexpected keyword argument 'goal_radius'
+
+======================================================================
+ERROR: test_forced_walk_closes_gap_previously_counted_as_arrival (tests.test_collision_approach.ApproachRuntimeTests.test_forced_walk_closes_gap_previously_counted_as_arrival)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 178, in test_forced_walk_closes_gap_previously_counted_as_arrival
+    self.assertTrue(await self.remaining(goal_radius=35))
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 154, in remaining
+    return await tm._walk_remaining_to_target(
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        self.client, XYZ(500, 0, 0), object(), 'Test/Zone', 55, **kwargs
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+TypeError: _walk_remaining_to_target() got an unexpected keyword argument 'goal_radius'
+
+======================================================================
+ERROR: test_last_twenty_units_are_walked_to_the_actual_quest_point (tests.test_collision_approach.ApproachRuntimeTests.test_last_twenty_units_are_walked_to_the_actual_quest_point)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 184, in test_last_twenty_units_are_walked_to_the_actual_quest_point
+    self.assertTrue(await self.remaining(goal_radius=5))
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 154, in remaining
+    return await tm._walk_remaining_to_target(
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        self.client, XYZ(500, 0, 0), object(), 'Test/Zone', 55, **kwargs
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+TypeError: _walk_remaining_to_target() got an unexpected keyword argument 'goal_radius'
+
+======================================================================
+ERROR: test_normal_success_does_not_run_recovery (tests.test_collision_approach.ApproachRuntimeTests.test_normal_success_does_not_run_recovery)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 394, in test_normal_success_does_not_run_recovery
+    self.assertIsNone(self.client._collision_tp_approach)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'types.SimpleNamespace' object has no attribute '_collision_tp_approach'
+
+======================================================================
+ERROR: test_overshot_timed_walk_corrects_instead_of_claiming_a_wall (tests.test_collision_approach.ApproachRuntimeTests.test_overshot_timed_walk_corrects_instead_of_claiming_a_wall)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 229, in test_overshot_timed_walk_corrects_instead_of_claiming_a_wall
+    self.assertTrue(await self.remaining(goal_radius=5, blocked_steps=blocked))
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 154, in remaining
+    return await tm._walk_remaining_to_target(
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        self.client, XYZ(500, 0, 0), object(), 'Test/Zone', 55, **kwargs
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+TypeError: _walk_remaining_to_target() got an unexpected keyword argument 'goal_radius'
+
+======================================================================
+ERROR: test_partial_timed_walk_keeps_correcting_until_arrival (tests.test_collision_approach.ApproachRuntimeTests.test_partial_timed_walk_keeps_correcting_until_arrival)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 219, in test_partial_timed_walk_keeps_correcting_until_arrival
+    self.assertTrue(await self.remaining(goal_radius=5))
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 154, in remaining
+    return await tm._walk_remaining_to_target(
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        self.client, XYZ(500, 0, 0), object(), 'Test/Zone', 55, **kwargs
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+TypeError: _walk_remaining_to_target() got an unexpected keyword argument 'goal_radius'
+
+======================================================================
+ERROR: test_progress_callback_stops_before_another_waypoint (tests.test_collision_approach.ApproachRuntimeTests.test_progress_callback_stops_before_another_waypoint)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 196, in test_progress_callback_stops_before_another_waypoint
+    self.assertTrue(await self.remaining(goal_radius=35, stop_condition=stopped))
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 154, in remaining
+    return await tm._walk_remaining_to_target(
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        self.client, XYZ(500, 0, 0), object(), 'Test/Zone', 55, **kwargs
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+TypeError: _walk_remaining_to_target() got an unexpected keyword argument 'goal_radius'
+
+======================================================================
+ERROR: test_real_stall_is_recorded_and_not_walked_forever (tests.test_collision_approach.ApproachRuntimeTests.test_real_stall_is_recorded_and_not_walked_forever)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 210, in test_real_stall_is_recorded_and_not_walked_forever
+    self.assertFalse(await self.remaining(blocked_steps=blocked))
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 154, in remaining
+    return await tm._walk_remaining_to_target(
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        self.client, XYZ(500, 0, 0), object(), 'Test/Zone', 55, **kwargs
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+TypeError: _walk_remaining_to_target() got an unexpected keyword argument 'blocked_steps'
+
+======================================================================
+ERROR: test_strict_landing_with_no_walk_progress_counts_failure (tests.test_collision_approach.ApproachRuntimeTests.test_strict_landing_with_no_walk_progress_counts_failure)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 356, in test_strict_landing_with_no_walk_progress_counts_failure
+    self.assertEqual(self.client._collision_tp_approach['failures'], 1)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'types.SimpleNamespace' object has no attribute '_collision_tp_approach'
+
+======================================================================
+ERROR: test_two_failures_switch_to_alternate_approach (tests.test_collision_approach.ApproachRuntimeTests.test_two_failures_switch_to_alternate_approach)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 343, in test_two_failures_switch_to_alternate_approach
+    self.assertEqual(self.client._collision_tp_approach['failures'], 2)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'types.SimpleNamespace' object has no attribute '_collision_tp_approach'
+
+======================================================================
+FAIL: test_cancellation_during_countdown_releases_only_this_entry_lock (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_cancellation_during_countdown_releases_only_this_entry_lock)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_dungeon.py", line 456, in test_cancellation_during_countdown_releases_only_this_entry_lock
+    with self.assertRaises(asyncio.CancelledError):
+         ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: CancelledError not raised
+
+======================================================================
+FAIL: test_fast_zone_change_without_loading_sample_is_not_an_entry_timeout (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_fast_zone_change_without_loading_sample_is_not_an_entry_timeout)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_dungeon.py", line 439, in test_fast_zone_change_without_loading_sample_is_not_an_entry_timeout
+    self.assertTrue(await quester.enter_party_dungeon([client, hitter]))
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_ordinary_entrance_sends_both_keys_without_claiming_sigil_evidence (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_ordinary_entrance_sends_both_keys_without_claiming_sigil_evidence)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_dungeon.py", line 259, in test_ordinary_entrance_sends_both_keys_without_claiming_sigil_evidence
+    self.assertTrue(await quester.enter_party_dungeon([client, hitter, other_group]))
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_real_entry_sends_both_x_and_waits_for_late_hitter_before_next_step (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_real_entry_sends_both_x_and_waits_for_late_hitter_before_next_step)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_dungeon.py", line 365, in test_real_entry_sends_both_x_and_waits_for_late_hitter_before_next_step
+    self.assertTrue(await quester.enter_party_dungeon([client, hitter]))
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_ten_second_countdown_keeps_both_members_locked_through_loading (tests.test_quest_party_dungeon.QuestPartyDungeonTests.test_ten_second_countdown_keeps_both_members_locked_through_loading)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_dungeon.py", line 419, in test_ten_second_countdown_keeps_both_members_locked_through_loading
+    self.assertTrue(await quester.enter_party_dungeon([client, hitter]))
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_dialogue_opened_before_reentry_is_handled_without_movement (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_dialogue_opened_before_reentry_is_handled_without_movement)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_dungeon_interaction.py", line 497, in test_dialogue_opened_before_reentry_is_handled_without_movement
+    self.quester.teleport_party_to_quest_target.assert_not_awaited()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "D:\program files\Python\python313\Lib\unittest\mock.py", line 2459, in assert_not_awaited
+    raise AssertionError(msg)
+AssertionError: Expected mock to not have been awaited. Awaited 1 times.
+
+======================================================================
+FAIL: test_matching_npc_prompt_runs_dialogue_before_reentry_or_party_movement (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_matching_npc_prompt_runs_dialogue_before_reentry_or_party_movement)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_dungeon_interaction.py", line 440, in test_matching_npc_prompt_runs_dialogue_before_reentry_or_party_movement
+    self.quester.teleport_party_to_quest_target.assert_not_awaited()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "D:\program files\Python\python313\Lib\unittest\mock.py", line 2459, in assert_not_awaited
+    raise AssertionError(msg)
+AssertionError: Expected mock to not have been awaited. Awaited 1 times.
+
+======================================================================
+FAIL: test_unready_shared_movement_never_falls_back_to_quester_only_npc (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_unready_shared_movement_never_falls_back_to_quester_only_npc)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_dungeon_interaction.py", line 428, in test_unready_shared_movement_never_falls_back_to_quester_only_npc
+    self.quester.teleport_party_to_quest_target.assert_awaited_once_with(self.target)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "D:\program files\Python\python313\Lib\unittest\mock.py", line 2393, in assert_awaited_once_with
+    return self.assert_awaited_with(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "D:\program files\Python\python313\Lib\unittest\mock.py", line 2382, in assert_awaited_with
+    raise AssertionError(_error_message()) from cause
+AssertionError: expected await not found.
+Expected: mock(<XYZ (894.631, 253.874, -385.131)>)
+  Actual: mock(Member(title='p1', questing_status=True, in_solo_zone=False, refilling_potions=False, quest_recovery_owner=None, potion_dungeon_returned=None, quest_id=<AsyncMock id='2523606567968'>, goal_id=<AsyncMock id='2523606579056'>, zone_name=<AsyncMock id='2523606566288'>, is_loading=<AsyncMock id='2523606566624'>, in_battle=<AsyncMock id='2523606577712'>, quest_position=namespace(position=<AsyncMock id='2523602832416'>), body=namespace(position=<AsyncMock id='2523606570656'>), send_key=<AsyncMock id='2523606566960'>, quest_party_hitters=[Member(title='p2', questing_status=True, in_solo_zone=False, refilling_potions=False, quest_recovery_owner=None, potion_dungeon_returned=None, quest_id=<AsyncMock id='2523606571328'>, goal_id=<AsyncMock id='2523607436656'>, zone_name=<AsyncMock id='2523607448752'>, is_loading=<AsyncMock id='2523607439008'>, in_battle=<AsyncMock id='2523607782064'>, quest_position=namespace(position=<AsyncMock id='2523607784752'>), body=namespace(position=<AsyncMock id='2523607781392'>), send_key=<AsyncMock id='2523607784080'>)], quest_party_group_dungeon_zone='Avalon/Interiors/AV_Z04_WOwlGarden', _party_area_peers={2523598437584: (('Avalon/Interiors/AV_Z04_WOwlGarden', 2523596984592, 7, 0), ('Avalon/Interiors/AV_Z04_WOwlGarden', 2523598437584, 7, 0))}, quest_party_dungeon_interaction={'phase': 'waiting'}, use_potions=False, auto_pet_status=False, entity_detect_combat_status=False, quest_party_shared_target=None), <XYZ (894.631, 253.874, -385.131)>)
+
+======================================================================
+FAIL: test_waiting_party_can_talk_to_current_npc_but_never_start_new_movement (tests.test_party_dungeon_interaction.PartyDungeonInteractionTests.test_waiting_party_can_talk_to_current_npc_but_never_start_new_movement)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_dungeon_interaction.py", line 452, in test_waiting_party_can_talk_to_current_npc_but_never_start_new_movement
+    self.quester.handle_npc_talking_quests.assert_awaited_once_with(self.p1, [self.p1])
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "D:\program files\Python\python313\Lib\unittest\mock.py", line 2392, in assert_awaited_once_with
+    raise AssertionError(msg)
+AssertionError: Expected mock to have been awaited once. Awaited 0 times.
+
+======================================================================
+FAIL: test_active_split_recovery_runs_on_follower_loop_only (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_active_split_recovery_runs_on_follower_loop_only)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 682, in test_active_split_recovery_runs_on_follower_loop_only
+    self.assertEqual([call.args[2] for call in status.call_args_list][1:],
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                     ['打手正在补跟切区，本组等待区域同步'] * 3)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Lists differ: ['正在沿原房间入口归队', '正在沿原房间入口归队', '正在沿原房间入口归队'] != ['打手正在补跟切区，本组等待区域同步', '打手正在补跟切区，本组等待区域同步', '打手正在补跟切区，本组等待区域同步']
+
+First differing element 0:
+'正在沿原房间入口归队'
+'打手正在补跟切区，本组等待区域同步'
+
+- ['正在沿原房间入口归队', '正在沿原房间入口归队', '正在沿原房间入口归队']
++ ['打手正在补跟切区，本组等待区域同步', '打手正在补跟切区，本组等待区域同步', '打手正在补跟切区，本组等待区域同步']
+
+======================================================================
+FAIL: test_ambiguous_friend_error_never_marks_unknown_area_as_solo (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_ambiguous_friend_error_never_marks_unknown_area_as_solo)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 555, in test_ambiguous_friend_error_never_marks_unknown_area_as_solo
+    self.assertFalse(self.follow_quester.in_solo_zone)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_confirmed_same_room_with_unreadable_proof_waits_without_friend_teleport (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_confirmed_same_room_with_unreadable_proof_waits_without_friend_teleport)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 574, in test_confirmed_same_room_with_unreadable_proof_waits_without_friend_teleport
+    friend.assert_not_awaited()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "D:\program files\Python\python313\Lib\unittest\mock.py", line 2459, in assert_not_awaited
+    raise AssertionError(msg)
+AssertionError: Expected mock to not have been awaited. Awaited 2 times.
+
+======================================================================
+FAIL: test_continuous_room_changes_keep_party_history_and_friend_rejection_never_means_solo (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_continuous_room_changes_keep_party_history_and_friend_rejection_never_means_solo) (error='FriendBusyOrInstanceClosed')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 607, in test_continuous_room_changes_keep_party_history_and_friend_rejection_never_means_solo
+    friend.assert_not_awaited()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "D:\program files\Python\python313\Lib\unittest\mock.py", line 2459, in assert_not_awaited
+    raise AssertionError(msg)
+AssertionError: Expected mock to not have been awaited. Awaited 3 times.
+
+======================================================================
+FAIL: test_continuous_room_changes_keep_party_history_and_friend_rejection_never_means_solo (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_continuous_room_changes_keep_party_history_and_friend_rejection_never_means_solo) (error='ValueError')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 607, in test_continuous_room_changes_keep_party_history_and_friend_rejection_never_means_solo
+    friend.assert_not_awaited()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "D:\program files\Python\python313\Lib\unittest\mock.py", line 2459, in assert_not_awaited
+    raise AssertionError(msg)
+AssertionError: Expected mock to not have been awaited. Awaited 3 times.
+
+======================================================================
+FAIL: test_expired_same_room_party_transition_waits_for_proof_without_classifying_quester_solo (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_expired_same_room_party_transition_waits_for_proof_without_classifying_quester_solo)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 697, in test_expired_same_room_party_transition_waits_for_proof_without_classifying_quester_solo
+    friend.assert_not_awaited()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "D:\program files\Python\python313\Lib\unittest\mock.py", line 2459, in assert_not_awaited
+    raise AssertionError(msg)
+AssertionError: Expected mock to not have been awaited. Awaited 2 times.
+
+======================================================================
+FAIL: test_prompt_wait_does_not_block_existing_special_recovery_collaboration (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_prompt_wait_does_not_block_existing_special_recovery_collaboration)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 705, in test_prompt_wait_does_not_block_existing_special_recovery_collaboration
+    self.assertEqual([call.args[2] for call in status.call_args_list][1:],
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                     ['等待 NightmareKrok 恢复'] * 3)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Lists differ: ['等待本组当前操作完成', '等待本组当前操作完成', '等待本组当前操作完成'] != ['等待 NightmareKrok 恢复', '等待 NightmareKrok 恢复', '等待 NightmareKrok 恢复']
+
+First differing element 0:
+'等待本组当前操作完成'
+'等待 NightmareKrok 恢复'
+
+- ['等待本组当前操作完成', '等待本组当前操作完成', '等待本组当前操作完成']
++ ['等待 NightmareKrok 恢复', '等待 NightmareKrok 恢复', '等待 NightmareKrok 恢复']
+
+======================================================================
+FAIL: test_secondary_hitter_can_catch_up_while_primary_probe_is_pending (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_secondary_hitter_can_catch_up_while_primary_probe_is_pending)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 644, in test_secondary_hitter_can_catch_up_while_primary_probe_is_pending
+    hitter.teleport.assert_awaited()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "D:\program files\Python\python313\Lib\unittest\mock.py", line 2355, in assert_awaited
+    raise AssertionError(msg)
+AssertionError: Expected mock to have been awaited.
+
+======================================================================
+FAIL: test_source_dialogue_allows_independent_friend_probe (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_source_dialogue_allows_independent_friend_probe)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 628, in test_source_dialogue_allows_independent_friend_probe
+    friend.assert_awaited()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "D:\program files\Python\python313\Lib\unittest\mock.py", line 2355, in assert_awaited
+    raise AssertionError(msg)
+AssertionError: Expected mock to have been awaited.
+
+======================================================================
+FAIL: test_task_change_follows_quester_coordinates_even_inside_old_distance_limit (tests.test_quest_party_shared_target.SameInstanceFollowTests.test_task_change_follows_quester_coordinates_even_inside_old_distance_limit)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 675, in test_task_change_follows_quester_coordinates_even_inside_old_distance_limit
+    hitter.teleport.assert_awaited_once_with(0)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^
+  File "D:\program files\Python\python313\Lib\unittest\mock.py", line 2392, in assert_awaited_once_with
+    raise AssertionError(msg)
+AssertionError: Expected mock to have been awaited once. Awaited 0 times.
+
+======================================================================
+FAIL: test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement (tests.test_quest_party_shared_target.SharedQuestTargetTests.test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_quest_party_shared_target.py", line 405, in test_auto_quest_uses_ready_interaction_before_reentry_or_shared_movement
+    self.quester.new_world_doors.assert_awaited_once_with(client)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^
+  File "D:\program files\Python\python313\Lib\unittest\mock.py", line 2392, in assert_awaited_once_with
+    raise AssertionError(msg)
+AssertionError: Expected mock to have been awaited once. Awaited 0 times.
+
+======================================================================
+FAIL: test_cooldown_expiry_retries_fresh (tests.test_collision_approach.ApproachRuntimeTests.test_cooldown_expiry_retries_fresh)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 373, in test_cooldown_expiry_retries_fresh
+    self.assertEqual(self.client._collision_tp_approach['failures'], 1)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 2 != 1
+
+======================================================================
+FAIL: test_cooldown_skips_repeated_same_target_movement (tests.test_collision_approach.ApproachRuntimeTests.test_cooldown_skips_repeated_same_target_movement)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 363, in test_cooldown_skips_repeated_same_target_movement
+    self.solve.assert_not_called()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "D:\program files\Python\python313\Lib\unittest\mock.py", line 940, in assert_not_called
+    raise AssertionError(msg)
+AssertionError: Expected 'find_walkable_teleport_point' to not have been called. Called 1 times.
+Calls: [call(<Mock id='2523643931216'>, 'Test/Zone', <XYZ (500, 0, 0)>, extra_shapes=[], player_radius=55, strict=False)].
+
+======================================================================
+FAIL: test_dialogue_or_battle_stops_remaining_walk (tests.test_collision_approach.ApproachRuntimeTests.test_dialogue_or_battle_stops_remaining_walk)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 269, in test_dialogue_or_battle_stops_remaining_walk
+    self.assertTrue(await self.remaining())
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: None is not true
+
+======================================================================
+FAIL: test_external_cancellation_is_not_swallowed (tests.test_collision_approach.ApproachRuntimeTests.test_external_cancellation_is_not_swallowed)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 286, in test_external_cancellation_is_not_swallowed
+    with self.assertRaises(asyncio.CancelledError):
+         ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: CancelledError not raised
+
+======================================================================
+FAIL: test_new_target_clears_old_blocked_state_immediately (tests.test_collision_approach.ApproachRuntimeTests.test_new_target_clears_old_blocked_state_immediately)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 381, in test_new_target_clears_old_blocked_state_immediately
+    self.assertEqual(self.client._collision_tp_approach['blocked_steps'], [])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Lists differ: [<XYZ (100, 0, 0)>] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+<XYZ (100, 0, 0)>
+
+- [<XYZ (100, 0, 0)>]
++ []
+
+======================================================================
+FAIL: test_nonfree_client_does_not_move (tests.test_collision_approach.ApproachRuntimeTests.test_nonfree_client_does_not_move)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 410, in test_nonfree_client_does_not_move
+    self.assertIsNone(self.client._collision_tp_approach)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'zone': 'Test/Zone', 'target': <XYZ (500, 0, 0)>, 'failures': 2, 'landings': [], 'blocked_steps': [], 'retry_after': 0.0} is not None
+
+======================================================================
+FAIL: test_small_underwalk_gets_only_two_attempts (tests.test_collision_approach.ApproachRuntimeTests.test_small_underwalk_gets_only_two_attempts)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 303, in test_small_underwalk_gets_only_two_attempts
+    self.assertTrue(await self.remaining())
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: None is not true
+
+======================================================================
+FAIL: test_tp_blocking_volume_does_not_force_zero_waypoint_walk (tests.test_collision_approach.ApproachRuntimeTests.test_tp_blocking_volume_does_not_force_zero_waypoint_walk)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 236, in test_tp_blocking_volume_does_not_force_zero_waypoint_walk
+    self.assertTrue(await self.remaining(avoid=[box(50, -100, 600, 100)]))
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: None is not true
+
+======================================================================
+FAIL: test_walk_stops_in_range_without_exact_target_refinement (tests.test_collision_approach.ApproachRuntimeTests.test_walk_stops_in_range_without_exact_target_refinement)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 171, in test_walk_stops_in_range_without_exact_target_refinement
+    self.assertTrue(await self.remaining())
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: None is not true
+
+======================================================================
+FAIL: test_walk_timeout_cancels_pending_input (tests.test_collision_approach.ApproachRuntimeTests.test_walk_timeout_cancels_pending_input)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 282, in test_walk_timeout_cancels_pending_input
+    self.assertEqual(cancelled, [True])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+AssertionError: Lists differ: [] != [True]
+
+Second list contains 1 additional elements.
+First extra element 0:
+True
+
+- []
++ [True]
+
+======================================================================
+FAIL: test_zone_change_clears_cooldown_immediately (tests.test_collision_approach.ApproachRuntimeTests.test_zone_change_clears_cooldown_immediately)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 388, in test_zone_change_clears_cooldown_immediately
+    self.assertEqual(self.client._collision_tp_approach['zone'], self.zone)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'Old/Zone' != 'Test/Zone'
+- Old/Zone
++ Test/Zone
+
+
+======================================================================
+FAIL: test_zone_change_stops_remaining_walk (tests.test_collision_approach.ApproachRuntimeTests.test_zone_change_stops_remaining_walk)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_collision_approach.py", line 262, in test_zone_change_stops_remaining_walk
+    self.assertTrue(await self.remaining())
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: None is not true
+
+----------------------------------------------------------------------
+Ran 161 tests in 11.544s
+
+FAILED (failures=32, errors=34)

@@ -23,6 +23,8 @@ class MainlineGroupSyncTests(unittest.IsolatedAsyncioTestCase):
         for title in ('p2', 'p3', 'p4', 'p5'):
             client = SimpleNamespace(
                 title=title, questing_status=True, quest_recovery_owner=None,
+                mainline_finder_enabled=True,
+                is_loading=AsyncMock(return_value=False), in_battle=AsyncMock(return_value=False),
                 mainline_chain_retry_active=False,
                 quest_id=AsyncMock(return_value=151),
                 zone_name=AsyncMock(return_value='Empyrea/Next'),
@@ -50,6 +52,18 @@ class MainlineGroupSyncTests(unittest.IsolatedAsyncioTestCase):
         if at is not None:
             self.now = at
         return await self.quester._mainline_sync_blocks_movement(client or self.clients[0])
+
+    async def test_disabled_tracks_each_clients_current_quest_without_index_gate(self):
+        for quest_id in (0, 150, 999):
+            with self.subTest(quest_id=quest_id):
+                self.clients[0].mainline_finder_enabled = False
+                self.clients[0].quest_id.return_value = quest_id
+                self.clients[0].quest_mainline_sync_state = {'old': True}
+                self.assertFalse(await self.check(at=4))
+                self.assertIsNone(self.clients[0].quest_mainline_sync_state)
+        self.quester._mainline_identity.assert_not_awaited()
+        self.quester._maybe_recover_mainline.assert_not_awaited()
+        self.quester._quest_dialogue_blocks_movement.assert_not_awaited()
 
     async def test_one_hitter_three_questers_wait_until_all_match(self):
         p2, p3, p4, _ = self.clients

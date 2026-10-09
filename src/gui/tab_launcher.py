@@ -289,8 +289,6 @@ def build_launcher_tab(ctx):
                     GUICommand(GUICommandType.UpdateAccountCredentials, nickname)
                 )
             )
-            credentials_btn.setVisible(not steam_cb.isChecked())
-            steam_cb.toggled.connect(lambda checked: credentials_btn.setVisible(not checked))
             dlg_layout.addWidget(credentials_btn)
 
         save_btn = QPushButton(tl('save_account'))

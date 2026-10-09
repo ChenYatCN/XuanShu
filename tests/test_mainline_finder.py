@@ -35,12 +35,17 @@ class MainlineFinderTests(unittest.IsolatedAsyncioTestCase):
     async def test_disabled_does_not_read_or_interrupt_side_quest(self):
         self.client.mainline_finder_enabled = False
         self.client.mainline_finder_offer_guard = True
+        self.client.mainline_chain_retry_active = True
+        self.client.mainline_last_turn_in_snapshot = ('old',)
+        self.client.outback_story_pending = True
         self.quester._mainline_identity = AsyncMock()
         self.quester._run_mainline_finder = AsyncMock()
         self.assertFalse(await self.quester._maybe_recover_mainline(self.client))
         self.quester._mainline_identity.assert_not_awaited()
         self.quester._run_mainline_finder.assert_not_awaited()
         self.assertFalse(self.client.mainline_finder_offer_guard)
+        self.assertFalse(self.client.mainline_chain_retry_active)
+        self.assertIsNone(self.client.mainline_last_turn_in_snapshot)
 
     async def test_normal_mainline_does_not_trigger(self):
         row = next(r for r in quest_rows() if r['english'] == 'Extra Life')
@@ -91,16 +96,18 @@ class MainlineFinderTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(self.client.quest_recovery_owner)
 
 
-    async def test_known_cave_without_entry_prompt_uses_dungeon_recovery(self):
+    async def test_known_cave_does_not_redirect_explicit_finder_to_dungeon_reselection(self):
         self.client.zone_name.return_value = 'Lemuria/Interiors/LM_Z05_I02_Cave'
-        self.quester._mainline_identity = AsyncMock()
+        row = next(r for r in quest_rows() if r['english'] == 'Extra Life')
+        self.quester._mainline_identity = AsyncMock(return_value=(42, 'QuestTitle_162472', 'Extra Life', row, True))
         self.quester._run_mainline_finder = AsyncMock()
-        self.quester._maybe_refresh_stalled_dungeon_quest = AsyncMock(return_value=False)
-        self.assertFalse(await self.quester._maybe_recover_mainline(self.client))
-        self.assertEqual(self.client.quest_dungeon_recovery['zone'], self.client.zone_name.return_value)
-        self.quester._mainline_identity.assert_not_awaited()
+        self.quester._maybe_refresh_stalled_dungeon_quest = AsyncMock()
+        with patch('src.questing.is_visible_by_path', AsyncMock(return_value=False)):
+            self.assertFalse(await self.quester._maybe_recover_mainline(self.client))
+        self.quester._mainline_identity.assert_awaited_once_with(self.client)
         self.quester._run_mainline_finder.assert_not_awaited()
-        self.quester._maybe_refresh_stalled_dungeon_quest.assert_awaited_once_with(self.client)
+        self.quester._maybe_refresh_stalled_dungeon_quest.assert_not_awaited()
+        self.assertIsNone(getattr(self.client, 'quest_dungeon_recovery', None))
 
     async def test_stable_previous_mainline_can_seek_specific_next_id(self):
         row = next(r for r in quest_rows() if r['english'] == 'Extra Life')
@@ -140,9 +147,9 @@ class MainlineFinderTests(unittest.IsolatedAsyncioTestCase):
             now[0] = 2.0
             self.client.quest_id.return_value = 200
             self.assertTrue(await self.quester._quest_dialogue_blocks_movement(self.client))
-            now[0] = 4.0
+            now[0] = 2.2
             self.assertTrue(await self.quester._quest_dialogue_blocks_movement(self.client))
-            now[0] = 5.1
+            now[0] = 2.31
             self.assertFalse(await self.quester._quest_dialogue_blocks_movement(self.client))
         self.assertIsNone(self.client.quest_dialogue_settle)
 

@@ -49,7 +49,27 @@ class PopupTextTests(unittest.IsolatedAsyncioTestCase):
         client.in_battle.return_value = False
         client.body.position.return_value = XYZ(0, 0, 0)
         quester = Quester(client, [client], None)
-        with patch('src.utils.is_visible_by_path', AsyncMock(return_value=True)), patch('src.questing.is_visible_by_path', AsyncMock(return_value=True)), patch('src.utils.get_window_from_path', AsyncMock(return_value=self.window('巨型星盘'))), patch('src.questing.get_quest_name', AsyncMock(return_value='安装天国之星于 巨型星盘 地点：天国大本营')), patch('src.questing.collision_tp', AsyncMock()) as move:
+        with patch('src.utils.is_visible_by_path', AsyncMock(return_value=True)), patch('src.questing.is_visible_by_path', AsyncMock(return_value=True)), patch('src.utils.get_window_from_path', AsyncMock(return_value=self.window('巨型星盘'))), patch('src.questing.get_window_from_path', AsyncMock(return_value=self.window('按X使用'))), patch('src.questing.get_quest_name', AsyncMock(return_value='安装天国之星于 巨型星盘 地点：天国大本营')), patch('src.questing.collision_tp', AsyncMock()) as move:
             self.assertTrue(await quester.quest_interaction_ready(client, XYZ(10, 0, 0)))
             await quester.move_until_quest_interaction(client, XYZ(10, 0, 0))
             move.assert_not_awaited()
+
+    async def test_short_entry_prompt_uses_inline_text_not_maybe_text(self):
+        from src.interaction_prompts import interaction_kind
+        client = AsyncMock()
+        quester = Quester(client, [client], None)
+        for text in ('点击X进入', '点击 进入', '按下 X 进入'):
+            window = self.window(text)
+            window.maybe_text.side_effect = MemoryReadError(123)
+            with patch('src.questing.get_window_from_path', AsyncMock(return_value=window)):
+                self.assertEqual(interaction_kind(await quester.read_popup(client)), 'enter')
+            window.maybe_text.assert_not_awaited()
+
+    async def test_entry_diagnostic_throttles_interleaved_failure_reasons(self):
+        client = AsyncMock()
+        quester = Quester(client, [client], None)
+        with patch('src.questing.logger.debug') as log:
+            for _ in range(3):
+                quester._note_quest_entry_wait(client, '进入提示读取失败', detail='unreadable')
+                quester._note_quest_entry_wait(client, '范围窗可见但交互提示为空', title='洞穴')
+            self.assertEqual(log.call_count, 2)

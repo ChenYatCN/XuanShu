@@ -23,6 +23,25 @@ class DungeonPromptTests(unittest.TestCase):
 
 
 class VerifiedLanguageTests(unittest.TestCase):
+    def test_verified_generic_actions_and_exact_forms(self):
+        from src.game_text_catalog import INTERACTION_RECORDS
+        for text_id, texts in INTERACTION_RECORDS.items():
+            for text in (*texts, f'<string;{text_id}>'):
+                with self.subTest(text_id=text_id, text=text):
+                    self.assertIsNotNone(interaction_kind(text))
+        for prompt, expected in (
+            ('按X或<icon;mouse>使用', 'use'), ('Press X to Use', 'use'),
+            ('按下 X 激活', 'interact'), ('Press X to Read', 'interact'),
+            ('按下 X 解锁', 'interact'), ('按下 X 修理', 'interact'),
+            ('按下 X 攀爬', 'interact'), ('Press X to Use Desk', 'use'),
+            ('Press X to Use Imaginary Device', None), ('按下 X 未知动作', None),
+            ('Press X to use Bank', None), ('Press X to Hatch', None),
+            ('Press X to Play', None), ('Press X to Fish', None),
+            ('Press X to Consume [key type] Key', None),
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(interaction_kind(prompt), expected)
+
     def test_known_ids_have_verified_translations(self):
         self.assertEqual(TEXT_RECORDS['PetGames_Action_Go'], ['Go!', '开始重复！'])
         self.assertEqual(TEXT_RECORDS['GUI_NPCInteractNoClick'][1], '按下 &Icons_XKey& 交谈')

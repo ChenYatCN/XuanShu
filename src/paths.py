@@ -44,6 +44,7 @@ popup_title_path = ["WorldView", "NPCRangeWin", "wndTitleBackground", "NPCRangeT
 
 # Team Up Paths
 team_up_button_path = ['WorldView', 'NPCRangeWin', 'imgBackground', 'TeamUpButton']
+team_up_wait_path = ['WorldView', 'NPCRangeWin', 'imgBackground', 'TeamUpWaitWindow']
 team_up_confirm_path = ['WorldView', 'TeamUpConfirmationWindow', 'TeamUpConfirmationBackground', 'TeamUpButton']
 
 # NPC Range Path

@@ -18,7 +18,7 @@ class SoloFollowTests(unittest.IsolatedAsyncioTestCase):
     async def run_session(self, *, zone='Solo', primary=True, group_zone=None,
                           solo=True, recovery_owner='lemuria_dungeon', navigation_holding=False,
                           outback_holding=False, estate_phase=None, target_sync=False,
-                          cleanup_source=False, cleanup_hitter=False):
+                          cleanup_source=False, cleanup_hitter=False, dungeon_entry=False):
         self.hitter = SimpleNamespace(
             title='p2', questing_status=True,
             post_combat_cleanup_active=cleanup_hitter,
@@ -34,6 +34,7 @@ class SoloFollowTests(unittest.IsolatedAsyncioTestCase):
             quest_dungeon_recovery={'zone': 'Solo'},
             quest_recovery_owner=recovery_owner,
             quest_party_target_sync_active=target_sync,
+            quest_party_dungeon_entry_active=dungeon_entry,
             outback_story_pending=outback_holding,
             quest_lemuria_navigation_recovery={'holding': navigation_holding},
             in_battle=AsyncMock(return_value=True),
@@ -56,6 +57,7 @@ class SoloFollowTests(unittest.IsolatedAsyncioTestCase):
             remove_party_status=Mock(),
             close_automation_popup=AsyncMock(return_value=False))
         namespace['observe_party_area'] = AsyncMock()
+        namespace['is_spiral_door_open'] = AsyncMock(return_value=False)
         exec(compile(ast.Module(body=[self.function], type_ignores=[]),
                      'XuanShu.py', 'exec'), namespace)
         ticks = 0
@@ -105,9 +107,9 @@ class SoloFollowTests(unittest.IsolatedAsyncioTestCase):
             statuses = await self.run_session()
             self.assertEqual(statuses[1:], ['单人区域，任务端独立执行'] * 3)
 
-    async def test_solo_has_priority_over_stale_group_marker(self):
+    async def test_confirmed_shared_room_marker_cannot_be_overridden_by_solo_flag(self):
         statuses = await self.run_session(group_zone='Solo')
-        self.assertEqual(statuses[1:], ['单人区域，任务端独立执行'] * 3)
+        self.assertEqual(statuses[1:], ['等待 Lemuria Dungeon 区域切换'] * 3)
 
     async def test_zone_change_releases_solo_wait_and_requests_probe(self):
         statuses = await self.run_session(zone='Outside')
@@ -143,6 +145,14 @@ class SoloFollowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_avalon_grain_entry_preserves_confirmed_solo_priority(self):
         statuses = await self.run_session(recovery_owner='avalon_grain_entry')
+        self.assertEqual(statuses[1:], ['单人区域，任务端独立执行'] * 3)
+
+    async def test_azteca_beetle_entry_pauses_followers(self):
+        statuses = await self.run_session(solo=False, recovery_owner='azteca_beetle_entry')
+        self.assertEqual(statuses[1:], ['等待胭脂甲虫入口区域切换'] * 3)
+
+    async def test_azteca_beetle_entry_preserves_confirmed_solo_priority(self):
+        statuses = await self.run_session(recovery_owner='azteca_beetle_entry')
         self.assertEqual(statuses[1:], ['单人区域，任务端独立执行'] * 3)
 
     async def test_easton_house_flow_pauses_followers_before_zone_probe(self):
@@ -196,6 +206,13 @@ class SoloFollowTests(unittest.IsolatedAsyncioTestCase):
     async def test_shared_target_movement_pauses_independent_follow(self):
         statuses = await self.run_session(solo=False, recovery_owner=None, target_sync=True)
         self.assertEqual(statuses[1:], ['正在同步到任务目标'] * 3)
+
+    async def test_dungeon_countdown_wait_never_starts_coordinate_or_friend_follow(self):
+        statuses = await self.run_session(solo=False, recovery_owner=None,
+                                          target_sync=True, dungeon_entry=True)
+        self.assertEqual(statuses[1:], ['等待全组地牢切区'] * 3)
+        self.quester.zone_name.assert_not_awaited()
+        self.quester.in_battle.assert_not_awaited()
 
     async def test_source_or_hitter_cleanup_pauses_follow_before_zone_reads(self):
         for guard in ({'cleanup_source': True}, {'cleanup_hitter': True}):

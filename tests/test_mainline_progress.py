@@ -26,34 +26,24 @@ class MainlineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(match_quest(rows, 160440737060796615, 'QuestTitle_71A3D', 'Bad Vacation'))
 
     async def test_solo_quest_ride_prompt_near_target_sends_x(self):
-        # Exercise the existing interaction branch, not a live game client.
-        tree = ast.parse(Path('src/questing.py').read_text(encoding='utf-8'))
-        method = next(node for node in ast.walk(tree)
-                      if isinstance(node, ast.AsyncFunctionDef) and node.name == 'auto_quest_solo')
-        branch = next(node for node in ast.walk(method)
-                      if isinstance(node, ast.If) and 'npc_range_path' in ast.unparse(node.test)
-                      and 'quest_xyz' in ast.unparse(node.test))
-        function = ast.AsyncFunctionDef(
-            name='interact', args=ast.arguments(posonlyargs=[], args=[], kwonlyargs=[],
-                kw_defaults=[], defaults=[]), body=[branch], decorator_list=[])
-        client = SimpleNamespace(title='p1', send_key=AsyncMock())
+        target = XYZ(100, 200, 0)
+        client = SimpleNamespace(title='p1', questing_status=True, quest_party_hitters=[],
+            quest_id=AsyncMock(return_value=42), goal_id=AsyncMock(return_value=7),
+            zone_name=AsyncMock(return_value='World/Area'),
+            quest_position=SimpleNamespace(position=AsyncMock(return_value=target)),
+            body=SimpleNamespace(position=AsyncMock(return_value=target)),
+            is_loading=AsyncMock(return_value=False), in_battle=AsyncMock(return_value=False),
+            send_key=AsyncMock())
         quester = Quester(client, [client], None)
-        quester.read_popup = AsyncMock(return_value='按下 &InputBindings_NPCInteract& 骑乘')
-        quester._maybe_photo_giant_vat = AsyncMock(return_value=False)
-        from src.interaction_prompts import interaction_kind, is_dungeon_entry_prompt
-        from src.paths import npc_range_path
-        namespace = dict(self=quester, quest_xyz=XYZ(0, 0, 0), current_pos=XYZ(114, 0, 0),
-            npc_range_path=npc_range_path, Keycode=Keycode,
-            calc_Distance=lambda a, b: abs(a.x - b.x),
-            is_visible_by_path=AsyncMock(return_value=True),
-            is_spiral_door_open=AsyncMock(return_value=False),
-            is_dungeon_entry_prompt=is_dungeon_entry_prompt, interaction_kind=interaction_kind,
-            asyncio=SimpleNamespace(sleep=AsyncMock()))
-        exec(compile(ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[])),
-                     'quest-interaction-branch', 'exec'), namespace)
-        self.assertEqual(interaction_kind(await quester.read_popup(client)), 'ride')
-        await namespace['interact']()
+        quester.read_popup = AsyncMock(return_value='Press X to Ride')
+        with (patch('src.questing.is_visible_by_path', AsyncMock(
+                side_effect=lambda client, path: path == ['WorldView', 'NPCRangeWin'])),
+              patch('src.questing.is_free_leader_questing', AsyncMock(return_value=True)),
+              patch('src.questing.is_spiral_door_open', AsyncMock(return_value=False)),
+              patch('src.questing.asyncio.sleep', AsyncMock())):
+            self.assertTrue(await quester.handle_quest_interaction(client, target))
         client.send_key.assert_awaited_once_with(Keycode.X, .1)
+
 
     def test_live_novus_monkey_business_identity_is_unique(self):
         rows = quest_rows()
@@ -213,6 +203,12 @@ class MainlineTests(unittest.IsolatedAsyncioTestCase):
         client.auto_pet_status = False
         client.use_potions = False
         client.mainline_finder_enabled = False
+        client.zone_name.return_value = 'WizardCity/Area'
+        client.is_loading.return_value = False
+        client.in_battle.return_value = False
+        client.quest_party_hitters = []
+        client.quest_recovery_owner = None
+        client.refilling_potions = False
         client.entity_detect_combat_status = False
         client.quest_position.position.return_value = XYZ(100, 0, 0)
         quester = Quester(client, [client], None)

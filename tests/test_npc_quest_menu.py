@@ -3,6 +3,7 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from src.automation_ownership import automation_owner
 import unittest
 
 
@@ -12,7 +13,7 @@ class NPCQuestMenuTests(unittest.IsolatedAsyncioTestCase):
         fn = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == 'close_npc_quest_menu')
         self.visible = AsyncMock(side_effect=lambda client, path: path == 'menu')
         self.click = AsyncMock()
-        scope = dict(Client=object, asyncio=asyncio, is_visible_by_path=self.visible,
+        scope = dict(Client=object, asyncio=asyncio, automation_owner=automation_owner, is_visible_by_path=self.visible,
                      safe_click_window=self.click, cancel_multiple_quest_menu_path='menu', advance_dialog_path='dialog')
         exec(compile(ast.Module(body=[fn], type_ignores=[]), 'src/utils.py', 'exec'), scope)
         self.close = scope['close_npc_quest_menu']

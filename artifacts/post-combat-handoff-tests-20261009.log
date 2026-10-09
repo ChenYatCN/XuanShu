@@ -1,0 +1,131 @@
+...F.FExecuting <Task finished name='Task-32' coro=<CombatStateRecoveryTests.test_active_recovery_refill_and_input_owners_are_preserved() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_combat_state_recovery.py:107> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 70.000 seconds
+.Executing <Task finished name='Task-37' coro=<CombatStateRecoveryTests.test_actual_battle_does_not_clear_detected_state() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_combat_state_recovery.py:66> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 100.000 seconds
+..2026-10-09 14:43:16.553 | DEBUG    | src.utils:reconcile_combat_state:1842 - p3 战斗状态暂不可校准，保留保护并稍后重试：duel address unreadable
+2026-10-09 14:43:16.553 | DEBUG    | src.utils:reconcile_combat_state:1842 - p3 战斗状态暂不可校准，保留保护并稍后重试：duel address unreadable
+Executing <Task finished name='Task-47' coro=<CombatStateRecoveryTests.test_in_battle_false_from_failed_read_is_not_ended_proof() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_combat_state_recovery.py:73> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 100.000 seconds
+.2026-10-09 14:43:16.558 | INFO     | src.utils:reconcile_combat_state:1871 - p3 已确认战斗结束，清理残留入战标记，恢复自动任务。
+Executing <Task finished name='Task-52' coro=<CombatStateRecoveryTests.test_loading_zone_change_and_battle_restart_stable_timer() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_combat_state_recovery.py:91> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 7.500 seconds
+.Executing <Task finished name='Task-57' coro=<CombatStateRecoveryTests.test_new_entry_during_duel_read_is_not_cleared() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_combat_state_recovery.py:121> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 2.000 seconds
+.2026-10-09 14:43:16.568 | INFO     | src.utils:reconcile_combat_state:1871 - p3 已确认战斗结束，清理残留入战标记，恢复自动任务。
+Executing <Task finished name='Task-62' coro=<CombatStateRecoveryTests.test_pending_entry_keeps_seven_second_grace_then_needs_stability() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_combat_state_recovery.py:81> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 8.600 seconds
+.2026-10-09 14:43:16.573 | INFO     | src.utils:reconcile_combat_state:1871 - p3 已确认战斗结束，清理残留入战标记，恢复自动任务。
+Executing <Task finished name='Task-67' coro=<CombatStateRecoveryTests.test_readable_ended_duel_releases_only_own_stale_state() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_combat_state_recovery.py:49> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 1.500 seconds
+..2026-10-09 14:43:16.582 | INFO     | src.utils:reconcile_combat_state:1871 - p3 已确认战斗结束，清理残留入战标记，恢复自动任务。
+Executing <Task finished name='Task-77' coro=<CombatStateRecoveryTests.test_real_quest_gate_recovers_without_reinjection() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_combat_state_recovery.py:137> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 4.700 seconds
+.2026-10-09 14:43:16.736 | INFO     | src.utils:reconcile_combat_state:1871 - p3 已确认战斗结束，清理残留入战标记，恢复自动任务。
+Executing <Task finished name='Task-82' coro=<CombatStateRecoveryTests.test_restart_worker_calibrates_selected_client_before_questing() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_combat_state_recovery.py:169> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 1.500 seconds
+.2026-10-09 14:43:16.740 | INFO     | src.utils:reconcile_combat_state:1871 - p3 已确认战斗结束，清理残留入战标记，恢复自动任务。
+Executing <Task finished name='Task-87' coro=<CombatStateRecoveryTests.test_return_confirmation_marker_is_never_removed_by_state_repair() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_combat_state_recovery.py:131> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 1.500 seconds
+.Executing <Task finished name='Task-92' coro=<DetectionSupervisorTests.test_nudge_does_not_compete_with_running_post_combat_cleanup() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_combat_state_recovery.py:321> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.103 seconds
+.Executing <Task pending name='Task-97' coro=<DetectionSupervisorTests.test_one_client_read_failure_retries_without_cancelling_peer() running at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_combat_state_recovery.py:352> wait_for=<Future pending cb=[Task.task_wakeup()] created at D:\program files\Python\python313\Lib\asyncio\base_events.py:459> cb=[_run_until_complete_cb() at D:\program files\Python\python313\Lib\asyncio\base_events.py:181] created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.109 seconds
+.Executing <Task finished name='Task-104' coro=<DetectionSupervisorTests.test_removed_client_is_not_retried() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_combat_state_recovery.py:364> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.111 seconds
+.2026-10-09 14:43:17.113 | DEBUG    | src.utils:reconcile_combat_state:1842 - p3 战斗状态暂不可校准，保留保护并稍后重试：状态读取超过 3 秒
+.......................Executing <Task finished name='Task-223' coro=<PartyEntryRecoveryTests.asyncSetUp() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_entry_recovery.py:13> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.237 seconds
+.Executing <Task finished name='Task-228' coro=<PartyEntryRecoveryTests.asyncSetUp() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_entry_recovery.py:13> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.217 seconds
+.Executing <Task finished name='Task-234' coro=<PartyEntryRecoveryTests.asyncSetUp() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_entry_recovery.py:13> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.224 seconds
+.Executing <Task finished name='Task-239' coro=<PartyEntryRecoveryTests.asyncSetUp() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_entry_recovery.py:13> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.230 seconds
+.Executing <Task finished name='Task-244' coro=<PartyEntryRecoveryTests.asyncSetUp() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_entry_recovery.py:13> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.228 seconds
+.Executing <Task finished name='Task-249' coro=<PartyEntryRecoveryTests.asyncSetUp() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_entry_recovery.py:13> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.216 seconds
+.Executing <Task finished name='Task-254' coro=<PartyEntryRecoveryTests.asyncSetUp() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_entry_recovery.py:13> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.226 seconds
+.Executing <Task finished name='Task-259' coro=<PartyEntryRecoveryTests.asyncSetUp() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_entry_recovery.py:13> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.223 seconds
+.Executing <Task finished name='Task-264' coro=<PartyEntryRecoveryTests.asyncSetUp() done, defined at D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_party_entry_recovery.py:13> result=None created at D:\program files\Python\python313\Lib\asyncio\runners.py:100> took 0.224 seconds
+........2026-10-09 14:43:23.104 | ERROR    | src.utils:closed_dungeon_popup:740 - 自动任务：p1 区域加载失败，地下城已关闭；停止标记回传重试。
+.2026-10-09 14:43:23.114 | INFO     | src.utils:return_to_dungeon_after_potions:996 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 14:43:23.115 | INFO     | src.utils:return_to_dungeon_after_potions:1062 - 自动任务：p1 补药返回后位于 Dungeon/Room，沿任务目标追赶 p2 所在的 Dungeon/Next。
+2026-10-09 14:43:23.117 | INFO     | src.utils:return_to_dungeon_after_potions:1102 - 自动任务：p1 地牢返回按钮已完成回传，任务状态可读；恢复前仍需确认队伍同副本。
+.2026-10-09 14:43:23.124 | INFO     | src.utils:return_to_dungeon_after_potions:996 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+.2026-10-09 14:43:23.133 | INFO     | src.utils:return_to_dungeon_after_potions:996 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 14:43:23.134 | ERROR    | src.utils:return_to_dungeon_after_potions:1051 - 自动任务：p1 返回区域的任务身份与原记录不符，停止恢复任务。
+.2026-10-09 14:43:23.143 | ERROR    | src.utils:return_to_dungeon_after_potions:993 - 自动任务：p1 未找到地牢返回按钮，停止本次回传。
+.2026-10-09 14:43:23.151 | INFO     | src.utils:return_to_dungeon_after_potions:996 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 14:43:23.153 | INFO     | src.utils:return_to_dungeon_after_potions:1062 - 自动任务：p1 补药返回后位于 Dungeon/Entrance，沿任务目标追赶 p2 所在的 Dungeon/Room。
+2026-10-09 14:43:23.153 | INFO     | src.utils:return_to_dungeon_after_potions:1062 - 自动任务：p1 补药返回后位于 Dungeon/Middle，沿任务目标追赶 p2 所在的 Dungeon/Room。
+2026-10-09 14:43:23.154 | INFO     | src.utils:return_to_dungeon_after_potions:1102 - 自动任务：p1 地牢返回按钮已完成回传，任务状态可读；恢复前仍需确认队伍同副本。
+.2026-10-09 14:43:23.163 | ERROR    | src.utils:return_to_dungeon_after_potions:993 - 自动任务：p1 未找到地牢返回按钮，停止本次回传。
+.2026-10-09 14:43:23.171 | ERROR    | src.utils:return_to_dungeon_after_potions:979 - 自动任务：p1 缺少原地牢任务记录，无法可靠确认返回，停止回传。
+..2026-10-09 14:43:23.196 | INFO     | src.utils:return_to_dungeon_after_potions:996 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 14:43:23.197 | ERROR    | src.utils:return_to_dungeon_after_potions:1056 - 自动任务：p1 返回同名区域但 Zone ID 不匹配，停止恢复任务。
+.2026-10-09 14:43:23.207 | INFO     | src.utils:return_to_dungeon_after_potions:996 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 14:43:23.216 | ERROR    | src.utils:return_to_dungeon_after_potions:1107 - 自动任务：p1 未确认返回原地牢 'Dungeon/Room'。
+.2026-10-09 14:43:23.225 | INFO     | src.utils:return_to_dungeon_after_potions:996 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 14:43:23.230 | ERROR    | src.utils:return_to_dungeon_after_potions:1107 - 自动任务：p1 未确认返回原地牢 'Dungeon/Room'。
+.2026-10-09 14:43:23.237 | INFO     | src.utils:return_to_dungeon_after_potions:996 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 14:43:23.239 | INFO     | src.utils:return_to_dungeon_after_potions:1102 - 自动任务：p1 地牢返回按钮已完成回传，任务状态可读；恢复前仍需确认队伍同副本。
+.2026-10-09 14:43:23.248 | INFO     | src.utils:return_to_dungeon_after_potions:996 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 14:43:23.249 | INFO     | src.utils:return_to_dungeon_after_potions:1062 - 自动任务：p1 补药返回后位于 Dungeon/Room，沿任务目标追赶 p2 所在的 Dungeon/Next。
+2026-10-09 14:43:23.250 | INFO     | src.utils:return_to_dungeon_after_potions:1062 - 自动任务：p1 补药返回后位于 Dungeon/Room，沿任务目标追赶 p2 所在的 Dungeon/Next。
+2026-10-09 14:43:23.250 | INFO     | src.utils:return_to_dungeon_after_potions:1062 - 自动任务：p1 补药返回后位于 Dungeon/Room，沿任务目标追赶 p2 所在的 Dungeon/Next。
+2026-10-09 14:43:23.251 | INFO     | src.utils:return_to_dungeon_after_potions:1062 - 自动任务：p1 补药返回后位于 Dungeon/Room，沿任务目标追赶 p2 所在的 Dungeon/Next。
+2026-10-09 14:43:23.251 | INFO     | src.utils:return_to_dungeon_after_potions:1062 - 自动任务：p1 补药返回后位于 Dungeon/Room，沿任务目标追赶 p2 所在的 Dungeon/Next。
+2026-10-09 14:43:23.251 | INFO     | src.utils:return_to_dungeon_after_potions:1062 - 自动任务：p1 补药返回后位于 Dungeon/Room，沿任务目标追赶 p2 所在的 Dungeon/Next。
+2026-10-09 14:43:23.252 | INFO     | src.utils:return_to_dungeon_after_potions:1062 - 自动任务：p1 补药返回后位于 Dungeon/Room，沿任务目标追赶 p2 所在的 Dungeon/Next。
+2026-10-09 14:43:23.252 | INFO     | src.utils:return_to_dungeon_after_potions:1062 - 自动任务：p1 补药返回后位于 Dungeon/Room，沿任务目标追赶 p2 所在的 Dungeon/Next。
+2026-10-09 14:43:23.253 | INFO     | src.utils:return_to_dungeon_after_potions:1062 - 自动任务：p1 补药返回后位于 Dungeon/Room，沿任务目标追赶 p2 所在的 Dungeon/Next。
+2026-10-09 14:43:23.253 | INFO     | src.utils:return_to_dungeon_after_potions:1062 - 自动任务：p1 补药返回后位于 Dungeon/Room，沿任务目标追赶 p2 所在的 Dungeon/Next。
+2026-10-09 14:43:23.253 | ERROR    | src.utils:return_to_dungeon_after_potions:1107 - 自动任务：p1 未确认返回原地牢 'Dungeon/Room'。
+.2026-10-09 14:43:23.262 | INFO     | src.utils:buy_potions:1215 - 自动任务：p1 药水补充完成，优先通过地牢返回按钮回传。
+2026-10-09 14:43:23.262 | INFO     | src.utils:return_to_dungeon_after_potions:996 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 14:43:23.263 | ERROR    | src.utils:return_to_dungeon_after_potions:1056 - 自动任务：p1 返回同名区域但 Zone ID 不匹配，停止恢复任务。
+.2026-10-09 14:43:23.272 | INFO     | src.utils:buy_potions:1215 - 自动任务：p1 药水补充完成，优先通过地牢返回按钮回传。
+2026-10-09 14:43:23.272 | INFO     | src.utils:return_to_dungeon_after_potions:996 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 14:43:23.273 | INFO     | src.utils:return_to_dungeon_after_potions:1102 - 自动任务：p1 地牢返回按钮已完成回传，任务状态可读；恢复前仍需确认队伍同副本。
+.2026-10-09 14:43:23.283 | INFO     | src.utils:return_to_dungeon_after_potions:996 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 14:43:23.285 | INFO     | src.utils:return_to_dungeon_after_potions:1102 - 自动任务：p1 地牢返回按钮已完成回传，任务状态可读；恢复前仍需确认队伍同副本。
+.2026-10-09 14:43:23.294 | INFO     | src.utils:return_to_dungeon_after_potions:996 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 14:43:23.295 | INFO     | src.utils:return_to_dungeon_after_potions:1062 - 自动任务：p1 补药返回后位于 Dungeon/Room，沿任务目标追赶 p2 所在的 Dungeon/Next。
+.2026-10-09 14:43:23.304 | INFO     | src.utils:return_to_dungeon_after_potions:996 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 14:43:23.305 | INFO     | src.utils:return_to_dungeon_after_potions:1102 - 自动任务：p1 地牢返回按钮已完成回传，任务状态可读；恢复前仍需确认队伍同副本。
+.2026-10-09 14:43:23.314 | INFO     | src.utils:return_to_dungeon_after_potions:996 - 自动任务：p1 正在通过地牢返回按钮返回副本。
+2026-10-09 14:43:23.315 | ERROR    | src.utils:return_to_dungeon_after_potions:1051 - 自动任务：p1 返回区域的任务身份与原记录不符，停止恢复任务。
+.2026-10-09 14:43:23.324 | INFO     | src.utils:refill_potions:1677 - 自动任务：p1 开始补充药水，暂时退出地牢同步。
+......2026-10-09 14:43:23.413 | INFO     | src.utils:refill_potions:1677 - 自动任务：p1 开始补充药水，暂时退出地牢同步。
+2026-10-09 14:43:23.413 | ERROR    | src.utils:prepare_potion_dungeon_return:924 - 自动任务：p1 原地牢任务状态不可读，取消补药出发。
+.
+======================================================================
+FAIL: test_limited_collection_uses_existing_safe_entity_filter (tests.test_wisp_collection.WispCollectionTests.test_limited_collection_uses_existing_safe_entity_filter)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_wisp_collection.py", line 56, in test_limited_collection_uses_existing_safe_entity_filter
+    self.client.teleport.assert_awaited_once_with(XYZ(2, 0, 0))
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "D:\program files\Python\python313\Lib\unittest\mock.py", line 2393, in assert_awaited_once_with
+    return self.assert_awaited_with(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "D:\program files\Python\python313\Lib\unittest\mock.py", line 2382, in assert_awaited_with
+    raise AssertionError(_error_message()) from cause
+AssertionError: expected await not found.
+Expected: mock(<XYZ (2, 0, 0)>)
+  Actual: mock(<XYZ (2, 0, 0)>)
+
+======================================================================
+FAIL: test_resource_filled_by_first_pickup_skips_remaining_wisps (tests.test_wisp_collection.WispCollectionTests.test_resource_filled_by_first_pickup_skips_remaining_wisps)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\program files\Python\python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\program files\Python\python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\XuanShuTool\XuanShu-Project\XuanShu\tests\test_wisp_collection.py", line 64, in test_resource_filled_by_first_pickup_skips_remaining_wisps
+    self.client.teleport.assert_awaited_once_with(XYZ(1, 0, 0))
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "D:\program files\Python\python313\Lib\unittest\mock.py", line 2393, in assert_awaited_once_with
+    return self.assert_awaited_with(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "D:\program files\Python\python313\Lib\unittest\mock.py", line 2382, in assert_awaited_with
+    raise AssertionError(_error_message()) from cause
+AssertionError: expected await not found.
+Expected: mock(<XYZ (1, 0, 0)>)
+  Actual: mock(<XYZ (1, 0, 0)>)
+
+----------------------------------------------------------------------
+Ran 87 tests in 6.915s
+
+FAILED (failures=2)

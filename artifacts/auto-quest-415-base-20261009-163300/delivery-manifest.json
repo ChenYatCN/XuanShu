@@ -1,0 +1,11 @@
+{
+  "candidate": "D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\artifacts\\auto-quest-415-base-20261009-163300\\package\\XuanShu-autoquest-415-base-test-20261009.exe",
+  "sha256": "70287493b760531cec8c68dfbebe8683958057e82d9a1188d659989cba73b8a9",
+  "zip": "D:\\XuanShuTool\\XuanShu-Project\\XuanShu\\artifacts\\auto-quest-415-base-20261009-163300\\XuanShu-autoquest-415-base-test-20261009.zip",
+  "zip_sha256": "aef71f5a6827eccd72549c3a69ddfee4eb319e6bb8c68223629b68d84afce617",
+  "zip_size": 71293927,
+  "created": "2026-10-09T19:48:54.091343",
+  "game_tested": false,
+  "source_audit": "candidate-source-audit.json",
+  "packed_code": "packed-code-verification.json"
+}

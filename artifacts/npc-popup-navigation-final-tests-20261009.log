@@ -1,0 +1,66 @@
+....2026-10-09 15:25:17.854 | DEBUG    | src.questing:_note_quest_entry_wait:3810 - <AsyncMock name='mock.title' id='2482339821760'> 入口检查：附近 NPC 不是当前任务目标，继续任务传送；{'title': '莱利·长穴', 'objective': '前往 怪客的洞穴 地点：沥青洞穴'}
+.2026-10-09 15:25:17.866 | DEBUG    | src.questing:_note_quest_entry_wait:3810 - <AsyncMock name='mock.title' id='2482335283392'> 入口检查：目标未匹配且未确认组队入口；{'title': 'Vendor', 'prompt': 'Press X to Collect', 'kind': 'collect', 'objective': 'Collect Mushrooms in Forest', 'team_up': True}
+2026-10-09 15:25:17.872 | DEBUG    | src.questing:_note_quest_entry_wait:3810 - <AsyncMock name='mock.title' id='2482335283392'> 入口检查：目标未匹配且未确认组队入口；{'title': 'World Gate', 'prompt': 'Press X to Teleport', 'kind': 'teleport', 'objective': 'Talk To Merle in The Commons', 'team_up': True}
+2026-10-09 15:25:17.874 | DEBUG    | src.questing:_note_quest_entry_wait:3810 - <AsyncMock name='mock.title' id='2482335283392'> 入口检查：目标未匹配且未确认组队入口；{'title': 'World Gate', 'prompt': 'Press X to Teleport', 'kind': 'teleport', 'objective': 'Defeat Guard in The Commons', 'team_up': True}
+2026-10-09 15:25:17.875 | DEBUG    | src.questing:_note_quest_entry_wait:3810 - <AsyncMock name='mock.title' id='2482335283392'> 入口检查：目标未匹配且未确认组队入口；{'title': 'Vendor', 'prompt': 'Press X to Teleport', 'kind': 'teleport', 'objective': 'Go To Marleybone in The Commons', 'team_up': True}
+2026-10-09 15:25:17.891 | DEBUG    | src.questing:_note_quest_entry_wait:3810 - <AsyncMock name='mock.title' id='2482335283392'> 入口检查：目标未匹配且未确认组队入口；{'title': 'Vendor', 'prompt': 'unrecognized prompt', 'kind': None, 'objective': 'Use Chest in Forest', 'team_up': True}
+2026-10-09 15:25:17.891 | DEBUG    | src.questing:_note_quest_entry_wait:3810 - <AsyncMock name='mock.title' id='2482335283392'> 入口检查：范围窗可见但交互提示为空；{'title': 'Chest'}
+...2026-10-09 15:25:18.028 | DEBUG    | src.questing:_note_quest_entry_wait:3810 - <AsyncMock name='mock.title' id='2482340468384'> 入口检查：已识别入口，准备本组；{'title': ''}
+.....2026-10-09 15:25:18.055 | DEBUG    | src.teleport_math:navmap_tp:258 - [navmap_tp] <AsyncMock name='mock.title' id='2482360247568'>: using navmap teleport (direct -> nav data -> spiral)
+2026-10-09 15:25:18.057 | DEBUG    | src.teleport_math:navmap_tp:258 - [navmap_tp] <AsyncMock name='mock.title' id='2482360247568'>: using navmap teleport (direct -> nav data -> spiral)
+2026-10-09 15:25:18.058 | DEBUG    | src.questing:_note_quest_entry_wait:3810 - <AsyncMock name='mock.title' id='2482360247568'> 入口检查：附近 NPC 不是当前任务目标，继续任务传送；{'title': '莱利·长穴', 'objective': '前往 怪客的洞穴 地点：沥青洞穴'}
+....2026-10-09 15:25:18.103 | DEBUG    | src.questing:_note_quest_entry_wait:3810 - <AsyncMock name='mock.title' id='2482340471072'> 入口检查：已识别入口，准备本组；{'title': 'House'}
+2026-10-09 15:25:18.103 | DEBUG    | src.questing:_note_quest_entry_wait:3810 - <AsyncMock name='mock.title' id='2482340471072'> 入口检查：本组入口检查未通过或尚未完成切区；{'title': 'House'}
+...2026-10-09 15:25:18.234 | DEBUG    | src.questing:_note_quest_entry_wait:3810 - <AsyncMock name='mock.title' id='2482335283392'> 入口检查：目标未匹配且未确认组队入口；{'title': 'Vendor', 'prompt': 'Press X to Talk', 'kind': 'talk', 'objective': 'Talk To Merle in The Commons', 'team_up': True}
+2026-10-09 15:25:18.236 | DEBUG    | src.questing:_note_quest_entry_wait:3810 - <AsyncMock name='mock.title' id='2482335283392'> 入口检查：目标未匹配且未确认组队入口；{'title': 'The Commons', 'prompt': 'Press X to Talk', 'kind': 'talk', 'objective': 'Talk To Merle in The Commons', 'team_up': True}
+2026-10-09 15:25:18.236 | DEBUG    | src.questing:_note_quest_entry_wait:3810 - <AsyncMock name='mock.title' id='2482335283392'> 入口检查：范围窗可见但入口标题为空；{}
+.......2026-10-09 15:25:18.280 | DEBUG    | src.questing:_note_quest_entry_wait:3810 - <AsyncMock name='mock.title' id='2482340098272'> 入口检查：组队入口可见但任务数据未就绪；{'quest_id': 0, 'goal_id': 7, 'objective': 'Defeat Grof in Cave'}
+...2026-10-09 15:25:18.408 | DEBUG    | src.questing:_handle_npc_talking_quests:2254 - Client p1 - Talking to NPC: sending X.
+.2026-10-09 15:25:18.417 | DEBUG    | src.questing:_handle_npc_talking_quests:2254 - Client p1 - Talking to NPC: sending X.
+2026-10-09 15:25:18.419 | WARNING  | src.questing:_handle_npc_talking_quests:2259 - Client p1 - Quest did not update after dialogue; adjusting position and view before retry (1/3).
+2026-10-09 15:25:18.421 | WARNING  | src.questing:_handle_npc_talking_quests:2259 - Client p1 - Quest did not update after dialogue; adjusting position and view before retry (2/3).
+2026-10-09 15:25:18.422 | WARNING  | src.questing:_handle_npc_talking_quests:2259 - Client p1 - Quest did not update after dialogue; adjusting position and view before retry (3/3).
+2026-10-09 15:25:18.424 | ERROR    | src.questing:_handle_npc_talking_quests:2370 - Client p1 - NPC interaction made no quest progress after 3 position/view retries; releasing recovery and cooling down for 30 seconds before another bounded attempt.
+2026-10-09 15:25:18.424 | DEBUG    | src.questing:_log_npc_retry_wait:2182 - Client p1 - NPC interaction deferred: dialogue, combat or transition active
+.2026-10-09 15:25:18.429 | DEBUG    | src.questing:_log_npc_retry_wait:2182 - Client p1 - NPC interaction deferred: NPC state unavailable: stale HUD
+.2026-10-09 15:25:18.435 | DEBUG    | src.questing:_handle_npc_talking_quests:2254 - Client p1 - Talking to NPC: sending X.
+2026-10-09 15:25:18.437 | WARNING  | src.questing:_handle_npc_talking_quests:2259 - Client p1 - Quest did not update after dialogue; adjusting position and view before retry (1/3).
+2026-10-09 15:25:18.438 | WARNING  | src.questing:_handle_npc_talking_quests:2259 - Client p1 - Quest did not update after dialogue; adjusting position and view before retry (2/3).
+2026-10-09 15:25:18.440 | WARNING  | src.questing:_handle_npc_talking_quests:2259 - Client p1 - Quest did not update after dialogue; adjusting position and view before retry (3/3).
+2026-10-09 15:25:18.442 | ERROR    | src.questing:_handle_npc_talking_quests:2370 - Client p1 - NPC interaction made no quest progress after 3 position/view retries; releasing recovery and cooling down for 30 seconds before another bounded attempt.
+2026-10-09 15:25:18.442 | DEBUG    | src.questing:_log_npc_retry_wait:2182 - Client p1 - NPC interaction deferred: retry cooldown; waiting for quest progress
+2026-10-09 15:25:18.442 | DEBUG    | src.questing:_handle_npc_talking_quests:2254 - Client p1 - Talking to NPC: sending X.
+2026-10-09 15:25:18.444 | WARNING  | src.questing:_handle_npc_talking_quests:2259 - Client p1 - Quest did not update after dialogue; adjusting position and view before retry (1/3).
+2026-10-09 15:25:18.445 | WARNING  | src.questing:_handle_npc_talking_quests:2259 - Client p1 - Quest did not update after dialogue; adjusting position and view before retry (2/3).
+2026-10-09 15:25:18.447 | WARNING  | src.questing:_handle_npc_talking_quests:2259 - Client p1 - Quest did not update after dialogue; adjusting position and view before retry (3/3).
+2026-10-09 15:25:18.449 | ERROR    | src.questing:_handle_npc_talking_quests:2370 - Client p1 - NPC interaction made no quest progress after 3 position/view retries; releasing recovery and cooling down for 30 seconds before another bounded attempt.
+.2026-10-09 15:25:18.453 | DEBUG    | src.questing:_handle_npc_talking_quests:2254 - Client p1 - Talking to NPC: sending X.
+2026-10-09 15:25:18.455 | WARNING  | src.questing:_handle_npc_talking_quests:2259 - Client p1 - Quest did not update after dialogue; adjusting position and view before retry (1/3).
+.2026-10-09 15:25:18.461 | DEBUG    | src.questing:_handle_npc_talking_quests:2254 - Client p1 - Talking to NPC: sending X.
+.2026-10-09 15:25:18.468 | DEBUG    | src.questing:_handle_npc_talking_quests:2254 - Client p1 - Talking to NPC: sending X.
+2026-10-09 15:25:18.470 | WARNING  | src.questing:_handle_npc_talking_quests:2259 - Client p1 - Quest did not update after dialogue; adjusting position and view before retry (1/3).
+2026-10-09 15:25:18.472 | WARNING  | src.questing:_handle_npc_talking_quests:2259 - Client p1 - Quest did not update after dialogue; adjusting position and view before retry (2/3).
+2026-10-09 15:25:18.474 | WARNING  | src.questing:_handle_npc_talking_quests:2259 - Client p1 - Quest did not update after dialogue; adjusting position and view before retry (3/3).
+2026-10-09 15:25:18.476 | ERROR    | src.questing:_handle_npc_talking_quests:2370 - Client p1 - NPC interaction made no quest progress after 3 position/view retries; releasing recovery and cooling down for 30 seconds before another bounded attempt.
+.2026-10-09 15:25:18.481 | DEBUG    | src.questing:_handle_npc_talking_quests:2254 - Client p1 - Talking to NPC: sending X.
+2026-10-09 15:25:18.483 | WARNING  | src.questing:_handle_npc_talking_quests:2259 - Client p1 - Quest did not update after dialogue; adjusting position and view before retry (1/3).
+2026-10-09 15:25:18.484 | WARNING  | src.questing:_handle_npc_talking_quests:2259 - Client p1 - Quest did not update after dialogue; adjusting position and view before retry (2/3).
+2026-10-09 15:25:18.486 | WARNING  | src.questing:_handle_npc_talking_quests:2259 - Client p1 - Quest did not update after dialogue; adjusting position and view before retry (3/3).
+2026-10-09 15:25:18.488 | ERROR    | src.questing:_handle_npc_talking_quests:2370 - Client p1 - NPC interaction made no quest progress after 3 position/view retries; releasing recovery and cooling down for 30 seconds before another bounded attempt.
+2026-10-09 15:25:18.488 | DEBUG    | src.questing:_handle_npc_talking_quests:2254 - Client p1 - Talking to NPC: sending X.
+.2026-10-09 15:25:18.494 | DEBUG    | src.questing:_handle_npc_talking_quests:2254 - Client p1 - Talking to NPC: sending X.
+2026-10-09 15:25:18.496 | WARNING  | src.questing:_handle_npc_talking_quests:2259 - Client p1 - Quest did not update after dialogue; adjusting position and view before retry (1/3).
+2026-10-09 15:25:18.498 | WARNING  | src.questing:_handle_npc_talking_quests:2259 - Client p1 - Quest did not update after dialogue; adjusting position and view before retry (2/3).
+2026-10-09 15:25:18.500 | WARNING  | src.questing:_handle_npc_talking_quests:2259 - Client p1 - Quest did not update after dialogue; adjusting position and view before retry (3/3).
+2026-10-09 15:25:18.501 | ERROR    | src.questing:_handle_npc_talking_quests:2370 - Client p1 - NPC interaction made no quest progress after 3 position/view retries; releasing recovery and cooling down for 30 seconds before another bounded attempt.
+2026-10-09 15:25:18.502 | DEBUG    | src.questing:_handle_npc_talking_quests:2254 - Client p1 - Talking to NPC: sending X.
+....2026-10-09 15:25:18.531 | DEBUG    | src.questing:_handle_npc_talking_quests:2254 - Client p1 - Talking to NPC: sending X.
+2026-10-09 15:25:18.533 | WARNING  | src.questing:_handle_npc_talking_quests:2259 - Client p1 - Quest did not update after dialogue; adjusting position and view before retry (1/3).
+2026-10-09 15:25:18.535 | WARNING  | src.questing:_handle_npc_talking_quests:2259 - Client p1 - Quest did not update after dialogue; adjusting position and view before retry (2/3).
+2026-10-09 15:25:18.537 | WARNING  | src.questing:_handle_npc_talking_quests:2259 - Client p1 - Quest did not update after dialogue; adjusting position and view before retry (3/3).
+2026-10-09 15:25:18.539 | ERROR    | src.questing:_handle_npc_talking_quests:2370 - Client p1 - NPC interaction made no quest progress after 3 position/view retries; releasing recovery and cooling down for 30 seconds before another bounded attempt.
+.
+----------------------------------------------------------------------
+Ran 43 tests in 0.755s
+
+OK

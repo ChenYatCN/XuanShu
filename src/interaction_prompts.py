@@ -5,9 +5,11 @@ rules here; we also accept unresolved <string;ID> references when present.
 """
 import html
 import re
-from src.game_text_catalog import TEXT_RECORDS, PORTAL_RECORDS, WORLD_RECORDS
+from src.game_text_catalog import (
+    TEXT_RECORDS, PORTAL_RECORDS, WORLD_RECORDS, INTERACTION_RECORDS, OBJECT_NAME_RECORDS,
+)
 
-TEXT_RECORDS = {**TEXT_RECORDS, **PORTAL_RECORDS, **WORLD_RECORDS}
+TEXT_RECORDS = {**TEXT_RECORDS, **PORTAL_RECORDS, **WORLD_RECORDS, **INTERACTION_RECORDS}
 
 
 def plain_text(value) -> str:
@@ -53,6 +55,11 @@ for _id, (_english, _translation) in TEXT_RECORDS.items():
             _kind = _match[1].lower().replace("use magic raft", "ride")
             if _id == "GUI_00008359":
                 _kind = "ride"  # Enter Boat is transport, not a dungeon sigil.
+            _INTERACTION_IDS.setdefault(_kind, []).append(_id)
+        elif _id in INTERACTION_RECORDS:
+            # Only exact verified records authorize generic object input.
+            # Transport keeps its existing routing above, before ordinary Use.
+            _kind = 'use' if re.search(r'\bto Use\b', _english, re.I) else 'interact'
             _INTERACTION_IDS.setdefault(_kind, []).append(_id)
 
 _INTERACTION_FORMS = {
@@ -173,4 +180,14 @@ def quest_interaction_matches(objective, title):
     goal = plain_text(goal).casefold()
     if not name or quest_has_action(objective, "defeat"):
         return False
-    return bool(re.search(r"(?<![a-z0-9])" + re.escape(name) + r"(?![a-z0-9])", goal))
+    aliases = {name}
+    canonical = {plain_text(english).casefold() for english, translated in OBJECT_NAME_RECORDS.values()
+                 if name in {plain_text(english).casefold(), plain_text(translated).casefold()}}
+    if len(canonical) == 1:
+        for english, translated in OBJECT_NAME_RECORDS.values():
+            if plain_text(english).casefold() in canonical:
+                aliases.update((plain_text(english).casefold(), plain_text(translated).casefold()))
+    elif canonical:
+        return False  # An ambiguous translated name never grants input.
+    return any(alias and re.search(r"(?<![a-z0-9])" + re.escape(alias) + r"(?![a-z0-9])", goal)
+               for alias in aliases)

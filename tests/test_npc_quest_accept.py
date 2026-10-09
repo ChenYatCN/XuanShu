@@ -31,6 +31,60 @@ class NpcQuestAcceptTests(unittest.IsolatedAsyncioTestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
+    async def test_decline_button_preserves_side_accept_setting_in_each_worker_mode(self):
+        from src.paths import decline_quest_path
+        for questing, dialogue in ((True, False), (False, True), (True, True)):
+            for accept in (False, True):
+                with self.subTest(questing=questing, dialogue=dialogue, accept=accept):
+                    self.client.questing_status = questing
+                    self.client.auto_dialogue_running = dialogue
+                    self.client.hotkey_accept_sidequests = accept
+                    self.client.quest_invitation_state = None
+                    self.client.send_key.reset_mock()
+                    self.quester._click_ui_window.reset_mock()
+                    with (patch('src.questing.is_visible_by_path', AsyncMock(
+                            side_effect=lambda client, path: path == decline_quest_path)),
+                          patch('src.questing.asyncio.sleep', AsyncMock())):
+                        await self.quester._advance_npc_dialogue(self.client)
+                    if accept:
+                        self.quester._click_ui_window.assert_awaited_once()
+                        self.client.send_key.assert_not_awaited()
+                    else:
+                        self.quester._click_ui_window.assert_not_awaited()
+                        self.client.send_key.assert_awaited_once_with(Keycode.ESC)
+
+    async def test_unindexed_side_quest_acceptance_is_confirmed_from_owned_quests(self):
+        owned = {42: object()}
+        self.client.quest_manager = AsyncMock(return_value=SimpleNamespace(
+            quest_data=AsyncMock(side_effect=lambda: dict(owned))))
+        await self.quester._advance_npc_dialogue(self.client)
+        self.button.is_visible.return_value = False
+        owned[90001] = object()  # Accepted sidequest does not become the tracked quest.
+        await self.quester._quest_dialogue_blocks_movement(self.client)
+        self.now = .31
+        self.assertFalse(await self.quester._quest_dialogue_blocks_movement(self.client))
+        self.assertTrue(self.client.quest_invitation_state['confirmed'])
+        self.quester._mainline_identity.assert_not_awaited()
+
+    async def test_click_without_quest_change_does_not_confirm_or_enter_finder(self):
+        await self.quester._advance_npc_dialogue(self.client)
+        self.button.is_visible.return_value = False
+        self.client.mainline_last_turn_in_snapshot = (42, 'old', None, 'old')
+        self.quester._continue_mainline_chain = AsyncMock()
+        await self.quester._quest_dialogue_blocks_movement(self.client)
+        self.now = .31
+        self.assertFalse(await self.quester._quest_dialogue_blocks_movement(self.client))
+        self.assertFalse(self.client.quest_invitation_state['confirmed'])
+        self.quester._continue_mainline_chain.assert_not_awaited()
+
+    async def test_closing_failed_offer_allows_a_new_offer(self):
+        self.client.quest_invitation_state = {'failed': True, 'next_at': 0.0}
+        self.button.is_visible.return_value = False
+        await self.quester._advance_npc_dialogue(self.client)
+        self.button.is_visible.return_value = True
+        await self.quester._advance_npc_dialogue(self.client)
+        self.quester._click_ui_window.assert_awaited_once()
+
     async def test_accept_without_decline_button_is_clicked(self):
         self.assertTrue(await self.quester._advance_npc_dialogue(self.client))
         self.quester._click_ui_window.assert_awaited_once_with(self.client, self.button)
@@ -56,9 +110,9 @@ class NpcQuestAcceptTests(unittest.IsolatedAsyncioTestCase):
         self.button.is_visible.return_value = False
         self.client.quest_id.return_value = 43
         self.assertTrue(await self.quester._quest_dialogue_blocks_movement(self.client))
-        self.now = 2
+        self.now = .2
         self.assertTrue(await self.quester._quest_dialogue_blocks_movement(self.client))
-        self.now = 3.1
+        self.now = .31
         self.assertFalse(await self.quester._quest_dialogue_blocks_movement(self.client))
         self.assertTrue(self.client.quest_invitation_state['confirmed'])
 
@@ -68,6 +122,29 @@ class NpcQuestAcceptTests(unittest.IsolatedAsyncioTestCase):
             await self.quester._advance_npc_dialogue(self.client)
         self.assertEqual(self.quester._click_ui_window.await_count, 3)
         self.client.send_key.assert_awaited_once_with(Keycode.ESC, .1)
+
+    async def test_fast_accept_clicks_still_allow_server_response_before_exit(self):
+        for point in (0, .31, .62, 1.0):
+            self.now = point
+            await self.quester._advance_npc_dialogue(self.client)
+        self.assertEqual(self.quester._click_ui_window.await_count, 3)
+        self.client.send_key.assert_not_awaited()
+        self.now = 4.6
+        await self.quester._advance_npc_dialogue(self.client)
+        self.client.send_key.assert_awaited_once_with(Keycode.ESC, .1)
+
+    async def test_changing_snapshot_restarts_short_stability_window(self):
+        await self.quester._advance_npc_dialogue(self.client)
+        self.button.is_visible.return_value = False
+        self.client.quest_id.return_value = 43
+        await self.quester._quest_dialogue_blocks_movement(self.client)
+        self.now = .2
+        self.client.goal_id.return_value = 8
+        self.assertTrue(await self.quester._quest_dialogue_blocks_movement(self.client))
+        self.now = .31
+        self.assertTrue(await self.quester._quest_dialogue_blocks_movement(self.client))
+        self.now = .51
+        self.assertFalse(await self.quester._quest_dialogue_blocks_movement(self.client))
 
     async def test_loading_or_other_recovery_never_clicks(self):
         self.client.is_loading.return_value = True
@@ -79,6 +156,7 @@ class NpcQuestAcceptTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_finder_waits_for_acceptance_instead_of_reading_mainline(self):
         from src.paths import advance_dialog_path
+        self.client.mainline_finder_enabled = True
         with patch('src.questing.is_visible_by_path', AsyncMock(
                 side_effect=lambda client, path: path == advance_dialog_path)):
             self.assertTrue(await self.quester._maybe_recover_mainline(self.client))
@@ -113,6 +191,7 @@ class NpcQuestAcceptTests(unittest.IsolatedAsyncioTestCase):
     async def test_selected_mainline_complete_still_waits_for_probe(self):
         self.quester._window_text.return_value = '完成'
         self.client.quest_party_probe_pending = True
+        self.client.mainline_finder_enabled = True
         self.client.npc_mainline_menu_selection = {'zone': 'Novus/Area', 'failed': False}
         self.assertFalse(await self.quester._advance_npc_dialogue(self.client))
         self.quester._click_ui_window.assert_not_awaited()
@@ -137,6 +216,7 @@ class NpcQuestAcceptTests(unittest.IsolatedAsyncioTestCase):
         self.quester._click_ui_window.assert_not_awaited()
 
     async def test_unconfirmed_acceptance_retries_original_npc_before_movement(self):
+        self.client.mainline_finder_enabled = True
         await self.quester._advance_npc_dialogue(self.client)
         self.button.is_visible.return_value = False
         self.client.mainline_last_turn_in_snapshot = (42, 'Novus/Area', None, 'NPC')

@@ -14,6 +14,7 @@ class MainlineChainHandoffTests(unittest.IsolatedAsyncioTestCase):
         self.client = SimpleNamespace(
             title="p1",
             questing_status=True,
+            mainline_finder_enabled=True,
             auto_dialogue_running=True,
             mainline_chain_retry_active=False,
             quest_party_probe_pending=False,

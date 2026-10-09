@@ -1,0 +1,78 @@
+--- before/XuanShu.py
++++ current/XuanShu.py
+@@ -1168,11 +1168,19 @@
+             if not active:
+                 client.quest_mainline_sync_state = None
+                 client.quest_mainline_sync_log = None
+-            client.mainline_finder_enabled = mainline_finder_enabled or (
+-                active and client in party.questers and len(party.questers) > 1
+-            )
++            client.mainline_finder_enabled = mainline_finder_enabled
+             if not mainline_finder_enabled:
+                 client.mainline_finder_offer_guard = False
++            if not active or not was_questing:
++                client.npc_mainline_menu_selection = None
++                client.npc_mainline_menu_context = None
++                client.npc_mainline_menu_read_wait = None
++                client.quest_invitation_state = None
++                client.quest_interaction_attempt = None
++                client._collision_tp_approach = None
++                client._npc_complete_state = None
++                client._npc_dialogue_next_at = 0.0
++                client.mainline_chain_retry_active = False
+             if client.questing_status and not was_questing:
+                 client.quest_mainline_sync_state = None
+                 client.quest_mainline_sync_log = None
+@@ -1928,7 +1936,8 @@
+                             continue
+                         if (
+                             getattr(client, "mainline_finder_offer_guard", False)
+-                            and not getattr(client, "questing_status", False)
++                            and (not getattr(client, "mainline_finder_enabled", False)
++                                 or not getattr(client, "questing_status", False))
+                             and not await is_visible_by_path(client, decline_quest_path)
+                         ):
+                             client.mainline_finder_offer_guard = False
+@@ -1938,40 +1947,8 @@
+                         if await Quester(client, [client], None)._handle_darkmoor_clue_confirmation(client):
+                             await asyncio.sleep(.1)
+                             continue
+-                        if (getattr(client, 'questing_status', False)
+-                                or isinstance(getattr(client, 'npc_mainline_menu_selection', None), dict)):
+-                            await Quester(client, [client], None)._advance_npc_dialogue(client)
+-                            await asyncio.sleep(.1)
+-                            continue
+-                        if await is_visible_by_path(client, advance_dialog_path):
+-                            has_decline_button = await is_visible_by_path(
+-                                client, decline_quest_path
+-                            )
+-                            if has_decline_button and getattr(
+-                                client, "mainline_finder_offer_guard", False
+-                            ):
+-                                await client.send_key(key=Keycode.ESC)
+-                                await asyncio.sleep(0.25)
+-                                continue
+-                            if has_decline_button and (
+-                                getattr(client, "mainline_chain_retry_active", False)
+-                                or not getattr(
+-                                    client,
+-                                    "hotkey_accept_sidequests",
+-                                    side_quest_status,
+-                                )
+-                            ):
+-                                await client.send_key(key=Keycode.ESC)
+-                                await asyncio.sleep(0.25)
+-                                if await is_visible_by_path(
+-                                    client, advance_dialog_path
+-                                ):
+-                                    await client.send_key(key=Keycode.ESC)
+-                                await asyncio.sleep(0.25)
+-                            else:
+-                                await client.send_key(key=Keycode.SPACEBAR)
+-                                await asyncio.sleep(0.3)
+-                            continue
++                        await Quester(client, [client], None)._advance_npc_dialogue(client)
++                        await asyncio.sleep(.1)
+                     await asyncio.sleep(0.05)
+             finally:
+                 client.auto_dialogue_running = False

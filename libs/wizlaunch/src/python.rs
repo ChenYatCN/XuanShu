@@ -107,8 +107,8 @@ fn validate_account(nickname: String) -> PyResult<Option<String>> {
         return Ok(Some("Steam and private-server modes cannot be combined. Edit this account.".into()));
     }
     match metadata::get_steam(&nickname)? {
-        Some(false) if !credential_store::has_credential(&nickname) => Ok(Some(
-            "Normal login credentials are missing. Update account credentials.".to_string(),
+        Some(_) if !credential_store::has_credential(&nickname) => Ok(Some(
+            "Login credentials are missing. Update account credentials.".to_string(),
         )),
         Some(_) => Ok(None),
         None => Ok(Some(
@@ -243,10 +243,8 @@ fn launch_instance(
         launcher::enable_window(handle, false);
         std::thread::sleep(std::time::Duration::from_secs(2));
 
-        if !steam {
-            let (username, password) = credential_store::read_credential(&nickname)?;
-            login::login_to_instance(handle, &username, &password)?;
-        }
+        let (username, password) = credential_store::read_credential(&nickname)?;
+        login::login_to_instance(handle, &username, &password)?;
 
         launcher::enable_window(handle, true);
 
@@ -273,8 +271,6 @@ fn launch_instances(
         steam_flags.push(steam);
         servers.push(server);
     }
-    let steam_by_nick: HashMap<String, bool> = nicknames.iter().cloned()
-        .zip(steam_flags.iter().copied()).collect();
     let any_steam = steam_flags.iter().any(|&s| s);
     py.allow_threads(|| {
         if any_steam {
@@ -361,10 +357,8 @@ fn launch_instances(
 
         let mut results = HashMap::new();
         for (nickname, handle) in handle_for_nick {
-            if !steam_by_nick.get(&nickname).copied().unwrap_or(false) {
-                let (username, password) = credential_store::read_credential(&nickname)?;
-                login::login_to_instance(handle, &username, &password)?;
-            }
+            let (username, password) = credential_store::read_credential(&nickname)?;
+            login::login_to_instance(handle, &username, &password)?;
             launcher::enable_window(handle, true);
             results.insert(nickname, handle);
         }

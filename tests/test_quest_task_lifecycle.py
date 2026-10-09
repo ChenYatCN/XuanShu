@@ -16,6 +16,20 @@ class QuestTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             and node.name == name
         )
 
+    async def test_multiple_questers_do_not_enable_finder_implicitly(self):
+        clients = [SimpleNamespace(questing_status=False) for _ in range(3)]
+        namespace = {
+            'walker': SimpleNamespace(clients=clients),
+            'current_quest_party': lambda *args, **kwargs: SimpleNamespace(
+                questers=clients, hitters=[], hitter_assignments=[]),
+            'mainline_finder_enabled': False,
+        }
+        function = self.questing_function('apply_questing_roles')
+        exec(compile(ast.Module(body=[function], type_ignores=[]), 'XuanShu.py', 'exec'), namespace)
+        namespace['apply_questing_roles'](True)
+        self.assertTrue(all(c.questing_status for c in clients))
+        self.assertTrue(all(c.mainline_finder_enabled is False for c in clients))
+
     async def test_stop_clears_run_state_and_restart_reassigns_current_clients(self):
         quester = SimpleNamespace(questing_status=False)
         hitter = SimpleNamespace(questing_status=False)
@@ -54,6 +68,9 @@ class QuestTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             client.quest_party_confirmed_dungeon_transition = ('before', 'after')
             client.quest_party_dungeon_interaction = {'phase': 'transition'}
             client.quest_party_shared_target = {'zone': 'old dungeon'}
+            client.npc_mainline_menu_selection = {'failed': True}
+            client.quest_invitation_state = {'failed': True}
+            client._npc_complete_state = {'attempts': 3}
         apply_roles(False)
         for client in clients:
             self.assertFalse(client.questing_status)
@@ -66,6 +83,9 @@ class QuestTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(client.quest_party_confirmed_dungeon_transition)
             self.assertIsNone(client.quest_party_dungeon_interaction)
             self.assertIsNone(client.quest_party_shared_target)
+            self.assertIsNone(client.npc_mainline_menu_selection)
+            self.assertIsNone(client.quest_invitation_state)
+            self.assertIsNone(client._npc_complete_state)
             self.assertFalse(client.quest_party_quest_worker_restart_requested)
             self.assertFalse(client.quest_party_probe_pending)
             self.assertFalse(client.quest_party_battle_rescue_active)
