@@ -173,14 +173,14 @@ class QuestPartyDungeonTests(unittest.IsolatedAsyncioTestCase):
         late.zone_name.return_value = 'Dungeon/RoomA'
         self.assertFalse(await quester._quest_party_probe_blocks_movement())
 
-    async def test_ordinary_zone_probe_does_not_hold_quester_for_slow_or_disconnected_hitter(self):
+    async def test_ordinary_zone_probe_holds_quester_for_existing_follower_result(self):
         quester, hitter = self.make_party()
         quester.client.quest_party_probe_pending = True
         hitter.questing_status = False
         hitter.is_loading.return_value = True
         hitter.zone_name.return_value = 'Previous/Area'
         self.proof.return_value = False
-        self.assertFalse(await quester._quest_party_probe_blocks_movement())
+        self.assertTrue(await quester._quest_party_probe_blocks_movement())
         self.proof.assert_not_awaited()
         hitter.zone_name.assert_not_awaited()
         self.assertTrue(quester.client.quest_party_probe_pending)  # Independent follower still probes.

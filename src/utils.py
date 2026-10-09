@@ -937,6 +937,17 @@ async def prepare_potion_dungeon_return(client: Client, zone: str, require_snaps
         'snapshot': snapshot, 'dungeon_state': dict(state) if isinstance(state, dict) else None,
         'group_zone': getattr(client, 'quest_party_group_dungeon_zone', None),
     }
+    interaction = getattr(client, 'quest_party_dungeon_interaction', None)
+    shared = getattr(client, 'quest_party_shared_target', None)
+    client.potion_return_context['departure_sync'] = {
+        'probe_pending': getattr(client, 'quest_party_probe_pending', False),
+        'worker_zone': getattr(client, 'quest_party_quest_worker_zone', None),
+        'interaction': {key: interaction.get(key) for key in ('zone', 'phase', 'destination')}
+            if isinstance(interaction, dict) else None,
+        'shared_target': dict(zone=shared.get('zone'), identity=shared.get('identity'),
+                              source_tokens=dict(shared.get('source_tokens') or {}))
+            if isinstance(shared, dict) else None,
+    }
     # Retain only peers proven present before departure. A peer's observed
     # transition or replaced ClientZone invalidates this evidence on return.
     peers = list(getattr(client, 'quest_party_hitters', []))
@@ -1022,6 +1033,24 @@ async def return_to_dungeon_after_potions(client: Client, original_zone: str) ->
         return False
 
     deadline = time.monotonic() + 90.0
+    started_at = time.monotonic()
+    next_log_at = 0.0
+    blocked_reads = {}
+    last_validation = None
+
+    def record_validation(state, *, terminal=False):
+        nonlocal next_log_at, last_validation
+        reason = state['condition']
+        blocked_reads[reason] = blocked_reads.get(reason, 0) + 1
+        last_validation = dict(state, blocked_reads=dict(blocked_reads))
+        context['return_validation'] = last_validation
+        now = time.monotonic()
+        if terminal or now >= next_log_at:
+            logger.info('自动任务：{} 补药返回校验 {}，已等待 {:.1f}s；状态={}；补药前共享状态={}',
+                        client.title, reason, now - started_at, last_validation,
+                        context.get('departure_sync'))
+            next_log_at = now + 15.0
+
     stable_reads = 0
     stable_area = None
     last_tp_zone = None
@@ -1029,45 +1058,90 @@ async def return_to_dungeon_after_potions(client: Client, original_zone: str) ->
     peers = [getattr(client, 'quest_party_quester', None),
              *getattr(client, 'quest_party_hitters', [])]
     # Only follow this party's peers that were proved present before departure.
-    peers = [peer for peer in peers if peer is not None and peer is not client
-             and id(peer) in context.get('peer_areas', {})]
+    peers = [peer for peer in peers if peer is not None and peer is not client]
     while time.monotonic() < deadline:
         if getattr(client, 'questing_status', True) is False:
+            record_validation(dict(last_validation or {}, condition='client_stopped', questing=False), terminal=True)
             return False
         if await closed_dungeon_popup(client, dismiss=True) or getattr(client, '_xuanshu_dungeon_closed', False):
+            record_validation(dict(last_validation or {}, condition='dungeon_closed'), terminal=True)
             return False
         snapshot = None
         peer = None
+        peer_states = []
         for candidate in peers:
-            if (getattr(candidate, 'questing_status', False)
-                    and not getattr(candidate, 'refilling_potions', False)
-                    and not getattr(candidate, 'in_solo_zone', False)
-                    and not await candidate.is_loading()):
+            candidate_state = {
+                'title': getattr(candidate, 'title', 'unknown'),
+                'departure_proof': id(candidate) in context.get('peer_areas', {}),
+                'questing': bool(getattr(candidate, 'questing_status', False)),
+                'refilling': bool(getattr(candidate, 'refilling_potions', False)),
+                'solo': bool(getattr(candidate, 'in_solo_zone', False)),
+                'loading': None, 'zone': None,
+            }
+            if candidate_state['departure_proof']:
+                try:
+                    candidate_state.update(loading=await candidate.is_loading(), zone=await candidate.zone_name())
+                except Exception as exc:
+                    candidate_state.update(loading=True, read_error=str(exc))
+            peer_states.append(candidate_state)
+            if (peer is None and candidate_state['departure_proof']
+                    and candidate_state['questing'] and not candidate_state['refilling']
+                    and not candidate_state['solo'] and not candidate_state['loading']):
                 peer = candidate
-                break
         target_zone = await peer.zone_name() if peer is not None else original_zone
         current_zone = await client.zone_name()
+        loading = await client.is_loading()
+        battle = await client.in_battle() if not loading else None
+        free = await is_free(client) if not loading and current_zone != departure_zone else False
+        dialogue = None
+        if not free and not loading and not battle:
+            try:
+                dialogue = await is_visible_by_path(client, advance_dialog_path)
+            except Exception:
+                dialogue = 'unreadable'
+        state = {
+            'condition': 'loading' if loading else 'departure_zone' if current_zone == departure_zone else 'busy',
+            'zone': current_zone, 'original_zone': original_zone, 'target_zone': target_zone,
+            'loading': loading, 'battle': battle, 'free': free, 'dialogue': dialogue,
+            'character_selection': getattr(client, '_character_selection_active', False) is True,
+            'expected_snapshot': context.get('snapshot'), 'snapshot': None,
+            'expected_zone_id': context.get('zone_id'), 'zone_id': None,
+            'peer': peer.title if peer is not None else None, 'peer_candidates': peer_states,
+            'same_instance': None, 'peer_token_before': None, 'peer_token_now': None,
+            'probe_pending': getattr(client, 'quest_party_probe_pending', False),
+            'sync_active': getattr(client, 'quest_party_target_sync_active', False),
+            'recovery_owner': getattr(client, 'quest_recovery_owner', None),
+        }
         area = (current_zone, id(peer))
         if area != stable_area:
             stable_reads = 0
             stable_area = area
-        if (not await client.is_loading() and current_zone != departure_zone
-                and (await is_free(client) or peer is not None and await client.in_battle())):
+        if (not loading and current_zone != departure_zone
+                and (free or peer is not None and battle)):
             snapshot = await potion_quest_snapshot(client)
+            state.update(snapshot=snapshot, condition='snapshot_unreadable')
             if (snapshot is not None and context.get('snapshot') is not None
                     and snapshot[0] != context['snapshot'][0]):
+                state['condition'] = 'quest_identity_mismatch'
+                record_validation(state, terminal=True)
                 logger.error(f'自动任务：{client.title} 返回区域的任务身份与原记录不符，停止恢复任务。')
                 return False
             before_id = context.get('zone_id') if isinstance(context, dict) else None
             after_id = await potion_zone_id(client)
+            state['zone_id'] = after_id
             if current_zone == original_zone and before_id is not None and after_id != before_id:
+                state['condition'] = 'zone_id_unreadable' if after_id is None else 'zone_id_mismatch'
+                record_validation(state, terminal=True)
                 logger.error(f'自动任务：{client.title} 返回同名区域但 Zone ID 不匹配，停止恢复任务。')
                 return False
             if (snapshot is not None and peer is not None and target_zone
                     and target_zone != departure_zone and current_zone != target_zone):
                 stable_reads = 0
-                if await is_free(client) and time.monotonic() >= next_tp_at:
-                    logger.info(f'自动任务：{client.title} 补药返回后位于 {current_zone}，沿任务目标追赶 {peer.title} 所在的 {target_zone}。')
+                state['condition'] = 'peer_room_catchup'
+                record_validation(state)
+                if free and time.monotonic() >= next_tp_at:
+                    if last_tp_zone != current_zone:
+                        logger.info(f'自动任务：{client.title} 补药返回后位于 {current_zone}，沿任务目标追赶 {peer.title} 所在的 {target_zone}。')
                     try:
                         await _potion_dungeon_room_tp(client, current_zone,
                                                      reenter=last_tp_zone == current_zone)
@@ -1077,11 +1151,42 @@ async def return_to_dungeon_after_potions(client: Client, original_zone: str) ->
                     next_tp_at = time.monotonic() + 2.0
                 await asyncio.sleep(.5)
                 continue
-            if (current_zone != target_zone
-                    or peer is not None and not await clients_share_live_area(client, peer)):
+            if current_zone != target_zone:
+                state['condition'] = 'target_zone_mismatch'
                 snapshot = None
+            elif snapshot is not None and peer is not None:
+                shared_area = await clients_share_live_area(client, peer)
+                state['same_instance'] = 'live_area' if shared_area else 'unproved'
+                # The existing completed-return proof uses an unchanged, verified
+                # pre-departure peer token plus the original Zone ID. Confirm it
+                # here too: requiring returned_snapshot first creates a cycle
+                # when the peer is not currently in either rendered entity tree.
+                token = context.get('peer_areas', {}).get(id(peer))
+                state['peer_token_before'] = token
+                if (not shared_area and current_zone == original_zone
+                        and context.get('snapshot') is not None
+                        and type(before_id) is int and before_id > 0
+                        and isinstance(token, tuple) and len(token) == 4
+                        and token[0] == original_zone
+                        and type(token[1]) is int and token[1] > 0
+                        and type(token[2]) is int and token[2] > 0):
+                    try:
+                        state['peer_token_now'] = await _party_area_token(peer)
+                        shared_area = (token is not None and token == state['peer_token_now']
+                            and after_id == before_id and not await peer.is_loading()
+                            and not await client.is_loading()
+                            and await peer.zone_name() == current_zone
+                            and await client.zone_name() == current_zone)
+                    except Exception as exc:
+                        state['peer_token_now'] = f'unreadable: {exc}'
+                    if shared_area:
+                        state['same_instance'] = 'unchanged_departure_peer'
+                if not shared_area:
+                    state['condition'] = 'same_instance_unproved'
+                    snapshot = None
         if snapshot is not None:
             stable_reads += 1
+            state['condition'] = 'stable_return'
             if stable_reads >= 3:
                 if isinstance(context, dict):
                     context['zone'] = current_zone
@@ -1107,12 +1212,15 @@ async def return_to_dungeon_after_potions(client: Client, original_zone: str) ->
                     current_zone, time.monotonic(), pending_hitters,
                 ) if pending_hitters or getattr(client, "quest_party_status_session", None) is not None else None
                 client.quest_party_battle_sync_state = None
+                record_validation(dict(state, condition='confirmed'), terminal=True)
                 logger.info(f"自动任务：{client.title} 地牢返回按钮已完成回传，任务状态可读；恢复前仍需确认队伍同副本。")
                 return True
         else:
             stable_reads = 0
+        record_validation(state)
         await asyncio.sleep(0.5)
-    logger.error(f"自动任务：{client.title} 未确认返回原地牢 {original_zone!r}。")
+    logger.error('自动任务：{} 补药返回校验在 90 秒内未完成；最终状态={}；补药前共享状态={}',
+                 client.title, last_validation, context.get('departure_sync'))
     return False
 
 

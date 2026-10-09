@@ -686,14 +686,31 @@ async def navmap_teleport(
 
 
 async def friend_teleport_sync(clients: list[wizwalker.Client], debug: bool):
-    # uses the util for porting to friend via the friends list. Sends every client to p1. I really don't like this function, or this code, but it works and people want it so I have to have it in here sadly. Might rewrite it someday.
+    # Keep the first-client destination and follower order within this selection.
+    target = clients[0]
+    if not getattr(target, 'wizard_name', None):
+        quester = Quester(target, [target], None)
+        try:
+            await asyncio.wait_for(quester.open_character_screen(target), timeout=5.0)
+            await set_wizard_name_from_character_screen(target)
+        except Exception as exc:
+            logger.warning('好友传送：无法读取 {} 的角色名，本次传送已取消：{}', target.title, exc)
+            return
+        finally:
+            try:
+                await asyncio.wait_for(quester.close_character_screen(target), timeout=5.0)
+            except Exception as exc:
+                logger.warning('好友传送：{} 角色界面关闭失败：{}', target.title, exc)
+    if not getattr(target, 'wizard_name', None):
+        logger.warning('好友传送：无法确认目标角色名，本次传送已取消。')
+        return
     if debug:
-        logger.debug("Friend TP hotkey pressed, friend teleporting all clients to p1.")
+        logger.debug('Friend TP hotkey pressed, friend teleporting selected clients to {}.', target.title)
     child_clients = clients[1:]
     for p in child_clients:
         async with p.mouse_handler:
             try:
-                await teleport_to_friend_from_list(client=p, icon_list=1, icon_index=50)
+                await teleport_to_friend_from_list(client=p, name=target.wizard_name)
             except Exception as e:
                 logger.error(e)
                 await asyncio.sleep(0)
@@ -794,25 +811,49 @@ async def main():
             debug=True,
         )
 
-    async def xyz_sync_hotkey():
+    def teleport_hotkey_clients(titles, minimum=1):
+        available = walker.clients
+        live = [c for c in available if client_available(c, available)]
+        members = resolve_bot_clients(live, tuple(titles or ()))
+        if not members:
+            logger.warning('未选择作用客户端，本次传送已取消。')
+            return []
+        if len(members) < minimum:
+            logger.warning('当前分组客户端不足，本次传送已取消。')
+            return []
+        return members
+
+    async def xyz_sync_hotkey(titles=()):
+        members = teleport_hotkey_clients(titles, minimum=2)
+        if not members:
+            return
+        source = foreground_client if foreground_client in members else members[0]
         await xyz_sync(
-            foreground_client,
-            [c for c in walker.clients if c is not foreground_client],
+            source,
+            [c for c in members if c is not source],
             turn_after=True,
             debug=True,
         )
 
-    async def navmap_teleport_hotkey():
+    async def navmap_teleport_hotkey(titles=()):
         if not freecam_status:
+            members = teleport_hotkey_clients(titles)
+            if not members:
+                return
+            source = foreground_client if foreground_client in members else members[0]
             await navmap_teleport(
-                foreground_client, background_clients, mass_teleport=False, debug=True
+                source, [c for c in members if c is not source], mass_teleport=False, debug=True
             )
 
-    async def mass_navmap_teleport_hotkey():
+    async def mass_navmap_teleport_hotkey(titles=()):
         if not freecam_status:
+            members = teleport_hotkey_clients(titles)
+            if not members:
+                return
+            source = foreground_client if foreground_client in members else members[0]
             await navmap_teleport(
-                foreground_client,
-                [c for c in walker.clients if c is not foreground_client],
+                source,
+                [c for c in members if c is not source],
                 mass_teleport=True,
                 debug=True,
             )
@@ -849,9 +890,11 @@ async def main():
                     try_task_coro(speed_switching, walker.clients)
                 )
 
-    async def friend_teleport_sync_hotkey():
+    async def friend_teleport_sync_hotkey(titles=()):
         if not freecam_status:
-            await friend_teleport_sync(walker.clients, debug=True)
+            members = teleport_hotkey_clients(titles, minimum=2)
+            if members:
+                await friend_teleport_sync(members, debug=True)
 
     async def kill_tool_hotkey():
         # await tool_finish()
@@ -1184,6 +1227,7 @@ async def main():
                 client.npc_mainline_menu_read_wait = None
                 client.quest_invitation_state = None
                 client.quest_interaction_attempt = None
+                client._quest_x_turn_failed = None
                 client._collision_tp_approach = None
                 client._npc_complete_state = None
                 client._npc_dialogue_next_at = 0.0
@@ -1212,6 +1256,7 @@ async def main():
             # a newly started party must block the quest worker before its first
             # movement, not only after the quester has changed zones once.
             client.quest_party_probe_pending = False
+            client.quest_party_probe_wait = None
             if not active:
                 client.quest_dialogue_settle = None
                 client._quest_name_read_retry_at = 0.0
@@ -2065,6 +2110,7 @@ async def main():
             """Follow the quester without ever reading the hitter's quest target."""
             logger.info(f"打手 {hitter.title} 开始跟随做任务客户端 {quester.title}。")
             loop = asyncio.get_running_loop()
+            follow_session = getattr(hitter, 'quest_party_status_session', None)
             last_quester_zone = getattr(quester, "quest_party_observed_zone", None)
             quester_zone_stable_since = None
             last_objective = None
@@ -2075,30 +2121,63 @@ async def main():
             next_retry_at = 0.0
             quest_reader = Quester(quester, [quester], None)
 
-            async def complete_zone_probe(solo_zone: bool):
+            async def complete_zone_probe(solo_zone: bool, probe_context):
                 if not is_probe_hitter:
+                    return
+                probe_zone, identity, wait, session, was_pending = probe_context
+                equipment_task = watcher = None
+
+                async def probe_is_current():
+                    nonlocal wait
+                    try:
+                        # The worker may establish the wait after the follower
+                        # sampled this probe. Adopt only the same zone/task.
+                        current_wait = getattr(quester, 'quest_party_probe_wait', None)
+                        if (wait is None and isinstance(current_wait, dict)
+                                and current_wait['zone'] == probe_zone
+                                and current_wait['identity'] == identity):
+                            wait = current_wait
+                            if equipment_task is not None and not equipment_task.done():
+                                wait['equipping'] = True
+                        return (
+                            (members is not None or questing_status)
+                            and hitter.questing_status and quester.questing_status
+                            and hitter in walker.clients and quester in walker.clients
+                            and hitter in getattr(quester, 'quest_party_hitters', [])
+                            and getattr(hitter, 'quest_party_quester', quester) is quester
+                            and getattr(hitter, 'quest_party_status_session', None) is session
+                            and (not was_pending or getattr(quester, 'quest_party_probe_pending', False))
+                            and (not isinstance(wait, dict)
+                                 or getattr(quester, 'quest_party_probe_wait', None) is wait)
+                            and getattr(quester, '_character_selection_active', False) is not True
+                            and not await quester.is_loading()
+                            and await quester.zone_name() == probe_zone
+                            and (await quester.quest_id(), await quester.goal_id()) == identity
+                        )
+                    except Exception:
+                        return False
+
+                if not await probe_is_current():
                     return
                 if (not solo_zone and getattr(quester, 'quest_party_group_dungeon_zone', None) is not None):
                     for member in getattr(quester, 'quest_party_hitters', []):
                         if (not getattr(member, 'questing_status', False)
                                 or await member.is_loading()
-                                or await member.zone_name() != last_quester_zone
+                                or await member.zone_name() != probe_zone
                                 or not await clients_share_live_area(quester, member)):
                             return  # One arrived hitter cannot release a shared room.
+                completed = False
+                equipment_changed = False
                 try:
+                    set_number = None
                     if solo_zone:
-                        quester.in_solo_zone = True
-                        if gear_switching_in_solo_zones and not getattr(
-                            quester, "quest_party_solo_gear_active", False
-                        ):
+                        if gear_switching_in_solo_zones and not getattr(quester, 'quest_party_solo_gear_active', False):
                             update_party_status(hitter, quester, "单人区域，正在换装")
                             logger.info(
                                 f"已确认 {quester.title} 进入单人区域，切换到第二套装备。"
                             )
-                            if await change_party_equipment(quester, 1):
-                                quester.quest_party_solo_gear_active = True
+                            set_number = 1
                     else:
-                        quester.in_solo_zone = False
                         if getattr(quester, "quest_party_solo_gear_active", False):
                             update_party_status(
                                 hitter, quester, "已离开单人区域，恢复装备"
@@ -2106,25 +2185,73 @@ async def main():
                             logger.info(
                                 f"已确认 {quester.title} 离开单人区域，恢复第一套装备。"
                             )
-                            if await change_party_equipment(quester, 0):
-                                quester.quest_party_solo_gear_active = False
+                            set_number = 0
+                    if set_number is not None:
+                        if isinstance(wait, dict):
+                            wait['equipping'] = True
+
+                        async def switch_if_current():
+                            if await probe_is_current():
+                                return await change_party_equipment(quester, set_number)
+                            return False
+
+                        async def watch_probe():
+                            while await probe_is_current():
+                                await asyncio.sleep(0.1)
+
+                        equipment_task = asyncio.create_task(switch_if_current())
+                        watcher = asyncio.create_task(watch_probe())
+                        done, _ = await asyncio.wait((equipment_task, watcher), return_when=asyncio.FIRST_COMPLETED)
+                        if watcher in done:
+                            return  # Cancel/drain the old area's equipment below.
+                        equipment_changed = await equipment_task
+                    completed = True
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
                     logger.warning(
                         f"{quester.title} 处理区域换装失败，将继续任务：{exc}"
                     )
+                    completed = True  # Preserve the existing failed-equipment policy.
                 finally:
-                    # Probe completion must always release the movement gate,
-                    # even if the equipment UI times out or raises an error.
-                    quester.quest_party_quest_worker_zone = last_quester_zone
-                    quester.quest_party_probe_pending = False
-
-                if solo_zone:
-                    # The worker may still be awaiting an operation that began
-                    # before the zone transition.  Restart only that quester;
-                    # the hitter follower and the rest of the party stay alive.
-                    restart_quest_worker_after_probe(quester)
+                    for task in (equipment_task, watcher):
+                        if task is not None:
+                            task.cancel()
+                    await asyncio.gather(*[task for task in (equipment_task, watcher)
+                                           if task is not None], return_exceptions=True)
+                    if isinstance(wait, dict):
+                        wait['equipping'] = False
+                    # Cancellation or a late result must never release a new
+                    # zone/session's wait. Publish only after equipment drains.
+                    if completed and await probe_is_current():
+                        quester.in_solo_zone = solo_zone
+                        if equipment_changed:
+                            quester.quest_party_solo_gear_active = solo_zone
+                        quester.quest_party_quest_worker_zone = probe_zone
+                        quester.quest_party_probe_wait = None
+                        quester.quest_party_probe_pending = False
+                        if solo_zone:
+                            restart_quest_worker_after_probe(quester)
+                    elif (isinstance(wait, dict)
+                          and getattr(quester, 'quest_party_probe_wait', None) is wait):
+                        quester.quest_party_probe_wait = None
+                        # A new zone still needs its own probe; stopped or
+                        # replaced tasks discard this local wait outright.
+                        quester.quest_party_probe_pending = False
+                        try:
+                            quester.quest_party_probe_pending = bool(
+                                quester.questing_status and quester in walker.clients
+                                and hitter in getattr(quester, 'quest_party_hitters', [])
+                                and getattr(hitter, 'quest_party_quester', quester) is quester
+                                and getattr(hitter, 'quest_party_status_session', None) is session
+                                and getattr(quester, '_character_selection_active', False) is not True
+                                and (await quester.is_loading()
+                                     or await quester.zone_name() != probe_zone
+                                     or await quester.quest_id() == identity[0]
+                                     and await quester.goal_id() != identity[1])
+                            )
+                        except Exception:
+                            pass  # Disconnected clients cannot retain this wait.
 
             async def hitter_is_in_quester_area() -> bool:
                 """Confirm both clients are in the same live area/instance."""
@@ -2208,7 +2335,9 @@ async def main():
                 ) and hitter.questing_status:
                     await asyncio.sleep(0.5)
                     if (not hitter.questing_status or not quester.questing_status
-                            or hitter not in walker.clients or quester not in walker.clients):
+                            or hitter not in walker.clients or quester not in walker.clients
+                            or getattr(hitter, 'quest_party_quester', quester) is not quester
+                            or getattr(hitter, 'quest_party_status_session', None) is not follow_session):
                         return
                     if (getattr(hitter, '_character_selection_active', False) is True
                             or getattr(quester, '_character_selection_active', False) is True
@@ -2320,6 +2449,12 @@ async def main():
                         update_party_status(hitter, quester, "等待单人区域探测")
                         continue
 
+                    probe_context = None if not is_probe_hitter else (
+                        quester_zone, (await quester.quest_id(), await quester.goal_id()),
+                        getattr(quester, 'quest_party_probe_wait', None),
+                        follow_session, probe_pending,
+                    )
+
                     same_live_area = False
                     if hitter_zone == quester_zone:
                         same_live_area = await clients_share_live_area(hitter, quester)
@@ -2335,7 +2470,7 @@ async def main():
                             if not marker[2]:
                                 quester.potion_dungeon_returned = None
                         if probe_pending:
-                            await complete_zone_probe(False)
+                            await complete_zone_probe(False, probe_context)
                         blocked_instance_zone = None
                         blocked_instance_retry_at = 0.0
                         failure_count = 0
@@ -2494,7 +2629,7 @@ async def main():
                                 raise RuntimeError("好友传送未到达任务客户端所在区域")
 
                         if probe_pending:
-                            await complete_zone_probe(False)
+                            await complete_zone_probe(False, probe_context)
                         failure_count = 0
                         next_retry_at = 0.0
                     except asyncio.CancelledError:
@@ -2504,7 +2639,7 @@ async def main():
                         blocked_instance_zone = quester_zone
                         blocked_instance_retry_at = loop.time() + 60.0
                         if getattr(quester, 'quest_party_group_dungeon_zone', None) is None:
-                            await complete_zone_probe(True)
+                            await complete_zone_probe(True, probe_context)
                         update_party_status(hitter, quester, "等待归队，可手动进入原副本")
                         logger.debug(
                             f"打手 {hitter.title} 无法进入 {quester.title} 当前区域，"
@@ -2519,7 +2654,7 @@ async def main():
                             blocked_instance_zone = quester_zone
                             blocked_instance_retry_at = loop.time() + 60.0
                             if getattr(quester, 'quest_party_group_dungeon_zone', None) is None:
-                                await complete_zone_probe(True)
+                                await complete_zone_probe(True, probe_context)
                             update_party_status(hitter, quester, "等待归队，可手动进入原副本")
                             logger.debug(
                                 f"打手 {hitter.title} 检测到无法进入的实例，"
@@ -3779,6 +3914,7 @@ async def main():
         client.duel_circle_joinable = True
         client.in_solo_zone = False
         client.quest_party_probe_pending = False
+        client.quest_party_probe_wait = None
         client.quest_party_dungeon_entry_active = False
         client.quest_party_solo_gear_active = False
         client.quest_party_observed_zone = None
@@ -4964,16 +5100,18 @@ async def main():
                                 case _:
                                     logger.debug(f"Unknown copy value: {com.data}")
                         case xuanshu_gui.GUICommandType.Teleport:
-                            if not walker.clients:
+                            if not walker.clients and not isinstance(com.data, dict):
                                 logger.info(
                                     "This GUI option requires hooks to be active, skipping."
                                 )
                                 continue
-                            match com.data:
+                            teleport_key = com.data.get('key') if isinstance(com.data, dict) else com.data
+                            titles = com.data.get('clients', ()) if isinstance(com.data, dict) else ()
+                            match teleport_key:
                                 case GUIKeys.hotkey_quest_tp:
-                                    await navmap_teleport_hotkey()
+                                    await navmap_teleport_hotkey(titles)
                                 case GUIKeys.mass_hotkey_mass_tp:
-                                    await mass_navmap_teleport_hotkey()
+                                    await mass_navmap_teleport_hotkey(titles)
                                 case GUIKeys.hotkey_freecam_tp:
                                     await tp_to_freecam_hotkey()
                                 case _:
@@ -5157,12 +5295,7 @@ async def main():
                                     )
                                 )
                         case xuanshu_gui.GUICommandType.XYZSync:
-                            if not walker.clients:
-                                logger.info(
-                                    "This GUI option requires hooks to be active, skipping."
-                                )
-                                continue
-                            await xyz_sync_hotkey()
+                            await xyz_sync_hotkey(com.data.get('clients', ()) if isinstance(com.data, dict) else ())
                         case xuanshu_gui.GUICommandType.XPress:
                             if not walker.clients:
                                 logger.info(
@@ -5171,12 +5304,7 @@ async def main():
                                 continue
                             await x_press_hotkey()
                         case xuanshu_gui.GUICommandType.FriendTeleport:
-                            if not walker.clients:
-                                logger.info(
-                                    "This GUI option requires hooks to be active, skipping."
-                                )
-                                continue
-                            await friend_teleport_sync_hotkey()
+                            await friend_teleport_sync_hotkey(com.data.get('clients', ()) if isinstance(com.data, dict) else ())
                         case xuanshu_gui.GUICommandType.ToggleDialogueSideQuests:
                             if hotkey_groups.active("toggle_dialogue_side_quests"):
                                 logger.warning("请先停止支线任务的快捷键分组。")

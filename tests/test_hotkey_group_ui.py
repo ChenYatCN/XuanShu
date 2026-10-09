@@ -148,22 +148,35 @@ class HotkeyGroupUITests(unittest.TestCase):
             self.assertEqual(self.ctx.send_queue.put.call_args.args[0].data,
                              {'action': action, 'clients': ['p1', 'p2']})
 
-    def test_freecam_teleports_and_multi_client_actions_ignore_checks(self):
+    def test_freecam_and_x_press_still_ignore_checks(self):
         self.api['set_available_clients'](['p1', 'p2'])
         self.checks()['bot_target_all'].setChecked(False)
         expected = {
             'toggle_freecam': (GUICommandType.ToggleOption, GUIKeys.toggle_freecam),
-            'quest_tp': (GUICommandType.Teleport, GUIKeys.hotkey_quest_tp),
             'freecam_tp': (GUICommandType.Teleport, GUIKeys.hotkey_freecam_tp),
-            'friend_tp': (GUICommandType.FriendTeleport, None),
-            'mass_tp': (GUICommandType.Teleport, GUIKeys.mass_hotkey_mass_tp),
-            'xyz_sync': (GUICommandType.XYZSync, None),
             'x_press': (GUICommandType.XPress, None),
         }
         for action, (command_type, data) in expected.items():
             self.ctx.registry.callbacks[action]()
             command = self.ctx.send_queue.put.call_args.args[0]
             self.assertEqual((command.com_type, command.data), (command_type, data), action)
+
+    def test_four_teleports_read_current_checks_on_every_invocation(self):
+        self.api['set_available_clients'](['p1', 'p2', 'p3', 'p4'])
+        expected = {
+            'quest_tp': (GUICommandType.Teleport, {'key': GUIKeys.hotkey_quest_tp}),
+            'mass_tp': (GUICommandType.Teleport, {'key': GUIKeys.mass_hotkey_mass_tp}),
+            'friend_tp': (GUICommandType.FriendTeleport, {}),
+            'xyz_sync': (GUICommandType.XYZSync, {}),
+        }
+        for selected in (['p1', 'p2'], ['p3', 'p4'], [], ['p1']):
+            for title in ('p1', 'p2', 'p3', 'p4'):
+                self.checks()[title].setChecked(title in selected)
+            for action, (command_type, data) in expected.items():
+                self.ctx.registry.callbacks[action]()
+                command = self.ctx.send_queue.put.call_args.args[0]
+                self.assertEqual(command.com_type, command_type)
+                self.assertEqual(command.data, dict(data, clients=selected))
 
     def test_client_row_does_not_move_logo_or_progress(self):
         self.tab.resize(1000, 500)

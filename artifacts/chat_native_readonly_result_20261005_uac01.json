@@ -1,7 +1,0 @@
-{
-  "read_only": true,
-  "pid": 13420,
-  "error_type": "AttributeError",
-  "error": "'types.SimpleNamespace' object has no attribute 'read_bytes'",
-  "write_or_refresh_test_performed": false
-}

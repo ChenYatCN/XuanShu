@@ -1,7 +1,0 @@
-{
-  "read_only": true,
-  "pid": 13420,
-  "error_type": "RuntimeError",
-  "error": "控件文本指针无效：ControlEdit text@0x173959b13b0, length=16843008, capacity=1596014736416, pointer=7",
-  "write_or_refresh_test_performed": false
-}

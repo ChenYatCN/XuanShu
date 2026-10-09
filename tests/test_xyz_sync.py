@@ -9,6 +9,8 @@ from wizwalker import Keycode, MemoryInvalidated
 from wizwalker.errors import ClientClosedError, ExceptionalTimeout
 from src.gui.commands import GUICommand, GUICommandType
 from src.task_lifecycle import gather_owned
+from src.bot_targeting import resolve_bot_clients
+from src.hotkey_groups import client_available
 from tests.test_party_area_proof import client
 from tests.test_scoped_runtime import load_function
 
@@ -112,8 +114,10 @@ class XYZSyncTests(unittest.IsolatedAsyncioTestCase):
         self.namespace.update(walker=SimpleNamespace(clients=[self.source, self.failed]),
             foreground_client=self.source,
             xuanshu_gui=SimpleNamespace(GUICommandType=GUICommandType),
-            commands=[GUICommand(GUICommandType.XYZSync, None)] * 2,
+            resolve_bot_clients=resolve_bot_clients, client_available=client_available,
+            commands=[GUICommand(GUICommandType.XYZSync, {'clients': ['p1', 'p2']})] * 2,
             next_command=AsyncMock())
+        load_function('teleport_hotkey_clients', self.namespace)
         load_function('xyz_sync_hotkey', self.namespace)
         tree = ast.parse(Path('XuanShu.py').read_text(encoding='utf-8'))
         gui = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)

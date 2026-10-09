@@ -514,7 +514,8 @@ _QUEST_POINT_TOLERANCE = 5.0  # Explicit trigger re-entry only; ordinary collisi
 
 async def _walk_remaining_to_target(client: Client, target_xyz: XYZ, world, zone_name: str,
                                     player_radius: float, avoid=None, *, blocked_steps=None,
-                                    goal_radius=_WALK_GAP_MIN, stop_condition=None) -> bool:
+                                    goal_radius=_WALK_GAP_MIN, stop_condition=None,
+                                    approach_result=None) -> bool:
     """Walk the final stretch on foot when the teleport had to stop short of a target that
     is itself walk-reachable.
 
@@ -536,6 +537,8 @@ async def _walk_remaining_to_target(client: Client, target_xyz: XYZ, world, zone
     refinement. It is only ever passed after the game has rejected a landing, so ordinary
     teleports keep the full walk."""
     deadline = time.monotonic() + _WALK_TIMEOUT
+    if approach_result is not None:
+        approach_result.update(walk_attempted=False, waypoints=None, truncated=False)
     async def stopped():
         return (getattr(client, 'questing_status', True) is False
                 or await client.zone_name() != zone_name
@@ -548,6 +551,8 @@ async def _walk_remaining_to_target(client: Client, target_xyz: XYZ, world, zone
         gap = ((pos.x - target_xyz.x) ** 2 + (pos.y - target_xyz.y) ** 2) ** 0.5
         if gap <= goal_radius:
             return True
+        if approach_result is not None:
+            approach_result['walk_attempted'] = True
         from src.collision_math import get_walk_grid
         from src import entity_collision
 
@@ -562,6 +567,8 @@ async def _walk_remaining_to_target(client: Client, target_xyz: XYZ, world, zone
 
         path, target_walkable = await asyncio.to_thread(_plan)
         if not target_walkable:
+            if approach_result is not None:
+                approach_result['walk_reason'] = 'target_not_walkable'
             # The target sits on a static collider (teleporter pad/boat). The teleport landing is
             # already the closest we can stand; walking toward it would only loop around the pad.
             logger.debug(
@@ -570,6 +577,8 @@ async def _walk_remaining_to_target(client: Client, target_xyz: XYZ, world, zone
             )
             return False
         if not path:
+            if approach_result is not None:
+                approach_result['walk_reason'] = 'no_path'
             logger.debug(
                 f"[collision_tp] {client.title}: {gap:.0f}u short of target but no on-foot path; "
                 f"staying at the teleport point"
@@ -594,6 +603,8 @@ async def _walk_remaining_to_target(client: Client, target_xyz: XYZ, world, zone
                 )
                 refine = False
             walk = kept
+        if approach_result is not None:
+            approach_result.update(waypoints=len(walk), truncated=not refine)
         logger.debug(
             f"[collision_tp] {client.title}: walking the final {gap:.0f}u via {len(walk)} "
             f"A* waypoints to the target"
@@ -614,6 +625,8 @@ async def _walk_remaining_to_target(client: Client, target_xyz: XYZ, world, zone
             await asyncio.wait_for(client.goto(target_xyz.x, target_xyz.y), remaining)
         return calc_Distance(await client.body.position(), target_xyz) <= goal_radius
     except Exception as e:
+        if approach_result is not None:
+            approach_result['walk_reason'] = repr(e)
         logger.debug(f"[collision_tp] {client.title}: final walk skipped ({e!r})")
 
     return False
@@ -700,7 +713,8 @@ async def prewarm_zone(client: Client, zone_name: str = None) -> None:
         logger.debug(f"[prewarm] skipped ({e!r})")
 
 
-async def collision_tp(client: Client, xyz: XYZ = None, leader_client: Client = None):
+async def collision_tp(client: Client, xyz: XYZ = None, leader_client: Client = None, *,
+                       approach_result=None):
     """Teleport by solving the zone's collision geometry — a single, decisive teleport.
 
     Loads the zone collision data, computes (in a 2D slice at the target's height)
@@ -712,6 +726,12 @@ async def collision_tp(client: Client, xyz: XYZ = None, leader_client: Client = 
     outside the loaded area of interest, or a solve/teleport error — does it fall back
     to the proven navmap_tp. Debug logs report exactly which path ran.
     """
+    # Optional observation only: callers that do not request it retain the same
+    # movement, return value and lack of per-client approach state.
+    if approach_result is not None:
+        approach_result.clear()
+        approach_result.update(landed=False, walk_completed=None)
+    walk_kwargs = {'approach_result': approach_result} if approach_result is not None else {}
     if not await is_free(client):
         return
 
@@ -764,7 +784,10 @@ async def collision_tp(client: Client, xyz: XYZ = None, leader_client: Client = 
             f"{safe_xyz} (moved {moved:.0f}u from target)"
         )
         if await _teleport_once_verified(client, safe_xyz, starting_xyz, zone_name):
-            await _walk_remaining_to_target(client, target_xyz, world, zone_name, player_radius)
+            walked = await _walk_remaining_to_target(client, target_xyz, world, zone_name, player_radius,
+                                                     **walk_kwargs)
+            if approach_result is not None:
+                approach_result.update(landed=True, walk_completed=walked)
             return
 
         # The game refused a point the geometry called clear, so something solid is there
@@ -796,15 +819,20 @@ async def collision_tp(client: Client, xyz: XYZ = None, leader_client: Client = 
                     avoid = await asyncio.to_thread(_blockers)
                 except Exception:
                     avoid = None
-                await _walk_remaining_to_target(
-                    client, target_xyz, world, zone_name, player_radius, avoid=avoid
+                walked = await _walk_remaining_to_target(
+                    client, target_xyz, world, zone_name, player_radius, avoid=avoid, **walk_kwargs
                 )
+                if approach_result is not None:
+                    approach_result.update(landed=True, walk_completed=walked)
                 return
 
         # Still bounced: an unmodeled warp volume rather than a mis-excused wall. Back off
         # along the approach line before giving up on the geometry entirely.
         if await _retreat_toward(client, safe_xyz, starting_xyz, zone_name):
-            await _walk_remaining_to_target(client, target_xyz, world, zone_name, player_radius)
+            walked = await _walk_remaining_to_target(client, target_xyz, world, zone_name, player_radius,
+                                                     **walk_kwargs)
+            if approach_result is not None:
+                approach_result.update(landed=True, walk_completed=walked)
             return
         logger.debug(
             f"[collision_tp] {client.title}: collision point never landed (unmodeled collider "

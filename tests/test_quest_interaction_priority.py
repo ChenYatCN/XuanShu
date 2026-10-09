@@ -15,12 +15,15 @@ class QuestInteractionPriorityTests(unittest.IsolatedAsyncioTestCase):
         self.client.refilling_potions = False
         self.client.post_combat_cleanup_active = False
         self.client.quest_party_battle_rescue_active = False
+        self.client.quest_party_probe_pending = False
+        self.client.quest_party_quest_worker_restart_requested = False
         self.client.quest_party_hitters = []
         self.client.quest_id.return_value = 42
         self.client.goal_id.return_value = 7
         self.client.zone_name.return_value = 'World/Zone'
         self.quester = Quester(self.client, [self.client], None)
         self.quester.read_popup = AsyncMock(return_value='Press X to Talk')
+        self.quester.read_quest_txt = AsyncMock(return_value='Use Lever (0/2)')
         self.quester._maybe_photo_giant_vat = AsyncMock(return_value=False)
         self.target = XYZ(20, 30, 0)
         self.client.quest_position.position.return_value = self.target
@@ -39,11 +42,13 @@ class QuestInteractionPriorityTests(unittest.IsolatedAsyncioTestCase):
         self.client.body.position.return_value = self.target
         with (patch('src.questing.is_visible_by_path', AsyncMock(
                 side_effect=lambda client, path: path == ['WorldView', 'NPCRangeWin'])),
+              patch('src.questing.get_popup_title', AsyncMock(return_value='Lever')),
               patch('src.questing.asyncio.sleep', AsyncMock()),
               patch('src.questing.time.monotonic', return_value=10.0)):
             self.assertTrue(await self.quester.handle_quest_interaction(self.client, self.target))
             other = Quester(self.client, [self.client], None)
             other.read_popup = self.quester.read_popup
+            other.read_quest_txt = self.quester.read_quest_txt
             self.assertTrue(await other.handle_quest_interaction(self.client, self.target))
         self.client.send_key.assert_awaited_once()
         self.assertEqual(self.client.quest_interaction_attempt['attempts'], 1)
@@ -55,6 +60,7 @@ class QuestInteractionPriorityTests(unittest.IsolatedAsyncioTestCase):
         now = [10.0]
         with (patch('src.questing.is_visible_by_path', AsyncMock(
                 side_effect=lambda client, path: path == ['WorldView', 'NPCRangeWin'])),
+              patch('src.questing.get_popup_title', AsyncMock(return_value='Lever')),
               patch('src.questing.asyncio.sleep', AsyncMock()),
               patch('src.questing.time.monotonic', side_effect=lambda: now[0])):
             await self.quester.handle_quest_interaction(self.client, self.target)
@@ -64,7 +70,8 @@ class QuestInteractionPriorityTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(await self.quester.handle_quest_interaction(self.client, self.target))
             now[0] = 20.0
             await self.quester.handle_quest_interaction(self.client, self.target)
-        self.assertEqual(self.client.send_key.await_count, 2)
+        self.assertEqual(self.client.send_key.await_count, 7)  # First X, then 3 A/X pairs.
+        self.assertIsNone(self.client.quest_interaction_attempt)
 
     async def test_generic_x_never_uses_stale_coordinates_or_stopped_task(self):
         self.quester.quest_interaction_ready = AsyncMock(return_value=True)

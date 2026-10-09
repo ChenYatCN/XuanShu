@@ -65,14 +65,22 @@ def build_hotkeys_tab(ctx):
         return invoke
 
     # Callbacks used by bindable actions
+    def teleport_selected_callback(key):
+        def invoke():
+            send_queue.put(GUICommand(GUICommandType.Teleport,
+                {'key': key, 'clients': selected_clients()}))
+        return invoke
+
     def xyz_sync_callback():
-        send_queue.put(GUICommand(GUICommandType.XYZSync))
+        send_queue.put(GUICommand(GUICommandType.XYZSync,
+            {'clients': selected_clients()}))
 
     def x_press_callback():
         send_queue.put(GUICommand(GUICommandType.XPress))
 
     def friend_tp_callback():
-        send_queue.put(GUICommand(GUICommandType.FriendTeleport))
+        send_queue.put(GUICommand(GUICommandType.FriendTeleport,
+            {'clients': selected_clients()}))
 
     def dialogue_side_quests_callback():
         send_queue.put(GUICommand(GUICommandType.ToggleDialogueSideQuests))
@@ -86,7 +94,7 @@ def build_hotkeys_tab(ctx):
     target_toolbar, target_flow, all_clients, _ = _build_client_toolbar(ctx, None, None)
     target_toolbar.setObjectName('HotkeyClientTargets')
     target_flow.itemAt(0).widget().setText('客户端')
-    target_toolbar.setToolTip('勾选仅影响上方分组开关；自由视角、传送及多开快捷键不受勾选影响。')
+    target_toolbar.setToolTip('勾选影响分组开关、任务传送、好友传送、群体传送及 XYZ 同步。')
     target_toolbar.setFixedHeight(24)
     all_clients.setEnabled(False)
     target_flow.max_clients_per_row = 0
@@ -385,7 +393,7 @@ def build_hotkeys_tab(ctx):
                 (
                     "quest_tp",
                     tl("quest_tp"),
-                    teleport_callback(send_queue, GUIKeys.hotkey_quest_tp),
+                    teleport_selected_callback(GUIKeys.hotkey_quest_tp),
                     False,
                     None,
                     _toggle_icons["goal"],
@@ -414,7 +422,7 @@ def build_hotkeys_tab(ctx):
                 (
                     "mass_tp",
                     tl("mass_tp"),
-                    teleport_callback(send_queue, GUIKeys.mass_hotkey_mass_tp),
+                    teleport_selected_callback(GUIKeys.mass_hotkey_mass_tp),
                     False,
                     None,
                     _toggle_icons["users"],

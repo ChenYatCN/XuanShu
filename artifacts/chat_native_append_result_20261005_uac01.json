@@ -1,9 +1,0 @@
-{
-  "pid": 13420,
-  "chat_sent": false,
-  "injected": false,
-  "allocated": false,
-  "append_verified": false,
-  "error_type": "RuntimeError",
-  "error": "No complete history line or test already present"
-}

@@ -158,14 +158,19 @@ class OrdinaryQuest415Tests(unittest.IsolatedAsyncioTestCase):
             await self.quester.move_until_quest_interaction(hitter, self.target, self.client)
         self.move.assert_not_awaited()
 
-    async def test_ordinary_quester_advances_with_loading_refilling_or_stopped_hitter(self):
+    async def test_ordinary_quester_advances_with_busy_hitter_after_probe_completion(self):
         hitter = SimpleNamespace(title='p2', questing_status=False, refilling_potions=True,
             is_loading=AsyncMock(return_value=True), zone_name=AsyncMock(return_value='Elsewhere'),
             quest_position=SimpleNamespace(position=AsyncMock()), send_key=AsyncMock())
         self.client.quest_party_hitters = [hitter]
-        self.client.quest_party_probe_pending = True
+        self.client.quest_party_probe_pending = False
+        async def move(client, target, leader_client=None, **kwargs):
+            self.position = target
+        self.move.side_effect = move
         await self.quester.auto_quest_solo()
-        self.move.assert_awaited_once_with(self.client, self.target, leader_client=None)
+        self.move.assert_awaited_once()
+        self.assertEqual(self.move.await_args.args, (self.client, self.target))
+        self.assertEqual(self.position, self.target)
         self.client.send_key.assert_awaited_once()
         hitter.quest_position.position.assert_not_awaited()
         hitter.send_key.assert_not_awaited()

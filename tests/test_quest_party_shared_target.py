@@ -447,6 +447,8 @@ class SameInstanceFollowTests(unittest.IsolatedAsyncioTestCase):
         if group_source is not None:
             quester.quest_party_group_dungeon_zone = group_source
         quester.quest_party_hitters = [hitter]
+        quester.quest_id = AsyncMock(return_value=42)
+        quester.goal_id = AsyncMock(return_value=7)
         if extra_hitter:
             quester.quest_party_hitters.append(ClientState(title='p5', questing_status=True,
                 is_loading=AsyncMock(return_value=False),
@@ -509,6 +511,23 @@ class SameInstanceFollowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hitter.teleport.await_count, 3)
         hitter.teleport.assert_awaited_with(0)
         self.assertNotIn('正在好友传送', [call.args[2] for call in status.call_args_list])
+
+    async def test_primary_non_solo_probe_releases_current_wait(self):
+        _, friend, _ = await self.run_follow(True, in_battle=False, distance=0,
+            probe_pending=True, primary=True, group_confirmed=False)
+        friend.assert_not_awaited()
+        self.assertFalse(self.follow_quester.quest_party_probe_pending)
+        self.assertFalse(self.follow_quester.in_solo_zone)
+
+    async def test_stopped_probe_hitter_cannot_publish_busy_response(self):
+        def stop_and_fail(*args, **kwargs):
+            self.follow_quester.quest_party_hitters[0].questing_status = False
+            raise FriendBusyOrInstanceClosed()
+        await self.run_follow(False, in_battle=False, distance=0,
+            probe_pending=True, primary=True, group_confirmed=False,
+            friend_error=stop_and_fail)
+        self.assertFalse(self.follow_quester.in_solo_zone)
+        self.assertTrue(self.follow_quester.quest_party_probe_pending)
 
     async def test_follower_closes_its_world_selector_before_resuming_follow(self):
         hitter, friend, status = await self.run_follow(True, in_battle=False, distance=0,

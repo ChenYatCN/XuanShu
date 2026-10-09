@@ -1,8 +1,0 @@
-2026-10-09 15:22:17.643 | DEBUG    | src.teleport_math:navmap_tp:258 - [navmap_tp] <AsyncMock name='mock.title' id='1715915846528'>: using navmap teleport (direct -> nav data -> spiral)
-2026-10-09 15:22:17.647 | DEBUG    | src.teleport_math:navmap_tp:258 - [navmap_tp] <AsyncMock name='mock.title' id='1715915846528'>: using navmap teleport (direct -> nav data -> spiral)
-2026-10-09 15:22:17.649 | DEBUG    | src.questing:_note_quest_entry_wait:3810 - <AsyncMock name='mock.title' id='1715915846528'> 入口检查：附近 NPC 不是当前任务目标，继续任务传送；{'title': '莱利·长穴', 'objective': '前往 怪客的洞穴 地点：沥青洞穴'}
-.
-----------------------------------------------------------------------
-Ran 1 test in 0.018s
-
-OK

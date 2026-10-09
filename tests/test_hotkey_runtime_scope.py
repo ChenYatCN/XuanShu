@@ -12,10 +12,10 @@ from src.task_lifecycle import gather_owned
 
 
 class HotkeyRuntimeScopeTests(unittest.IsolatedAsyncioTestCase):
-    async def test_direct_multi_client_hotkeys_exclude_operated_client_from_peers(self):
+    async def test_x_hotkey_still_uses_all_live_clients(self):
         clients = [SimpleNamespace(title=f'p{i}') for i in range(1, 4)]
         tree = ast.parse(Path('XuanShu.py').read_text(encoding='utf-8'))
-        names = {'x_press_hotkey', 'xyz_sync_hotkey', 'mass_navmap_teleport_hotkey'}
+        names = {'x_press_hotkey'}
         functions = [node for node in ast.walk(tree)
                      if isinstance(node, ast.AsyncFunctionDef) and node.name in names]
         namespace = dict(
@@ -27,10 +27,7 @@ class HotkeyRuntimeScopeTests(unittest.IsolatedAsyncioTestCase):
                      ast.unparse(ast.Module(body=functions, type_ignores=[])),
                      'XuanShu.py', 'exec'), namespace)
         await namespace['x_press_hotkey']()
-        await namespace['xyz_sync_hotkey']()
-        await namespace['mass_navmap_teleport_hotkey']()
-        for mock in (namespace['mass_key_press'], namespace['xyz_sync'],
-                     namespace['navmap_teleport']):
+        for mock in (namespace['mass_key_press'],):
             self.assertIs(mock.await_args.args[0], clients[0])
             self.assertEqual(mock.await_args.args[1], clients[1:])
 

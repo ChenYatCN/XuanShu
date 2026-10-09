@@ -20,3 +20,4 @@ outputs/
 !.gitignore
 .*
 target/
+/artifacts/
