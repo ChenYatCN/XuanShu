@@ -1252,6 +1252,8 @@ async def main():
             client.quest_party_shared_target = None
             client.quest_dungeon_recovery = None
             client.quest_party_battle_sync_state = None
+            client.quest_party_battle_entry_recovery = None
+            client.quest_party_battle_entry_generation = getattr(client, 'quest_party_battle_entry_generation', 0) + 1
             # Recompute this state every time roles are applied.  In particular,
             # a newly started party must block the quest worker before its first
             # movement, not only after the quester has changed zones once.
@@ -1985,7 +1987,7 @@ async def main():
                                     await asyncio.sleep(0.5)
                                 else:
                                     await client.send_key(key=Keycode.SPACEBAR)
-                                    await asyncio.sleep(0.5)
+                                    await asyncio.sleep(0.35)
                                 continue
                     await asyncio.sleep(0.05)
 
@@ -3146,175 +3148,196 @@ async def main():
                     return group
             return [client]
 
-        async def rescue_missing_party_hitters(quester: Client):
-            """Retry battle entry for assigned hitters that missed the circle."""
-            if (
-                not quest_party_enabled
-                or quester.in_solo_zone
-                or getattr(quester, "quest_party_probe_pending", False)
-                or getattr(quester, 'bumbles_pet_pending', False) is True
-                or getattr(quester, 'outback_story_pending', False) is True
-                or getattr(quester, "refilling_potions", False)
-                or getattr(quester, "quest_party_target_sync_active", False)
-                or getattr(quester, 'post_combat_cleanup_active', False)
-                or isinstance(getattr(quester, "potion_dungeon_returned", None), tuple)
-                or getattr(quester, "quest_recovery_owner", None)
-                in ("nightmare_krok", "rotating_realm", "mainline_finder", "sacred_yarn", "tamarin_house", "avalon_grain_entry", "azteca_beetle_entry", "panopticon_book", "bumbles_mind", "lemuria_navigation", "dueling_tent", "easton_house", "darkmoor_cantrip")
-            ):
-                quester.quest_party_battle_started_at = None
-                return
-
-            if not await quester.in_battle():
-                quester.quest_party_battle_started_at = None
-                for hitter in getattr(quester, "quest_party_hitters", []):
-                    hitter.quest_party_battle_sync_state = None
-                return
-
-            loop = asyncio.get_running_loop()
-            if quester.quest_party_battle_started_at is None:
-                quester.quest_party_battle_started_at = loop.time()
-                return
-
-            # Give the normal duel-circle join path a short chance first.
-            if loop.time() - quester.quest_party_battle_started_at < 1.0:
-                return
-
-            party = current_quest_party(getattr(quester, "hotkey_quest_clients", None))
-            assigned_hitters = [
-                hitter
-                for hitter, assigned_quester in party.hitter_assignments
-                if assigned_quester is quester
-            ]
-            quester_zone = await quester.zone_name()
-            dungeon_state = getattr(quester, "quest_dungeon_recovery", None)
-            in_confirmed_dungeon = bool(quester_zone) and (
-                getattr(quester, "quest_party_group_dungeon_zone", None) == quester_zone
-                or isinstance(dungeon_state, dict)
-                and dungeon_state.get("zone") == quester_zone
+        async def battle_entry_context(client, source):
+            return (
+                await source.duel.duel_id_full(),
+                frozenset(id(c) for c in combat_group_for(source)),
+                tuple([(await c.zone_name(), await c.quest_id(), await c.goal_id(),
+                       id(getattr(c, "quest_party_status_session", None)),
+                       id(getattr(c, "quest_party_quester", None)),
+                       getattr(c, 'quest_party_battle_entry_generation', 0))
+                      for c in (client, source)]),
             )
-            for hitter in assigned_hitters:
-                if (
-                    hitter not in walker.clients
-                    or not hitter.questing_status
-                    or await hitter.in_battle()
-                    or await hitter.is_loading()
-                    or getattr(hitter, "quest_party_battle_rescue_active", False)
-                    or getattr(hitter, "quest_party_target_sync_active", False)
-                    or getattr(hitter, 'post_combat_cleanup_active', False)
-                    or getattr(hitter, "post_combat_movement_active", False)
-                    or getattr(hitter, "refilling_potions", False)
-                    or isinstance(
-                        getattr(hitter, "potion_dungeon_returned", None), tuple
-                    )
-                    or isinstance(getattr(hitter, "quest_recovery_owner", None), str)
-                    or loop.time()
-                    - getattr(hitter, "quest_party_battle_rescue_at", 0.0)
-                    < 2.0
-                    or await hitter.zone_name() != quester_zone
-                    or (
-                        in_confirmed_dungeon
-                        and (
-                            getattr(hitter, "quest_party_battle_sync_state", None)
-                            not in ("success", "failed")
-                            or not await clients_share_live_area(quester, hitter)
-                        )
-                    )
-                ):
+
+        async def battle_entry_snapshot(client, source, target):
+            # Metadata failures must never change the existing normal TP.
+            try:
+                context = await battle_entry_context(client, source)
+                if not context[0] or context[2][0][0] != context[2][1][0]:
+                    return None
+                return dict(source=source, context=context,
+                            target=XYZ(target.x, target.y, target.z),
+                            original=client.original_location_before_combat,
+                            attempts=0, next_at=0.0, normal_tp_active=False)
+            except Exception:
+                return None
+
+        def remember_battle_entry(client, snapshot):
+            if snapshot is None:
+                return
+            for member, context in zip((client, snapshot['source']), snapshot['context'][2]):
+                if (not member.questing_status
+                        or getattr(member, 'quest_party_battle_entry_generation', 0) != context[5]):
+                    return
+            old = getattr(client, "quest_party_battle_entry_recovery", None)
+            # Preserve the cap even if another member of the same fight pulls
+            # this client again. Source coordinates are still the actual TP.
+            if (isinstance(old, dict)
+                    and old['context'][:2] == snapshot['context'][:2]
+                    and old['context'][2][0] == snapshot['context'][2][0]):
+                for key in ('attempts', 'next_at', 'normal_tp_at'):
+                    snapshot[key] = old[key]
+            else:
+                snapshot['normal_tp_at'] = asyncio.get_running_loop().time()
+            client.quest_party_battle_entry_recovery = snapshot
+
+        async def rescue_missing_party_hitters(quester: Client):
+            """Bounded retry only for a completed, unconfirmed normal battle TP."""
+            loop = asyncio.get_running_loop()
+            for hitter in list(walker.clients):
+                state = getattr(hitter, "quest_party_battle_entry_recovery", None)
+                if not isinstance(state, dict) or state['source'] is not quester:
                     continue
 
-                if not claim_quest_recovery(hitter, "party_battle"):
+                async def entry_pending():
+                    try:
+                        valid = (
+                            hitter.quest_party_battle_entry_recovery is state
+                            and client_available(hitter, walker.clients)
+                            and client_available(quester, walker.clients)
+                            and hitter.questing_status and quester.questing_status
+                            and any(c is hitter for c in combat_group_for(quester))
+                            and await quester.in_battle()
+                            and not await hitter.in_battle()
+                            and await battle_entry_context(hitter, quester) == state['context']
+                        )
+                    except Exception:
+                        # An unreadable frame is not proof of a new fight;
+                        # retain the retry cap while cancelling this action.
+                        return False
+                    if not valid and hitter.quest_party_battle_entry_recovery is state:
+                        hitter.quest_party_battle_entry_recovery = None
+                    return valid
+
+                async def ready():
+                    if state['normal_tp_active']:
+                        return False
+                    for client in (quester, hitter):
+                        if (await client.is_loading()
+                                or getattr(client, 'in_solo_zone', False)
+                                or any(getattr(client, attr, False) for attr in (
+                                    'quest_party_probe_pending', 'bumbles_pet_pending',
+                                    'outback_story_pending', 'refilling_potions',
+                                    'quest_party_target_sync_active', 'post_combat_cleanup_active',
+                                    'post_combat_movement_active'))
+                                or isinstance(getattr(client, 'potion_dungeon_returned', None), tuple)
+                                or getattr(client, 'quest_recovery_owner', None)
+                                not in (None, 'party_battle' if client is hitter else None)):
+                            return False
+                    if getattr(hitter, 'quest_party_battle_sync_state', None) == 'trying':
+                        return False
+                    zone = state['context'][2][1][0]
+                    dungeon = getattr(quester, 'quest_dungeon_recovery', None)
+                    if (getattr(quester, 'quest_party_group_dungeon_zone', None) == zone
+                            or isinstance(dungeon, dict) and dungeon.get('zone') == zone):
+                        return await clients_share_live_area(quester, hitter)
+                    return True
+
+                if not await entry_pending():
+                    continue
+                if (state['normal_tp_active'] or state['attempts'] >= 2
+                        or loop.time() - state['normal_tp_at'] < 7.0
+                        or loop.time() < state['next_at']
+                        or getattr(hitter, 'quest_party_battle_rescue_active', False)
+                        or not await ready()):
+                    continue
+                if not claim_quest_recovery(hitter, 'party_battle'):
                     continue
 
                 hitter.quest_party_battle_rescue_active = True
                 hitter.quest_party_battle_rescue_at = loop.time()
-                saved_original_position = False
-                recovery_join_started = False
-                try:
-                    logger.info(
-                        f"打手 {hitter.title} 未进入 {quester.title} 的战斗，"
-                        "正在执行入战恢复。"
-                    )
-                    original_position = await hitter.body.position()
-                    if hitter.process_id not in original_client_locations:
-                        original_client_locations[hitter.process_id] = original_position
-                        saved_original_position = True
-                    return_position = await quester.body.position()
-                    await hitter.teleport(XYZ(0.0, 0.0, -10000.0))
-                    await hitter.send_key(key=Keycode.A, seconds=0.25)
-                    await hitter.send_key(key=Keycode.D, seconds=0.25)
+                join_started = False
+                attempt_started = False
+                action = watcher = None
 
-                    if await quester.in_battle() and not await hitter.in_battle():
+                async def reset_entry():
+                    nonlocal join_started, attempt_started
+                    async with automation_owner(hitter, 'party-battle-entry'):
+                        if not await entry_pending() or not await ready():
+                            return
+                        state['attempts'] += 1
+                        attempt_started = True
+                        logger.debug(f"{hitter.title} 战斗 TP 后仍未入战，准备执行远点重置。")
                         hitter.entity_detect_combat_status = True
                         hitter.just_entered_combat = time.time()
                         hitter.client_being_helped = quester
-                        recovery_join_started = True
+                        hitter.original_location_before_combat = state['original']
+                        original_client_locations[hitter.process_id] = state['original']
                         if hitter not in quester.helper_clients:
                             quester.helper_clients.append(hitter)
+                        join_started = True
+                        await hitter.teleport(XYZ(0.0, 0.0, -10000.0))
+                        logger.debug(f"{hitter.title} TP 至 XYZ(0,0,-10000)，准备返回战斗点。")
+                        await asyncio.sleep(0.3)
+                        if not await entry_pending() or not await ready():
+                            return
+                        await hitter.teleport(state['target'])
+                        deadline = loop.time() + 3.0
+                        while loop.time() < deadline and await entry_pending() and await ready():
+                            await asyncio.sleep(0.1)
 
-                    # Always leave the recovery coordinate again, even if the
-                    # battle happened to end during the A/D movement.
-                    if not await hitter.in_battle():
-                        await hitter.teleport(return_position)
+                async def watch_entry():
+                    while await entry_pending() and await ready():
+                        await asyncio.sleep(0.1)
 
-                    if recovery_join_started:
-                        entry_deadline = loop.time() + 3.0
-                        while (
-                            loop.time() < entry_deadline
-                            and await quester.in_battle()
-                            and not await hitter.in_battle()
-                        ):
-                            await asyncio.sleep(0.25)
-
-                        if not await hitter.in_battle():
-                            hitter.just_entered_combat = None
-                            hitter.entity_detect_combat_status = False
-                            hitter.client_being_helped = None
-                            if hitter in quester.helper_clients:
-                                quester.helper_clients.remove(hitter)
-                            if saved_original_position:
-                                original_client_locations.pop(hitter.process_id, None)
-                            logger.warning(
-                                f"打手 {hitter.title} 本次入战恢复未进入战斗，"
-                                "稍后将再次尝试。"
-                            )
-                    elif saved_original_position:
-                        original_client_locations.pop(hitter.process_id, None)
+                try:
+                    action = asyncio.create_task(reset_entry())
+                    watcher = asyncio.create_task(watch_entry())
+                    await asyncio.wait((action, watcher), return_when=asyncio.FIRST_COMPLETED)
+                    for task in (action, watcher):
+                        if not task.done():
+                            task.cancel()
+                    results = await gather_owned(action, watcher, return_exceptions=True)
+                    for result in results:
+                        if isinstance(result, Exception):
+                            logger.debug(f"{hitter.title} 入战恢复中断：{result}")
                 except asyncio.CancelledError:
-                    hitter.just_entered_combat = None
-                    hitter.entity_detect_combat_status = False
-                    hitter.client_being_helped = None
-                    if hitter in quester.helper_clients:
-                        quester.helper_clients.remove(hitter)
-                    try:
-                        if not await hitter.in_battle():
-                            await asyncio.shield(
-                                hitter.teleport(await quester.body.position())
-                            )
-                    except Exception:
-                        pass
-                    finally:
-                        if saved_original_position:
-                            original_client_locations.pop(hitter.process_id, None)
+                    if hitter.quest_party_battle_entry_recovery is state:
+                        hitter.quest_party_battle_entry_recovery = None
                     raise
-                except Exception as exc:
-                    hitter.just_entered_combat = None
-                    hitter.entity_detect_combat_status = False
-                    hitter.client_being_helped = None
-                    if hitter in quester.helper_clients:
-                        quester.helper_clients.remove(hitter)
-                    try:
-                        if not await hitter.in_battle():
-                            await hitter.teleport(await quester.body.position())
-                    except Exception:
-                        logger.debug(f"打手 {hitter.title} 暂时无法离开入战恢复坐标。")
-                    if saved_original_position:
-                        original_client_locations.pop(hitter.process_id, None)
-                    logger.warning(
-                        f"打手 {hitter.title} 入战恢复暂未成功，将稍后重试：{exc}"
-                    )
                 finally:
+                    for task in (action, watcher):
+                        if task is not None and not task.done():
+                            task.cancel()
+                    await gather_owned(*[t for t in (action, watcher) if t is not None],
+                                       return_exceptions=True)
+                    try:
+                        joined = await hitter.in_battle()
+                    except Exception:
+                        joined = False
+                    if joined:
+                        if attempt_started:
+                            logger.info(f"{hitter.title} 远点重置后成功加入战斗。")
+                        if hitter.quest_party_battle_entry_recovery is state:
+                            hitter.quest_party_battle_entry_recovery = None
+                    elif join_started:
+                        hitter.just_entered_combat = None
+                        hitter.entity_detect_combat_status = False
+                        hitter.client_being_helped = None
+                        hitter.original_location_before_combat = None
+                        if hitter in quester.helper_clients:
+                            quester.helper_clients.remove(hitter)
+                        original_client_locations.pop(hitter.process_id, None)
+                    if (not joined and attempt_started
+                            and hitter.quest_party_battle_entry_recovery is state):
+                        state['next_at'] = loop.time() + 2.0
+                        if state['attempts'] >= 2:
+                            logger.warning(f"{hitter.title} 多次入战恢复失败，停止本次特殊恢复。")
+                        else:
+                            logger.warning(f"{hitter.title} 远点重置后仍未加入战斗，重试 {state['attempts']}/2。")
                     hitter.quest_party_battle_rescue_active = False
-                    release_quest_recovery(hitter, "party_battle")
+                    release_quest_recovery(hitter, 'party_battle')
+
 
         async def detect_combat(p: Client):
             global original_client_locations
@@ -3595,11 +3618,15 @@ async def main():
                                                             + " - teleporting client "
                                                             + c.title
                                                         )
+                                                        previous_entry = getattr(c, 'quest_party_battle_entry_recovery', None)
+                                                        if isinstance(previous_entry, dict):
+                                                            previous_entry['normal_tp_active'] = True
                                                         try:
+                                                            entry_snapshot = await battle_entry_snapshot(c, p, duel_circle_xyz)
                                                             await c.teleport(
                                                                 duel_circle_xyz
                                                             )
-                                                            # just_entered_combat = True
+                                                            remember_battle_entry(c, entry_snapshot)
                                                         except ValueError:
                                                             c.just_entered_combat = None
                                                             c.entity_detect_combat_status = False
@@ -3608,6 +3635,9 @@ async def main():
                                                             if c in p.helper_clients:
                                                                 p.helper_clients.remove(c)
                                                             original_client_locations.pop(c.process_id, None)
+                                                        finally:
+                                                            if isinstance(previous_entry, dict):
+                                                                previous_entry['normal_tp_active'] = False
                                 helper_clients = []
 
                             else:
@@ -3662,12 +3692,12 @@ async def main():
             while True:
                 await asyncio.sleep(0.25)
                 try:
-                    if (
-                        quest_party_enabled
-                        and quester.questing_status
-                        and quester in current_quest_party().questers
-                    ):
-                        await rescue_missing_party_hitters(quester)
+                    available = client_available(quester, walker.clients)
+                    if not available:
+                        quester.quest_party_battle_entry_recovery = None
+                    await rescue_missing_party_hitters(quester)
+                    if not available:
+                        return
                 except Exception as exc:
                     logger.debug(f"入战恢复检查暂不可用：{exc}")
 
@@ -3936,6 +3966,8 @@ async def main():
         client.quest_party_battle_started_at = None
         client.quest_party_battle_rescue_active = False
         client.quest_party_battle_rescue_at = 0.0
+        client.quest_party_battle_entry_recovery = None
+        client.quest_party_battle_entry_generation = 0
         client.quest_party_battle_sync_state = None
         client.post_combat_movement_active = False
         client.post_combat_cleanup_active = False

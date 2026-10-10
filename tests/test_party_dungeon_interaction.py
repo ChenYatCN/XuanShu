@@ -343,6 +343,115 @@ class PartyDungeonInteractionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.p1.send_key.await_count, 2)
         self.assertEqual(self.p2.send_key.await_count, 2)
 
+    async def test_unchanged_shared_exit_can_retry_once_after_checked_wait(self):
+        self.p1.send_key.side_effect = self.p2.send_key.side_effect = None
+        await self.quester.handle_party_dungeon_interaction(self.target)
+        self.now = 2.5
+        await self.quester.handle_party_dungeon_interaction(self.target)
+        self.p1.send_key.assert_awaited_once()
+        self.now = 4
+        await self.quester.handle_party_dungeon_interaction(self.target)
+        self.assertEqual(self.p1.send_key.await_count, 2)
+        self.assertEqual(self.p2.send_key.await_count, 2)
+        for _ in range(5):
+            self.now += 4
+            await self.quester.handle_party_dungeon_interaction(self.target)
+        self.assertEqual(self.p1.send_key.await_count, 2)
+        self.assertEqual(self.p2.send_key.await_count, 2)
+
+    async def test_automatic_source_room_landing_then_checked_x_joins_party(self):
+        self.automatic_transition()
+        self.prompt, self.title = '按下 X 离开', '传送器'
+        self.p1.quest_position.position.return_value = XYZ(99999, 99999, 0)
+        with patch('src.questing.collision_tp', AsyncMock()) as move:
+            await self.regroup()
+        move.assert_awaited_once_with(self.p2, self.target)
+        self.p2.send_key.assert_awaited_once_with(Keycode.X, .1)
+        self.p1.send_key.assert_not_awaited()
+        self.p1.quest_position.position.assert_not_awaited()
+        self.assertIsNone(self.p1.quest_party_dungeon_interaction)
+
+    async def test_group_retry_does_not_replay_in_replaced_source_instance(self):
+        self.p1.send_key.side_effect = self.p2.send_key.side_effect = None
+        await self.quester.handle_party_dungeon_interaction(self.target)
+        self.now = 4
+        self.p1._party_area_generation = 1
+        await self.quester.handle_party_dungeon_interaction(self.target)
+        self.p1.send_key.assert_awaited_once()
+        self.p2.send_key.assert_awaited_once()
+
+    async def test_group_retry_rechecks_source_instance_after_waiting_for_input_lock(self):
+        self.p1.send_key.side_effect = self.p2.send_key.side_effect = None
+        await self.quester.handle_party_dungeon_interaction(self.target)
+        self.now = 4
+        from src.automation_ownership import automation_owner
+        async with automation_owner(self.p2, 'test-held'):
+            task = asyncio.create_task(self.quester.handle_party_dungeon_interaction(self.target))
+            await self.real_sleep(.02)
+            self.p2._party_area_generation = 1
+        await asyncio.wait_for(task, 1)
+        self.p1.send_key.assert_awaited_once()
+        self.p2.send_key.assert_awaited_once()
+        self.assertFalse(self.p1.quest_party_target_sync_active)
+        self.assertFalse(self.p2.quest_party_target_sync_active)
+
+    async def test_source_landing_x_is_cancelled_for_loading_new_quest_instance_or_world_gate(self):
+        for change in ('loading', 'quest', 'instance', 'stopped', 'world_gate', 'unknown'):
+            with self.subTest(change=change):
+                self.setUp()
+                self.automatic_transition()
+                self.prompt, self.title = '按下 X 离开', '传送器'
+                async def invalidate(*_):
+                    if change == 'loading':
+                        self.p2.is_loading.return_value = True
+                    elif change == 'quest':
+                        self.identity = (100, 8)
+                    elif change == 'instance':
+                        self.p2._party_area_generation = 1
+                    elif change == 'stopped':
+                        self.p2.questing_status = False
+                    elif change == 'world_gate':
+                        self.title = '世界之门'
+                    else:
+                        self.prompt = '按 X 未知动作'
+                with patch('src.questing.collision_tp', AsyncMock(side_effect=invalidate)):
+                    await self.quester._resume_party_dungeon_interaction(self.p2)
+                self.p2.send_key.assert_not_awaited()
+                self.p1.send_key.assert_not_awaited()
+                self.assertFalse(self.p2.quest_party_target_sync_active)
+
+    async def test_source_landing_x_has_only_two_attempts_before_sync_wait(self):
+        self.automatic_transition()
+        self.prompt, self.title = '按下 X 离开', '传送器'
+        self.p2.send_key.side_effect = None
+        with patch('src.questing.collision_tp', AsyncMock()):
+            for _ in range(10):
+                await self.quester._resume_party_dungeon_interaction(self.p2)
+                self.now += 2
+        self.assertEqual(self.p2.send_key.await_count, 2)
+        self.p1.send_key.assert_not_awaited()
+
+    async def test_both_party_labels_handle_local_exit_before_more_movement(self):
+        self.prepare_solo_worker()
+        self.p1.quest_party_dungeon_interaction = None
+        self.visible.side_effect = lambda _, path: path == npc_range_path
+        self.prompt, self.title = '按下 X 离开', '传送器'
+        self.quester.teleport_party_to_quest_target = AsyncMock(return_value=True)
+        other = self.member('unassigned')
+        with patch('src.questing.interaction_kind', return_value='interact'):
+            for titles in (('p1', 'p2'), ('p3', 'p4')):
+                self.p1.title, self.p2.title = titles
+                self.p1.zone_name.return_value = self.p2.zone_name.return_value = self.source
+                self.p1.quest_party_dungeon_interaction = None
+                self.p1.send_key.reset_mock()
+                self.p2.send_key.reset_mock()
+                await self.quester.auto_quest_solo()
+                self.p1.send_key.assert_awaited_once_with(Keycode.X, .1)
+                self.p2.send_key.assert_awaited_once_with(Keycode.X, .1)
+        self.quester.teleport_party_to_quest_target.assert_not_awaited()
+        self.quester._resume_party_dungeon_interaction.assert_not_awaited()
+        other.send_key.assert_not_awaited()
+
     async def test_changed_landing_context_prevents_old_input(self):
         self.p1.quest_party_shared_target = {'zone': self.source, 'identity': (99, 6), 'xyz': self.target}
         await self.quester.handle_party_dungeon_interaction(self.target)

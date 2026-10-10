@@ -51,6 +51,7 @@ class QuestTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         apply_roles(True)
         self.assertEqual(quester.quest_party_hitters, [hitter])
+        generation = hitter.quest_party_battle_entry_generation
         self.assertIs(hitter.quest_party_quester, quester)
         for client in clients:
             client.quest_party_observed_zone = 'old zone'
@@ -59,6 +60,7 @@ class QuestTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             client.quest_party_battle_started_at = 10.0
             client.quest_party_battle_rescue_active = True
             client.quest_party_battle_rescue_at = 20.0
+            client.quest_party_battle_entry_recovery = {'attempts': 2}
             client.quest_party_battle_sync_state = 'failed'
             client.quest_party_solo_gear_active = True
             client.in_solo_zone = True
@@ -75,6 +77,7 @@ class QuestTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             client._quest_x_turn_failed = ('old quest',)
             client._npc_complete_state = {'attempts': 3}
         apply_roles(False)
+        self.assertGreater(hitter.quest_party_battle_entry_generation, generation)
         for client in clients:
             self.assertFalse(client.questing_status)
             self.assertEqual(client.quest_party_hitters, [])
@@ -95,6 +98,7 @@ class QuestTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(client.quest_party_probe_pending)
             self.assertIsNone(client.quest_party_probe_wait)
             self.assertFalse(client.quest_party_battle_rescue_active)
+            self.assertIsNone(client.quest_party_battle_entry_recovery)
             self.assertIsNone(client.quest_party_battle_sync_state)
             self.assertFalse(client.in_solo_zone)
 

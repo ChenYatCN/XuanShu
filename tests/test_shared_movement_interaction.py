@@ -101,6 +101,56 @@ class SharedMovementInteractionTests(unittest.IsolatedAsyncioTestCase):
         self.peer.body.position.assert_not_awaited()
         self.proof.assert_not_awaited()
 
+    async def test_ordinary_local_objects_precede_probe_for_both_pairs(self):
+        for leader, hitter in (('p1', 'p2'), ('p3', 'p4')):
+            for prompt, objective, title in (
+                    ('Press X to Collect', 'Collect Hourglass in Area', 'Hourglass'),
+                    ('Press X to Use', 'Use Lever in Area', 'Lever'),
+                    ('Press X to Open', 'Open Chest in Area', 'Chest')):
+                with self.subTest(pair=leader, prompt=prompt):
+                    self.west_time_dune()
+                    self.client.title, self.peer.title = leader, hitter
+                    self.client.quest_party_group_dungeon_zone = None
+                    self.client.quest_party_probe_pending = True
+                    self.client.quest_interaction_attempt = None
+                    self.client._quest_x_turn_failed = None
+                    self.prompt, self.objective, self.popup_title = prompt, objective, title
+                    self.peer.is_loading.return_value = True
+                    self.probe.return_value = True
+                    self.probe.reset_mock()
+                    self.client.send_key.reset_mock()
+                    await self.quester.auto_quest_solo()
+                    self.client.send_key.assert_awaited_once_with(Keycode.X, .1)
+                    self.peer.send_key.assert_not_awaited()
+                    self.probe.assert_not_awaited()
+                    self.tp.assert_not_awaited()
+                    self.proof.assert_not_awaited()
+
+    async def test_ordinary_unmatched_mechanism_still_waits_for_probe(self):
+        self.west_time_dune()
+        self.client.quest_party_group_dungeon_zone = None
+        self.client.quest_party_probe_pending = True
+        self.prompt, self.popup_title = 'Press X to Use', 'Unrelated Lever'
+        self.probe.return_value = True
+        await self.quester.auto_quest_solo()
+        self.probe.assert_awaited_once()
+        self.client.send_key.assert_not_awaited()
+
+    async def test_local_collection_pending_feedback_is_not_owned_by_hitter_probe(self):
+        self.west_time_dune()
+        self.client.quest_party_group_dungeon_zone = None
+        self.client.quest_party_probe_pending = True
+        self.probe.return_value = True
+        await self.quester.auto_quest_solo()
+        state = self.client.quest_interaction_attempt
+        self.assertTrue(state['local_only'])
+        with patch.object(self.quester, '_recover_quest_x_direction', AsyncMock(return_value=True)) as retry:
+            state['next_at'] = 0
+            await self.quester.auto_quest_solo()
+        retry.assert_awaited_once_with(self.client, state)
+        self.probe.assert_not_awaited()
+        self.peer.send_key.assert_not_awaited()
+
     async def test_unknown_empty_hidden_far_or_loading_prompt_never_skips_probe_or_sends_x(self):
         for event in ('unknown', 'empty', 'hidden', 'far', 'loading', 'battle'):
             with self.subTest(event=event):

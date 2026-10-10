@@ -954,6 +954,7 @@ async def prepare_potion_dungeon_return(client: Client, zone: str, require_snaps
     quester = getattr(client, 'quest_party_quester', None)
     if quester is not None:
         peers.append(quester)
+    client.potion_return_context['peer_ids'] = tuple(id(peer) for peer in peers)
     peer_areas = {}
     for peer in peers:
         if not getattr(peer, 'refilling_potions', False) and await clients_share_live_area(client, peer):
@@ -1057,7 +1058,8 @@ async def return_to_dungeon_after_potions(client: Client, original_zone: str) ->
     next_tp_at = 0.0
     peers = [getattr(client, 'quest_party_quester', None),
              *getattr(client, 'quest_party_hitters', [])]
-    # Only follow this party's peers that were proved present before departure.
+    # Departure proof allows room catch-up. Without it, only fresh live
+    # presence of an unchanged assigned peer can validate the returned scene.
     peers = [peer for peer in peers if peer is not None and peer is not client]
     while time.monotonic() < deadline:
         if getattr(client, 'questing_status', True) is False:
@@ -1069,6 +1071,8 @@ async def return_to_dungeon_after_potions(client: Client, original_zone: str) ->
         snapshot = None
         peer = None
         peer_states = []
+        current_peers = [getattr(client, 'quest_party_quester', None),
+                         *getattr(client, 'quest_party_hitters', [])]
         for candidate in peers:
             candidate_state = {
                 'title': getattr(candidate, 'title', 'unknown'),
@@ -1077,17 +1081,28 @@ async def return_to_dungeon_after_potions(client: Client, original_zone: str) ->
                 'refilling': bool(getattr(candidate, 'refilling_potions', False)),
                 'solo': bool(getattr(candidate, 'in_solo_zone', False)),
                 'loading': None, 'zone': None,
+                'assigned': any(p is candidate for p in current_peers),
+                'recorded_peer': id(candidate) in context.get('peer_ids', ()),
+                'live_proof': False,
             }
-            if candidate_state['departure_proof']:
+            if (candidate_state['assigned']
+                    and (candidate_state['departure_proof'] or candidate_state['recorded_peer'])):
                 try:
                     candidate_state.update(loading=await candidate.is_loading(), zone=await candidate.zone_name())
                 except Exception as exc:
                     candidate_state.update(loading=True, read_error=str(exc))
             peer_states.append(candidate_state)
-            if (peer is None and candidate_state['departure_proof']
+            if (peer is None and candidate_state['assigned']
+                    and (candidate_state['departure_proof'] or candidate_state['recorded_peer'])
                     and candidate_state['questing'] and not candidate_state['refilling']
                     and not candidate_state['solo'] and not candidate_state['loading']):
-                peer = candidate
+                if candidate_state['departure_proof']:
+                    peer = candidate
+                elif (not await client.is_loading()
+                        and candidate_state['zone'] == await client.zone_name()
+                        and await clients_share_live_area(client, candidate)):
+                    candidate_state['live_proof'] = True
+                    peer = candidate
         target_zone = await peer.zone_name() if peer is not None else original_zone
         current_zone = await client.zone_name()
         loading = await client.is_loading()
@@ -1185,6 +1200,11 @@ async def return_to_dungeon_after_potions(client: Client, original_zone: str) ->
                     state['condition'] = 'same_instance_unproved'
                     snapshot = None
         if snapshot is not None:
+            if peer is not None and not any(p is peer for p in (
+                    getattr(client, 'quest_party_quester', None),
+                    *getattr(client, 'quest_party_hitters', []))):
+                record_validation(dict(state, condition='peer_assignment_changed'), terminal=True)
+                return False
             stable_reads += 1
             state['condition'] = 'stable_return'
             if stable_reads >= 3:
@@ -1192,6 +1212,11 @@ async def return_to_dungeon_after_potions(client: Client, original_zone: str) ->
                     context['zone'] = current_zone
                     context['zone_id'] = after_id
                     context['returned_snapshot'] = snapshot
+                    if peer is not None and state['same_instance'] == 'live_area':
+                        try:
+                            context.setdefault('peer_areas', {})[id(peer)] = await _party_area_token(peer)
+                        except Exception:
+                            pass
                     try:
                         await observe_party_area(client)
                         context['returned_area_token'] = await _party_area_token(client)
@@ -1322,7 +1347,15 @@ async def buy_potions(client: Client, recall: bool = True, original_zone=None, d
             # Resume availability is live evidence even for an unclassified map.
             for attempt in range(2):
                 use_dungeon_return = dungeon_return or getattr(client, '_xuanshu_dungeon_closed', False)
-                if (not use_dungeon_return and hasattr(client, 'root_window')
+                context = getattr(client, 'potion_return_context', None)
+                saved_dungeon = context.get('dungeon_state') if isinstance(context, dict) else None
+                departed_dungeon = (isinstance(context, dict) and context.get('zone') == original_zone
+                    and (context.get('group_zone') == original_zone
+                         or isinstance(saved_dungeon, dict) and saved_dungeon.get('zone') == original_zone))
+                # An available resume button can refer to an older dungeon
+                # even when this refill departed an ordinary hub with a mark.
+                if (not use_dungeon_return and (departed_dungeon or attempt > 0)
+                        and hasattr(client, 'root_window')
                         and not await client.is_loading() and not await client.in_battle()):
                     button = await get_window_from_path(client.root_window, dungeon_recall_path)
                     use_dungeon_return = bool(button and await button.is_visible()
@@ -2061,6 +2094,7 @@ async def select_quest_from_questbook(
 
 
 async def get_popup_title(client: Client) -> Optional[str]:
+    client._quest_popup_title_read_error = None
     try:
         if not await is_visible_by_path(client, popup_title_path):
             return None
@@ -2069,8 +2103,9 @@ async def get_popup_title(client: Client) -> Optional[str]:
             return None
         popup_str = await read_control_text(popup_window)
         return popup_str.replace("<center>", "").replace("</center>", "")
-    except (wizwalker.errors.MemoryReadError, ValueError, UnicodeError):
+    except (wizwalker.errors.MemoryReadError, ValueError, UnicodeError) as exc:
         # The popup can be replaced between visibility and text reads.
+        client._quest_popup_title_read_error = f'{type(exc).__name__}: {exc}'
         return None
 
 

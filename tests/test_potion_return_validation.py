@@ -73,6 +73,80 @@ class PotionReturnValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.client.potion_return_context['returned_snapshot'], (42, 8, 'Defeat boss'))
         self.assertTrue(await utils.clients_share_live_area(self.client, self.peer))
 
+    async def test_ordinary_departure_uses_valid_mark_before_stale_dungeon_resume(self):
+        self.client.stats = SimpleNamespace(potion_max=AsyncMock(return_value=0),
+                                           potion_charge=AsyncMock(return_value=0))
+        self.client.potion_return_context = dict(zone='Khrysalis/KR_Z00_Hub', snapshot=(42, 8, 'Defeat boss'),
+                                                zone_id=321, group_zone=None, dungeon_state=None)
+        with patch.object(utils, 'recall_to_teleport_mark', AsyncMock(return_value=True)) as mark, \
+             patch.object(utils, 'return_to_dungeon_after_potions', AsyncMock(return_value=True)) as resume:
+            self.assertTrue(await utils.buy_potions(self.client, original_zone='Khrysalis/KR_Z00_Hub'))
+        mark.assert_awaited_once_with(self.client, expected_zone='Khrysalis/KR_Z00_Hub')
+        resume.assert_not_awaited()
+
+    async def test_fresh_live_peer_can_verify_return_without_departure_room_proof(self):
+        original = 'Khrysalis/KR_Z00_Hub'
+        self.client.zone_name.return_value = original
+        self.client.quest_party_group_dungeon_zone = None
+        self.client.area.zone_id.return_value = 321
+        self.assertTrue(await utils.prepare_potion_dungeon_return(self.client, original))
+        self.assertNotIn(id(self.peer), self.client.potion_return_context['peer_areas'])
+        self.client.zone_name.return_value = 'WizardCity/WC_Hub'
+        self.client.area.zone_id.return_value = 123
+        self.entities.return_value = [SimpleNamespace(global_id_full=AsyncMock(return_value=22))]
+        self.assertTrue(await utils.return_to_dungeon_after_potions(self.client, original))
+        self.assertEqual(self.last_validation()['target_zone'], self.ZONE)
+        self.assertEqual(self.last_validation()['same_instance'], 'live_area')
+        self.assertTrue(await utils.clients_share_live_area(self.client, self.peer))
+        self.tp.assert_not_awaited()
+
+    async def test_missing_departure_proof_cannot_accept_same_name_without_live_instance(self):
+        original = 'Khrysalis/KR_Z00_Hub'
+        self.client.potion_return_context.update(zone=original, zone_id=321,
+            peer_areas={}, peer_ids=(id(self.peer),), group_zone=None)
+        self.assertFalse(await utils.return_to_dungeon_after_potions(self.client, original))
+        self.assertNotIn('returned_snapshot', self.client.potion_return_context)
+        self.assertIsNone(self.last_validation()['peer'])
+        self.tp.assert_not_awaited()
+
+    async def test_reassigned_peer_cannot_supply_return_proof(self):
+        original = 'Khrysalis/KR_Z00_Hub'
+        self.client.potion_return_context.update(zone=original, zone_id=321,
+            peer_areas={}, peer_ids=(id(self.peer),), group_zone=None)
+        self.client.quest_party_hitters = []
+        self.entities.return_value = [SimpleNamespace(global_id_full=AsyncMock(return_value=22))]
+        self.assertFalse(await utils.return_to_dungeon_after_potions(self.client, original))
+        self.assertNotIn('returned_snapshot', self.client.potion_return_context)
+        self.assertIsNone(self.last_validation()['peer'])
+        self.tp.assert_not_awaited()
+
+    async def test_peer_reassigned_during_final_live_read_cannot_complete_return(self):
+        original = 'Khrysalis/KR_Z00_Hub'
+        self.client.potion_return_context.update(zone=original, zone_id=321,
+            peer_areas={}, peer_ids=(id(self.peer),), group_zone=None)
+        reads = 0
+        async def proof(*_):
+            nonlocal reads
+            reads += 1
+            if reads == 6:
+                self.client.quest_party_hitters = []
+            return True
+        with patch.object(utils, 'clients_share_live_area', AsyncMock(side_effect=proof)):
+            self.assertFalse(await utils.return_to_dungeon_after_potions(self.client, original))
+        self.assertNotIn('returned_snapshot', self.client.potion_return_context)
+        self.assertEqual(self.last_validation()['condition'], 'peer_assignment_changed')
+        self.tp.assert_not_awaited()
+
+    async def test_failed_ordinary_mark_can_still_try_resume_and_validate_it(self):
+        self.client.stats = SimpleNamespace(potion_max=AsyncMock(return_value=0),
+                                           potion_charge=AsyncMock(return_value=0))
+        self.client.potion_return_context.update(zone='Khrysalis/KR_Z00_Hub', group_zone=None)
+        with patch.object(utils, 'recall_to_teleport_mark', AsyncMock(return_value=False)) as mark, \
+             patch.object(utils, 'return_to_dungeon_after_potions', AsyncMock(return_value=True)) as resume:
+            self.assertTrue(await utils.buy_potions(self.client, original_zone='Khrysalis/KR_Z00_Hub'))
+        mark.assert_awaited_once()
+        resume.assert_awaited_once_with(self.client, 'Khrysalis/KR_Z00_Hub')
+
     async def test_returned_scene_changed_peer_token_cannot_confirm_instance(self):
         self.peer.area.read_base_address.return_value = 2002
         self.assertFalse(await utils.return_to_dungeon_after_potions(self.client, self.ZONE))

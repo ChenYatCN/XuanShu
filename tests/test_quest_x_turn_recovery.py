@@ -92,6 +92,68 @@ class QuestXTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.client.quest_interaction_attempt)
         self.client.teleport.assert_not_awaited()
 
+    async def test_failed_or_cancelled_first_send_does_not_arm_attempt(self):
+        for failure in (RuntimeError('input failed'), asyncio.CancelledError()):
+            with self.subTest(failure=type(failure).__name__):
+                self.client.quest_interaction_attempt = None
+                self.client.send_key.side_effect = failure
+                with self.assertRaises(type(failure)):
+                    await self.quester.handle_quest_interaction(self.client, self.target)
+                self.assertEqual(self.client.quest_interaction_attempt['attempts'], 0)
+                self.assertNotIn('sent_at', self.client.quest_interaction_attempt)
+                self.assertFalse(get_client_automation_ownership(self.client).locked)
+
+    async def test_new_named_object_releases_exhausted_context_without_rearming_same_object(self):
+        await self.first_x()
+        self.now = 4.0
+        await self.quester.handle_quest_interaction(self.client, self.target)
+        self.now += 60
+        with (patch('src.questing.get_popup_title', AsyncMock(return_value='Second Lever')),
+              patch('src.questing.get_quest_name', AsyncMock(return_value='Use Lever and Second Lever in Area'))):
+            await self.quester.handle_quest_interaction(self.client, self.target)
+        self.assertEqual(len(self.keys), 8)
+        self.assertEqual(self.keys[-1][0], Keycode.X)
+
+    async def test_disappeared_prompt_waits_for_delayed_progress_without_more_input(self):
+        await self.first_x()
+        self.range_visible = False
+        self.now = 4.0
+        await self.quester.handle_quest_interaction(self.client, self.target)
+        self.assertIsNotNone(self.client.quest_interaction_attempt)
+        self.text = 'Use Lever (1/2)'
+        self.now = 6.0
+        self.assertFalse(await self.quester.handle_quest_interaction(self.client, self.target))
+        self.assertEqual([key for key, _ in self.keys], [Keycode.X])
+        self.assertIsNone(self.client.quest_interaction_attempt)
+        self.assertIsNone(getattr(self.client, '_quest_x_turn_failed', None))
+
+    async def test_temporary_probe_preserves_sent_attempt_and_its_retry_cap(self):
+        self.client.quest_party_group_dungeon_zone = 'World/Area'
+        state = await self.first_x()
+        self.client.quest_party_probe_pending = True
+        self.now = 4.0
+        await self.quester.handle_quest_interaction(self.client, self.target)
+        self.assertIs(self.client.quest_interaction_attempt, state)
+        self.client.quest_party_probe_pending = False
+        await self.quester.handle_quest_interaction(self.client, self.target)
+        self.assertEqual([key for key, _ in self.keys], [Keycode.X] + [Keycode.A, Keycode.X] * 3)
+
+    async def test_pause_between_retries_preserves_three_turn_limit(self):
+        state = await self.first_x()
+        self.now = 4.0
+        def pause(code, seconds):
+            self.keys.append((code, self.now))
+            if code == Keycode.X:
+                self.client.quest_recovery_owner = 'other-recovery'
+        self.client.send_key.side_effect = pause
+        await self.quester._recover_quest_x_direction(self.client, state)
+        self.assertIs(self.client.quest_interaction_attempt, state)
+        self.client.quest_recovery_owner = None
+        self.client.send_key.side_effect = lambda code, seconds: self.keys.append((code, self.now))
+        self.now = 6.0
+        await self.quester.handle_quest_interaction(self.client, self.target)
+        self.assertEqual([key for key, _ in self.keys], [Keycode.X] + [Keycode.A, Keycode.X] * 3)
+
     async def test_first_x_progress_or_dialogue_never_turns(self):
         for event in ('quest', 'goal', 'count', 'dialogue'):
             with self.subTest(event=event):
@@ -172,7 +234,11 @@ class QuestXTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 self.client.quest_interaction_attempt = state
                 mutate()
                 await self.quester._recover_quest_x_direction(self.client, state)
-                self.assertIsNone(self.client.quest_interaction_attempt)
+                # Temporary ownership/menu guards preserve the completed first X.
+                if self.client.quest_recovery_owner or self.menu or not self.free and not self.dialogue:
+                    self.assertIs(self.client.quest_interaction_attempt, state)
+                else:
+                    self.assertIsNone(self.client.quest_interaction_attempt)
                 self.assertEqual(len(self.keys), 1)
 
     async def test_stop_during_turn_settle_never_sends_retry_x(self):
@@ -214,14 +280,18 @@ class QuestXTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(self.client.quest_interaction_attempt)
                 self.assertFalse(get_client_automation_ownership(self.client).locked)
 
-    async def test_missing_prompt_is_not_progress_and_cannot_start_infinite_rounds(self):
+    async def test_missing_prompt_waits_finitely_without_claiming_progress_or_more_x(self):
         await self.first_x()
         self.range_visible = False
         self.now = 4.0
         with patch('src.questing.logger.warning') as warning:
+            self.assertTrue(await self.quester.handle_quest_interaction(self.client, self.target))
+            warning.assert_not_called()
+            self.assertIsNotNone(self.client.quest_interaction_attempt)
+            self.now = 31.0
             self.assertFalse(await self.quester.handle_quest_interaction(self.client, self.target))
             warning.assert_called_once()
-        self.assertEqual([key for key, _ in self.keys], [Keycode.X, Keycode.A])
+        self.assertEqual([key for key, _ in self.keys], [Keycode.X])
         self.assertIsNone(self.client.quest_interaction_attempt)
 
     async def test_normal_talk_still_uses_existing_handler(self):
@@ -268,6 +338,14 @@ class QuestXTurnSoloIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call.args[0] for call in self.client.send_key.await_args_list],
                          [Keycode.X, Keycode.A, Keycode.X])
         self.assertIsNone(self.client.quest_interaction_attempt)
+
+    async def test_auto_iteration_keeps_sent_record_while_recovery_owns_input(self):
+        await self.quester.auto_quest_solo()
+        state = self.client.quest_interaction_attempt
+        self.client.quest_recovery_owner = 'potion-refill'
+        await self.quester.auto_quest_solo()
+        self.assertIs(self.client.quest_interaction_attempt, state)
+        self.client.send_key.assert_awaited_once()
 
     async def test_legacy_exhaustion_cannot_send_more_x_on_same_target(self):
         await self.quester.auto_quest_solo()

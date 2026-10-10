@@ -51,6 +51,12 @@ class FailedCombatEntryTests(unittest.IsolatedAsyncioTestCase):
         }
         exec(compile(ast.Module(body=[detector], type_ignores=[]),
                      'XuanShu.py', 'exec'), self.namespace)
+        helpers = [n for n in ast.walk(tree) if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))
+                   and n.name in ('battle_entry_context', 'battle_entry_snapshot', 'remember_battle_entry')]
+        self.namespace['XYZ'] = __import__('wizwalker').XYZ
+        self.namespace['asyncio'].get_running_loop = asyncio.get_running_loop
+        exec(compile(ast.Module(body=helpers, type_ignores=[]),
+                     'XuanShu.py', 'exec'), self.namespace)
 
     def client(self, title, pid):
         return ClientState(
@@ -194,6 +200,51 @@ class FailedCombatEntryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(self.helper.client_being_helped, self.quester)
         self.assertIn(self.helper, self.quester.helper_clients)
         self.assertEqual(self.locations[1], 'p1-safe')
+
+    def prepare_recovery_snapshot(self):
+        self.prepare_teleport()
+        target = self.namespace['XYZ'](10, 20, 30)
+        self.circle.return_value = (600, target)
+        for client in (self.helper, self.quester):
+            client.duel.duel_id_full = AsyncMock(return_value=77)
+            client.quest_id = AsyncMock(return_value=100)
+            client.goal_id = AsyncMock(return_value=1)
+        return target
+
+    async def test_completed_normal_tp_arms_exact_target_without_extra_tp(self):
+        target = self.prepare_recovery_snapshot()
+        async def normal_tp(position):
+            self.assertIsNone(getattr(self.helper, 'quest_party_battle_entry_recovery', None))
+        self.helper.teleport.side_effect = normal_tp
+        await self.detect_once(self.quester)
+        self.helper.teleport.assert_awaited_once_with(target)
+        state = self.helper.quest_party_battle_entry_recovery
+        self.assertIs(state['source'], self.quester)
+        self.assertEqual((state['target'].x, state['target'].y, state['target'].z), (10, 20, 30))
+        self.assertEqual(state['attempts'], 0)
+
+    async def test_rejected_normal_tp_cannot_arm_recovery(self):
+        self.prepare_recovery_snapshot()
+        self.helper.teleport.side_effect = ValueError('rejected')
+        await self.detect_once(self.quester)
+        self.assertIsNone(getattr(self.helper, 'quest_party_battle_entry_recovery', None))
+        self.assert_released()
+
+    async def test_metadata_read_failure_preserves_normal_tp(self):
+        target = self.prepare_recovery_snapshot()
+        self.quester.duel.duel_id_full.side_effect = RuntimeError('unavailable')
+        await self.detect_once(self.quester)
+        self.helper.teleport.assert_awaited_once_with(target)
+        self.assertIsNone(getattr(self.helper, 'quest_party_battle_entry_recovery', None))
+
+    async def test_stop_restart_during_normal_tp_cannot_arm_previous_run(self):
+        target = self.prepare_recovery_snapshot()
+        async def restart(position):
+            self.helper.quest_party_battle_entry_generation = 1
+        self.helper.teleport.side_effect = restart
+        await self.detect_once(self.quester)
+        self.helper.teleport.assert_awaited_once_with(target)
+        self.assertIsNone(getattr(self.helper, 'quest_party_battle_entry_recovery', None))
 
     async def test_shared_target_move_is_not_interrupted_by_duel_circle_pull(self):
         self.prepare_teleport()

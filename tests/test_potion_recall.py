@@ -230,6 +230,7 @@ class DungeonReturnTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unclassified_dungeon_prefers_available_red_button(self):
         client = SimpleNamespace(title='p1', questing_status=True,
+            potion_return_context={'zone': 'Dungeon/Unknown', 'group_zone': 'Dungeon/Unknown'},
             zone_name=AsyncMock(return_value='WizardCity/WC_Hub'),
             root_window=object(), is_loading=AsyncMock(return_value=False),
             in_battle=AsyncMock(return_value=False),
@@ -266,12 +267,12 @@ class DungeonReturnTests(unittest.IsolatedAsyncioTestCase):
             return True
 
         with patch.object(utils.asyncio, 'sleep', new=AsyncMock()), \
-             patch.object(utils, 'get_window_from_path', new=AsyncMock(side_effect=[None, button])) as lookup, \
+             patch.object(utils, 'get_window_from_path', new=AsyncMock(return_value=button)) as lookup, \
              patch.object(utils, 'return_to_dungeon_after_potions', new=AsyncMock(side_effect=resume)) as dungeon_return, \
              patch.object(utils, 'recall_to_teleport_mark', new=AsyncMock(side_effect=mark)) as mark_return:
             self.assertTrue(await utils.buy_potions(client, original_zone='Dungeon/Unknown'))
         self.assertEqual(events, ['mark', 'red'])
-        self.assertEqual(lookup.await_count, 2)
+        self.assertEqual(lookup.await_count, 1)
         dungeon_return.assert_awaited_once_with(client, 'Dungeon/Unknown')
         mark_return.assert_awaited_once()
         self.assertFalse(getattr(client, '_xuanshu_dungeon_closed', False))
@@ -297,6 +298,7 @@ class DungeonReturnTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_red_button_verification_failure_stops_unclassified_client(self):
         client = SimpleNamespace(title='p1', questing_status=True,
+            potion_return_context={'zone': 'Dungeon/Unknown', 'group_zone': 'Dungeon/Unknown'},
             zone_name=AsyncMock(return_value='WizardCity/WC_Hub'),
             root_window=object(), is_loading=AsyncMock(return_value=False),
             in_battle=AsyncMock(return_value=False),
