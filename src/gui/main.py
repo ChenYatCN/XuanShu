@@ -839,7 +839,10 @@ def manage_gui(
                     case GUICommandType.InvokeAction:
                         action_cb = registry.callbacks.get(com.data)
                         if action_cb:
-                            action_cb()
+                            if com.data == 'toggle_questing':
+                                action_cb(trigger=getattr(com, 'trigger', None))
+                            else:
+                                action_cb()
 
                     case GUICommandType.UpdateAccountList:
                         if com.data is not None:

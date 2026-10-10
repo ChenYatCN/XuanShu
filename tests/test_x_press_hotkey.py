@@ -74,7 +74,8 @@ class XPressHotkeyTests(unittest.IsolatedAsyncioTestCase):
         clients = [SimpleNamespace(is_foreground=i == 0) for i in range(3)]
         namespace = dict(settings=self.settings, listener=listener, logger=Mock(),
             hotkey_status=False, _active_bindings={}, _FREECAM_ACTIONS={'toggle_freecam', 'freecam_tp'},
-            _make_hotkey_callback=lambda action: action, Keycode=Keycode, ModifierKeys=ModifierKeys,
+            _make_hotkey_callback=lambda action: action, _log_quest_toggle=Mock(),
+            Keycode=Keycode, ModifierKeys=ModifierKeys,
             walker=SimpleNamespace(clients=clients), foreground_client=clients[0], mass_key_press=AsyncMock())
         exec(compile(ast.Module(body=functions, type_ignores=[]), 'XuanShu.py', 'exec'), namespace)
         return namespace

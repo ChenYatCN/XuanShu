@@ -207,10 +207,10 @@ class QuestPartyDungeonTests(unittest.IsolatedAsyncioTestCase):
             self.proof.return_value = False
             self.assertFalse(await quester.enter_party_dungeon([client, hitter]))
             self.proof.return_value = True
-            quester.read_popup.side_effect = lambda p: 'Press X to Enter' if p is client else 'Press X to Talk'
+            quester.read_popup.side_effect = lambda p: 'Press X to Enter' if p is client else ''
             self.assertFalse(await quester.enter_party_dungeon([client, hitter]))
             quester.read_popup.side_effect = None
-            self.title_reader.side_effect = lambda p: 'Dungeon Entrance' if p is client else 'Other Entrance'
+            self.title_reader.side_effect = lambda p: 'Dungeon Entrance' if p is client else 'World Gate'
             self.assertFalse(await quester.enter_party_dungeon([client, hitter]))
         client.send_key.assert_not_awaited()
         hitter.send_key.assert_not_awaited()

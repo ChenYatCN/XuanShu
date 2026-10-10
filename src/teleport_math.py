@@ -253,6 +253,8 @@ async def fallback_spiral_tp(client: Client, xyz: XYZ):
 async def navmap_tp(client: Client, xyz: XYZ = None, leader_client: Client = None, *, reenter: bool = False):
     # TODO: What is leader_client meant to be for?
     if not await is_free(client):
+        logger.debug('[任务TP路径] {} Call={} Exit=native-not-free-before-start',
+                     client.title, id(asyncio.current_task()))
         return
 
     logger.debug(f"[navmap_tp] {client.title}: " + (
@@ -262,6 +264,11 @@ async def navmap_tp(client: Client, xyz: XYZ = None, leader_client: Client = Non
     starting_zone = await client.zone_name() # for loading the correct wad and to walk to target as a last resort
     starting_xyz = await client.body.position()
     target_xyz = xyz if xyz is not None else await client.quest_position.position()
+    trace_call = id(asyncio.current_task())
+    trace_stage = 'direct' if not reenter else 'nav'
+    logger.debug('[任务TP路径] {} Call={} Start={} Target={} Zone={} reenter={} leader={}',
+                 client.title, trace_call, starting_xyz, target_xyz, starting_zone,
+                 reenter, getattr(leader_client, 'title', None))
 
     def check_sigma(a: XYZ, b: XYZ, sigma=5.0):
         # check if a distance is more or less zero
@@ -270,17 +277,34 @@ async def navmap_tp(client: Client, xyz: XYZ = None, leader_client: Client = Non
     async def check_success():
         # Check if the teleport succeeded. For this we want to have moved away from the starting position.
         await asyncio.sleep(1) # make sure we got useful information
-        return not check_sigma(await client.body.position(), starting_xyz)
+        actual = await client.body.position()
+        moved = not check_sigma(actual, starting_xyz)
+        logger.debug('[任务TP路径] {} Call={} Stage={} Actual={} OriginDelta={:.3f} '
+                     'Remaining={:.1f} Displaced={} (navmap原判定，非到达证明)',
+                     client.title, trace_call, trace_stage, actual,
+                     calc_Distance(actual, starting_xyz), calc_Distance(actual, target_xyz), moved)
+        return moved
 
     async def finished_tp():
-        return await check_success() or not await is_free(client) or await client.zone_name() != starting_zone
+        if await check_success():
+            logger.debug('[任务TP路径] {} Call={} FinishReason=displaced-from-origin', client.title, trace_call)
+            return True
+        if not await is_free(client):
+            logger.debug('[任务TP路径] {} Call={} FinishReason=native-state', client.title, trace_call)
+            return True
+        if await client.zone_name() != starting_zone:
+            logger.debug('[任务TP路径] {} Call={} FinishReason=zone-change', client.title, trace_call)
+            return True
+        return False
 
     if not reenter and check_sigma(starting_xyz, target_xyz):
+        logger.debug('[任务TP路径] {} Call={} Exit=already-near', client.title, trace_call)
         return # save some work
 
     if not reenter:
         await client.teleport(target_xyz)
         if await finished_tp():
+            logger.debug('[任务TP路径] {} Call={} Exit=direct-feedback', client.title, trace_call)
             return # trivial tp, no point using a more complex method if this one works
 
     try:
@@ -292,6 +316,7 @@ async def navmap_tp(client: Client, xyz: XYZ = None, leader_client: Client = Non
         if reenter:
             raise ValueError('门口重新进场未读到导航数据，停止本次尝试')
         # Unable to load nav data. Fall back to primitive spiral pattern
+        logger.debug('[任务TP路径] {} Call={} Stage=spiral Reason=nav-data-unavailable', client.title, trace_call)
         await fallback_spiral_tp(client, target_xyz)
         return
 
@@ -334,13 +359,19 @@ async def navmap_tp(client: Client, xyz: XYZ = None, leader_client: Client = Non
         if reenter and check_sigma(landing, target_xyz):
             continue  # A retreat must actually leave the trigger point.
         if not await is_free(client) or await client.zone_name() != starting_zone:
+            logger.debug('[任务TP路径] {} Call={} Exit=state-or-zone-before-nav', client.title, trace_call)
             return
+        trace_stage = 'nav'
+        logger.debug('[任务TP路径] {} Call={} Stage=nav Landing={}', client.title, trace_call, landing)
         await client.teleport(landing)
         if await check_success():
             if await is_free(client) and await client.zone_name() == starting_zone:
+                logger.debug('[任务TP路径] {} Call={} Stage=walk Target={}', client.title, trace_call, target_xyz)
                 await client.goto(target_xyz.x, target_xyz.y)
+            logger.debug('[任务TP路径] {} Call={} Exit=nav-feedback', client.title, trace_call)
             return
     if not reenter:
+        logger.debug('[任务TP路径] {} Call={} Stage=spiral Reason=nav-landings-rejected', client.title, trace_call)
         await fallback_spiral_tp(client, target_xyz)
 
 
@@ -743,6 +774,9 @@ async def collision_tp(client: Client, xyz: XYZ = None, leader_client: Client = 
         f"start {starting_xyz} ({calc_Distance(starting_xyz, target_xyz):.0f}u away)"
     )
     if calc_Distance(starting_xyz, target_xyz) <= 5.0:
+        if approach_result is not None:
+            approach_result.update(landed=True, walk_completed=True, walk_attempted=False,
+                                   walk_reason='already_at_target')
         return  # already there
 
     safe_xyz = None

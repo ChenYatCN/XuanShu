@@ -114,11 +114,9 @@ class QuestXDiagnosticTests(unittest.IsolatedAsyncioTestCase):
             getattr(self.client, flag).return_value = False
         self.client.send_key.assert_not_awaited()
 
-    async def test_empty_title_and_window_read_exception_keep_original_results(self):
+    async def test_empty_title_is_allowed_but_window_read_failure_still_stops(self):
         self.title.return_value = None
-        self.assertFalse(await self.quester.quest_interaction_ready(self.client, self.target))
-        self.assertEqual(self.record()[2], '交互标题为空或读取失败')
-        self.assertIn('title', self.record()[12])
+        self.assertTrue(await self.quester.quest_interaction_ready(self.client, self.target))
         error = RuntimeError('window rebuilt')
         self.visible.side_effect = error
         with self.assertRaises(RuntimeError) as caught:
@@ -139,19 +137,31 @@ class QuestXDiagnosticTests(unittest.IsolatedAsyncioTestCase):
     async def test_swallowed_title_read_error_keeps_none_fallback_and_exact_error_type(self):
         with (patch.object(q, 'get_popup_title', utils.get_popup_title),
               patch.object(utils, 'is_visible_by_path', AsyncMock(side_effect=ValueError('title replaced')))):
-            self.assertFalse(await self.quester.quest_interaction_ready(self.client, self.target))
+            self.assertTrue(await self.quester.quest_interaction_ready(self.client, self.target))
+            await self.quester._note_quest_x_blocked(self.client, '标题观测', self.target)
         self.assertEqual(self.record()[12]['title'], 'ValueError: title replaced')
         self.client.send_key.assert_not_awaited()
 
     async def test_refill_recovery_and_dialogue_guards_keep_no_input(self):
-        for attr, value in (('refilling_potions', True), ('quest_recovery_owner', 'potion-return'),
-                            ('auto_dialogue_running', True)):
+        for attr, value in (('refilling_potions', True), ('quest_recovery_owner', 'potion-return')):
             with self.subTest(attr=attr):
                 setattr(self.client, attr, value)
-                self.free.return_value = attr != 'auto_dialogue_running'
+                self.free.return_value = True
                 self.assertTrue(await self.quester.handle_quest_interaction(self.client, self.target))
                 self.assertEqual(self.record()[10][attr], value)
                 setattr(self.client, attr, None if attr == 'quest_recovery_owner' else False)
+        self.client.send_key.assert_not_awaited()
+
+    async def test_actual_dialogue_blocks_x_but_loop_flag_is_only_function_state(self):
+        self.client.auto_dialogue_running = True
+        self.free.return_value = False
+        with patch.object(q, 'read_dialogue_text', AsyncMock(return_value='Current NPC dialogue')):
+            self.assertFalse(await self.quester.handle_quest_interaction(self.client, self.target))
+            await self.quester._note_quest_x_blocked(self.client, '实际对话', self.target)
+        states, details = self.record()[10:12]
+        self.assertTrue(states['dialogue_loop_running'])
+        self.assertTrue(states['dialogue_active'])
+        self.assertNotIn('dialogue_loop_running', details['blocking_states'])
         self.client.send_key.assert_not_awaited()
 
     async def test_changed_target_is_logged_against_taskers_own_identity(self):

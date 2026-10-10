@@ -201,7 +201,7 @@ class Quester():
         self._npc_retry_exhausted = {}
         self._npc_retry_debug_at = {}
         self._trigger_reentry = {}
-        self._quest_approach_failed = {}
+        self._quest_movement_waiting = {}
         self._mainline_finder_observations = {}
         self._mainline_finder_retry_at = {}
 
@@ -563,10 +563,7 @@ class Quester():
                     if not await ready():
                         return
                     if stage == 'jar' and await is_visible_by_path(client, npc_range_path):
-                        title = plain_text(await get_popup_title(client)).casefold()
-                        if (title in ('罐子', 'jar')
-                                and calc_Distance(await client.body.position(), point) < 750
-                                and plain_text(await get_popup_title(client)).casefold() == title
+                        if (calc_Distance(await client.body.position(), point) < 750
                                 and await ready()
                                 and not await client.is_loading() and not await client.in_battle()):
                             await client.send_key(Keycode.X, .1)
@@ -2108,46 +2105,46 @@ class Quester():
             return False
 
         initial_state = await read_quest_state()
+        pending = getattr(talking_client, 'quest_interaction_attempt', None)
+        if isinstance(pending, dict) and pending.get('progress') is not None:
+            await self._recover_quest_x_direction(talking_client, pending)
+            return quest_state_changed(initial_state, await read_quest_state())
+        zone = await talking_client.zone_name()
+        progress = await self._dungeon_quest_snapshot(talking_client)
+        title = plain_text(await get_popup_title(talking_client))
+        target = initial_state[1]
+        context = ((*(initial_state[2] or (None, None)), zone),
+                   (target.x, target.y, target.z) if target is not None else None, progress, title)
+        failed = getattr(talking_client, '_quest_x_turn_failed', None)
+        if (isinstance(failed, tuple) and failed[:3] == context[:3]
+                and time.monotonic() < getattr(talking_client, '_quest_x_turn_retry_at', float('inf'))):
+            return False
+        position = await talking_client.body.position()
+        sent_at = time.monotonic()
         after_talking_paths = (
             exit_zafaria_class_picture_button,
             exit_pet_leveled_up_button_path,
             avalon_badge_exit_button_path,
         )
 
-        for attempt in range(1, 4):
-            if getattr(talking_client, 'questing_status', True) is False:
+        # A missed X press previously left this loop waiting forever.  Give
+        # the game a few seconds to display dialogue, then retry the input.
+        appear_deadline = time.monotonic() + 4.0
+        while (
+            await is_free_leader_questing(talking_client)
+            and time.monotonic() < appear_deadline
+        ):
+            if (not getattr(talking_client, 'questing_status', False)
+                    or await talking_client.is_loading() or await talking_client.in_battle()
+                    or getattr(talking_client, 'refilling_potions', False)
+                    or isinstance(getattr(talking_client, 'quest_recovery_owner', None), str)):
                 return False
-            if attempt > 1:
-                logger.warning(
-                    f"Client {talking_client.title} - Quest did not update after "
-                    f"dialogue; retrying NPC interaction ({attempt}/3)."
-                )
+            if quest_state_changed(initial_state, await read_quest_state()):
                 await asyncio.sleep(1.0)
-                await self._note_quest_x_lock_wait(talking_client, initial_state[1])
-                async with automation_owner(talking_client, 'quest-interaction'):
-                    if (getattr(talking_client, 'questing_status', True) is False
-                            or not await is_free_leader_questing(talking_client)):
-                        await self._note_quest_x_blocked(talking_client, 'NPC重试被对话/加载/战斗或任务状态阻塞', initial_state[1])
-                        return False
-                    if quest_state_changed(initial_state, await read_quest_state()):
-                        await self._note_quest_x_blocked(talking_client, 'NPC重试任务/目标变化', initial_state[1])
-                        return True
-                    await talking_client.send_key(Keycode.X, 0.15)
+                return True
+            await asyncio.sleep(0.15)
 
-            # A missed X press previously left this loop waiting forever.  Give
-            # the game a few seconds to display dialogue, then retry the input.
-            appear_deadline = time.monotonic() + 4.0
-            while (
-                await is_free_leader_questing(talking_client)
-                and time.monotonic() < appear_deadline
-            ):
-                if quest_state_changed(initial_state, await read_quest_state()):
-                    await asyncio.sleep(1.0)
-                    return True
-                await asyncio.sleep(0.15)
-
-            if await is_free_leader_questing(talking_client):
-                continue
+        if not await is_free_leader_questing(talking_client):
 
             logger.info(
                 f"Client {talking_client.title} - Detected dialogue; waiting "
@@ -2159,9 +2156,14 @@ class Quester():
             quiet_since = None
             dialogue_deadline = time.monotonic() + 60.0
             while time.monotonic() < dialogue_deadline:
-                if getattr(talking_client, 'questing_status', True) is False:
+                if (not getattr(talking_client, 'questing_status', False)
+                        or await talking_client.is_loading() or await talking_client.in_battle()
+                        or getattr(talking_client, 'refilling_potions', False)
+                        or isinstance(getattr(talking_client, 'quest_recovery_owner', None), str)):
                     return False
-                await close_npc_quest_menu(talking_client)
+                if quest_state_changed(initial_state, await read_quest_state()):
+                    return True
+                await self._advance_npc_dialogue(talking_client)
                 if await is_free_leader_questing(talking_client):
                     if quiet_since is None:
                         quiet_since = time.monotonic()
@@ -2190,11 +2192,21 @@ class Quester():
                 )
                 return True
 
-        logger.error(
-            f"Client {talking_client.title} - Could not confirm quest acceptance "
-            "after 3 attempts; keeping the quester near the NPC for another retry."
-        )
-        return False
+        # A completed conversation with the wrong nearby NPC is not progress.
+        # Reuse the same local direction search as an ordinary ineffective X.
+        if (target is not None and progress is not None
+                and type(context[0][0]) is int and context[0][0] > 0
+                and type(context[0][1]) is int and zone):
+            prompt = plain_text(await self.read_popup(talking_client))
+            state = dict(signature=(context[0], context[1], prompt), attempts=1,
+                         next_at=sent_at + 1.5, sent_at=sent_at, progress=progress,
+                         context=context, target=target, position=position,
+                         title=title, prompt=prompt, local_only=True)
+            talking_client.quest_interaction_attempt = state
+            talking_client._quest_x_turn_failed = None
+            logger.info('[任务转向恢复] {} NPC对话/交互后任务未推进，开始本任务点的一圈搜索。', talking_client.title)
+            await self._recover_quest_x_direction(talking_client, state)
+        return quest_state_changed(initial_state, await read_quest_state())
 
     def _log_npc_retry_wait(self, client: Client, reason: str) -> None:
         now = time.monotonic()
@@ -2304,8 +2316,7 @@ class Quester():
                     await self._note_quest_x_blocked(talking_client, 'NPC重试被对话/加载/战斗或任务状态阻塞')
                     return False
                 try:
-                    # quest_interaction_ready reads the HUD objective; do not
-                    # wait forever if it disappeared during the dialogue.
+                    # Bound a stale position/UI read after the dialogue.
                     async with asyncio.timeout(2.0):
                         ready = await self.quest_interaction_ready(
                             talking_client, await talking_client.quest_position.position()
@@ -2313,7 +2324,7 @@ class Quester():
                 except Exception as exc:
                     logger.debug(f"Client {talking_client.title} - NPC retry target unavailable: {exc}")
                     ready = False
-                if not ready or interaction_kind(await self.read_popup(talking_client)) != "talk":
+                if not ready:
                     continue
                 await talking_client.send_key(Keycode.X, 0.15)
 
@@ -3673,7 +3684,7 @@ class Quester():
                 return False
             if (await is_visible_by_path(client, npc_range_path)
                     and calc_Distance(target, await client.body.position()) < 750.0
-                    and interaction_kind(await self.read_popup(client)) == 'talk'):
+                    and await self.quest_interaction_ready(client, target)):
                 if interaction_attempts >= 2:
                     return False
                 interaction_attempts += 1
@@ -3685,7 +3696,7 @@ class Quester():
         return False
 
     async def _mainline_turn_in_snapshot(self, client: Client, quest_id):
-        """Keep the quest and NPC identity from before the first X press."""
+        """Keep the quest and tracked location before the first X press."""
         if not getattr(client, 'mainline_finder_enabled', False):
             return None
         if not isinstance(quest_id, int) or quest_id <= 0:
@@ -3695,15 +3706,11 @@ class Quester():
             if identity is None or identity[0] != quest_id or identity[3] is None:
                 return None
             npc = plain_text(await get_popup_title(client)).casefold()
-            if not npc or interaction_kind(await self.read_popup(client)) != "talk":
-                return None
             snapshot = (quest_id, await client.zone_name(), await client.body.position(), npc)
             client.mainline_last_turn_in_snapshot = snapshot
             try:
                 goal = await self._dungeon_quest_snapshot(client)
                 if (goal is not None and goal[0] == quest_id
-                        and quest_has_action(goal[2], 'talk')
-                        and quest_interaction_matches(goal[2], npc)
                         and await client.zone_name() == snapshot[1]
                         and await client.quest_id() == goal[0]
                         and await client.goal_id() == goal[1]):
@@ -3719,7 +3726,7 @@ class Quester():
             return None
 
     async def _continue_mainline_chain(self, client: Client, snapshot, expected_id=None) -> None:
-        """Retry a confirmed mainline handoff only while the same NPC is in reach."""
+        """Retry a confirmed mainline handoff at its retained location."""
         if not getattr(client, 'mainline_finder_enabled', False):
             return None
         if snapshot is None:
@@ -3761,9 +3768,7 @@ class Quester():
                 return False
             if not await is_visible_by_path(client, npc_range_path):
                 return False
-            if interaction_kind(await self.read_popup(client)) != "talk":
-                return False
-            return plain_text(await get_popup_title(client)).casefold() == npc
+            return True  # Names/action wording do not authorize this local X.
 
         # The game can select an unrelated nonzero quest during a handoff.
         # Do not mistake it for the next mainline before dialogue settles.
@@ -3816,7 +3821,10 @@ class Quester():
                 logger.info(
                     f"{client.title} 下一主线未出现，尝试重新与原 NPC 交互（{attempt}/2）。"
                 )
-                await client.send_key(Keycode.X, 0.15)
+                async with automation_owner(client, 'mainline-chain-interaction'):
+                    if not await ready_to_retry():
+                        return
+                    await client.send_key(Keycode.X, 0.15)
                 pressed = True
                 appeared = False
                 quiet_since = None
@@ -3887,6 +3895,7 @@ class Quester():
                      'mainline_chain_retry_active', '_character_selection_active')
             states = {name: value for name in attrs
                       if isinstance(value := getattr(client, name, None), (bool, str))}
+            states['dialogue_loop_running'] = states.pop('auto_dialogue_running', False)
             ownership = getattr(client, '_xuanshu_automation_ownership', None)
             owner = getattr(ownership, 'owner_label', None)
             states['input_owner'] = owner if isinstance(owner, str) else None
@@ -3904,6 +3913,7 @@ class Quester():
             states['battle'] = await read('battle', client.in_battle)
             states['dialogue_window'] = await read('dialogue_window', lambda: is_visible_by_path(client, advance_dialog_path))
             states['dialogue_text'] = bool(await read('dialogue_text', lambda: read_dialogue_text(client)))
+            states['dialogue_active'] = states['dialogue_window'] is True or states['dialogue_text']
             # Cooldown seconds and distance vary every tick; they are evidence,
             # not a new cause. Attribute/expected-context changes log immediately.
             cause_states = {name: value for name, value in states.items()
@@ -3945,7 +3955,7 @@ class Quester():
             if 'expected_prompt' in details:
                 details['prompt_changed'] = plain_text(prompt) != details['expected_prompt']
             details['blocking_states'] = [name for name, value in states.items()
-                                         if value is True and name != 'questing_status'
+                                         if value is True and name not in ('questing_status', 'dialogue_loop_running')
                                          or name == 'quest_recovery_owner' and isinstance(value, str)
                                          or name == 'questing_status' and value is False]
             pending = getattr(client, 'quest_interaction_attempt', None)
@@ -3994,13 +4004,14 @@ class Quester():
         """A visible Team Up control distinguishes a sigil from an ordinary door."""
         if prompt is None:
             prompt = await self.read_popup(client)
-        return (is_dungeon_entry_prompt(prompt)
-                and await is_visible_by_path(client, npc_range_path)
+        return (await is_visible_by_path(client, npc_range_path)
                 and await self._visible_team_up_control(client))
 
-    async def quest_interaction_ready(self, client, xyz, leader_client=None, *, require_objective_match=True):
+    async def quest_interaction_ready(self, client, xyz, leader_client=None, *, require_objective_match=False):
         stage = '加载/战斗检查'
         try:
+            if await self._quest_rollback_origin_interaction(client, xyz, leader_client):
+                return False
             if await client.is_loading():
                 await self._note_quest_x_blocked(client, '加载保护', xyz)
                 return False
@@ -4011,22 +4022,17 @@ class Quester():
             if not await is_visible_by_path(client, npc_range_path):
                 return False
             stage = '任务点距离读取'
+            if (not all(math.isfinite(value) for value in (xyz.x, xyz.y, xyz.z))
+                    or calc_Distance(xyz, XYZ(0, 0, 0)) <= 1):
+                return False
             if calc_Distance(await client.body.position(), xyz) >= 750:
                 return False
-            stage = '交互标题读取'
-            title = await get_popup_title(client)
-            if not title:
-                await self._note_quest_x_blocked(client, '交互标题为空或读取失败', xyz)
+            # The optional argument remains for existing callers; quest text,
+            # object titles and action wording no longer authorize local X.
+            stage = '实际对话与交互提示读取'
+            if not await is_free_leader_questing(client):
                 return False
-            if not require_objective_match:
-                return True
-            stage = '任务提示读取/匹配'
-            objective = await get_quest_name(leader_client or client)
-            matched = quest_interaction_matches(objective, title)
-            if not matched:
-                await self._note_quest_x_blocked(client, '任务提示与交互标题不匹配', xyz,
-                                               objective=plain_text(objective))
-            return matched
+            return True  # The visible X window is evidence; its wording is not.
         except Exception as exc:
             await self._note_quest_x_blocked(client, stage, xyz, error=f'{type(exc).__name__}: {exc}')
             raise  # Keep the original exception handling and all protections.
@@ -4051,9 +4057,7 @@ class Quester():
                 client.quest_interaction_attempt = None
                 return False  # The caller may now process the new task/target normally.
             if await is_visible_by_path(client, advance_dialog_path):
-                logger.info('[任务X结果] {} 已发送X；已出现对话，交回对话流程。', client.title)
-                client.quest_interaction_attempt = None
-                return True
+                return await self._recover_quest_x_direction(client, pending)
             if (getattr(client, 'refilling_potions', False)
                     or getattr(client, 'post_combat_cleanup_active', False)
                     or getattr(client, 'quest_party_battle_rescue_active', False)
@@ -4061,26 +4065,6 @@ class Quester():
                     or not await is_free_leader_questing(client)):
                 await self._note_quest_x_blocked(client, '上次X后的状态保护，保留已发送记录', pending['target'])
                 return True
-            # A vanished/changed prompt is UI feedback, not proof of task completion.
-            # Keep the sent record while the HUD catches up, without turning or X.
-            visible = await is_visible_by_path(client, npc_range_path)
-            title = plain_text(await get_popup_title(client)) if visible else ''
-            prompt = plain_text(await self.read_popup(client)) if visible else ''
-            if (not visible or title != pending['title'] or prompt != pending['prompt']):
-                if not pending.get('effect_observed'):
-                    pending['effect_observed'] = True
-                    logger.info('[任务X结果] {} 已发送X；交互提示已消失或变化，等待任务进度/切区确认。', client.title)
-                if (visible and title != pending['title'] and interaction_kind(prompt) in ('collect', 'use', 'open', 'interact')
-                        and await self.quest_interaction_ready(client, xyz)):
-                    client.quest_interaction_attempt = None
-                    return False  # A different verified local object has its own attempt.
-            if pending.get('effect_observed'):
-                if time.monotonic() - pending['sent_at'] < 30.0:
-                    return True
-                client._quest_x_turn_failed = pending['context']
-                client.quest_interaction_attempt = None
-                logger.warning('[任务X结果] {} 已发送X且提示变化，但30秒内未确认任务进度/切区；交回现有恢复流程。', client.title)
-                return False
             if (getattr(client, 'quest_party_probe_pending', False)
                     and not pending.get('local_only')):
                 await self._note_quest_x_blocked(client, '等待本组区域探测，保留已发送X记录', pending['target'])
@@ -4103,13 +4087,14 @@ class Quester():
         prompt = await self.read_popup(client)
         if await self._maybe_photo_giant_vat(client, prompt):
             return True
-        if (await self.party_dungeon_entry_visible(client, prompt)
+        if (portal_kind(await get_popup_title(client)) != 'world_gate' and (
+                await self.party_dungeon_entry_visible(client, prompt)
                 or (is_dungeon_entry_prompt(prompt)
                     and getattr(client, 'quest_party_hitters', [])
                     and not (getattr(client, 'in_solo_zone', False)
                              and getattr(client, 'quest_party_group_dungeon_zone', None) is None
                              and getattr(client, 'quest_party_quest_worker_zone', None) == await client.zone_name()
-                             and not getattr(client, 'quest_party_probe_pending', False)))):
+                             and not getattr(client, 'quest_party_probe_pending', False))))):
             before = await client.quest_id(), await client.goal_id(), await client.zone_name()
             title = plain_text(await get_popup_title(client))
             async def entry_ready():
@@ -4117,17 +4102,13 @@ class Quester():
                         and bool(before[2]) and getattr(client, 'questing_status', False)
                         and (await client.quest_id(), await client.goal_id(), await client.zone_name()) == before
                         and not await client.is_loading() and not await client.in_battle()
-                        and await self.quest_interaction_ready(client, xyz, require_objective_match=False)
-                        and plain_text(await get_popup_title(client)) == title
-                        and is_dungeon_entry_prompt(await self.read_popup(client)))
+                        and calc_Distance(await client.quest_position.position(), xyz) <= 1
+                        and await self.quest_interaction_ready(client, xyz, require_objective_match=False))
             self._note_quest_entry_wait(client, '已识别入口，准备本组', title=title)
             entry_clients = await self.prepare_party_dungeon_entry(entry_ready=entry_ready)
             if not await self.enter_party_dungeon(entry_clients, entry_ready=entry_ready):
                 await self._note_quest_x_blocked(client, '本组入口同步检查未通过或尚未完成切区', xyz, expected=before)
                 self._note_quest_entry_wait(client, '本组入口检查未通过或尚未完成切区', title=title)
-        elif interaction_kind(prompt) == 'talk':
-            if not await self.handle_npc_talking_quests(client, [client]):
-                await asyncio.sleep(2.0)
         else:
             try:
                 before = await client.quest_id(), await client.goal_id(), await client.zone_name()
@@ -4145,14 +4126,11 @@ class Quester():
             # Prompt jitter on the same object must not reset the finite cap;
             # a different named object must not inherit another object's failure.
             context = (before, (xyz.x, xyz.y, xyz.z), progress, title)
-            if getattr(client, '_quest_x_turn_failed', None) == context:
-                await self._note_quest_x_blocked(client, '已有X重试次数耗尽，等待原恢复流程', xyz, expected=before)
-                return False  # Let the existing movement/recovery flow take over.
             failed = getattr(client, '_quest_x_turn_failed', None)
             if (isinstance(failed, tuple) and failed[:3] == context[:3]
-                    and not await self.quest_interaction_ready(client, xyz)):
-                await self._note_quest_x_blocked(client, '新交互物件尚未匹配当前任务，保留原X次数限制', xyz)
-                return False
+                    and now < getattr(client, '_quest_x_turn_retry_at', float('inf'))):
+                await self._note_quest_x_blocked(client, '已有X重试次数耗尽，等待原恢复流程', xyz, expected=before)
+                return False  # Let the existing movement/recovery flow take over.
             client._quest_x_turn_failed = None
             signature = (before, (xyz.x, xyz.y, xyz.z), plain_text(prompt))
             state = getattr(client, 'quest_interaction_attempt', None)
@@ -4172,12 +4150,10 @@ class Quester():
                 return False
             await self._note_quest_x_lock_wait(client, xyz)
             local_only = (interaction_kind(prompt) == 'collect'
-                          or interaction_kind(prompt) in ('use', 'open', 'interact')
+                          or interaction_kind(prompt) != 'enter'
                           and portal_kind(title) != 'world_gate'
                           and getattr(client, 'quest_party_group_dungeon_zone', None) is None
-                          and not isinstance(getattr(client, 'quest_party_dungeon_interaction', None), dict)
-                          and isinstance(progress, tuple) and len(progress) == 3
-                          and quest_interaction_matches(progress[2], title))
+                          and not isinstance(getattr(client, 'quest_party_dungeon_interaction', None), dict))
             async with automation_owner(client, 'quest-interaction'):
                 if (not getattr(client, 'questing_status', False)
                         or getattr(client, 'refilling_potions', False)
@@ -4187,13 +4163,18 @@ class Quester():
                         or not await is_free_leader_questing(client)
                         or (await client.quest_id(), await client.goal_id(), await client.zone_name()) != before
                         or not await self.quest_interaction_ready(client, xyz, require_objective_match=False)
-                        or plain_text(await get_popup_title(client)) != title
-                        or plain_text(await self.read_popup(client)) != plain_text(prompt)
                         or calc_Distance(await client.quest_position.position(), xyz) > 1.0):
                     await self._note_quest_x_blocked(client, '输入前状态/任务/目标/区域或提示复核未通过', xyz,
                                                    expected=before, expected_prompt=plain_text(prompt))
                     return True
+                title = plain_text(await get_popup_title(client))
+                prompt = await self.read_popup(client)
+                context = (before, (xyz.x, xyz.y, xyz.z), progress, title)
                 position = await client.body.position()
+                if ((await client.quest_id(), await client.goal_id(), await client.zone_name()) != before
+                        or calc_Distance(await client.quest_position.position(), xyz) > 1
+                        or not await self.quest_interaction_ready(client, xyz)):
+                    return True
                 try:
                     await client.send_key(Keycode.X, .1)
                 except (Exception, asyncio.CancelledError) as exc:
@@ -4215,169 +4196,281 @@ class Quester():
                 return True
             after = await client.quest_id(), await client.goal_id(), await client.zone_name()
             if (after != before
-                    or progress is not None and await self._dungeon_quest_snapshot(client) != progress
-                    or await is_visible_by_path(client, advance_dialog_path)):
-                logger.info('[任务X结果] {} 已发送X；任务/目标/区域、进度或对话已变化。', client.title)
+                    or progress is not None and await self._dungeon_quest_snapshot(client) != progress):
+                logger.info('[任务X结果] {} 已发送X；任务/目标/区域或进度已变化。', client.title)
                 client.quest_interaction_attempt = None
+            elif interaction_kind(prompt) == 'talk':
+                await self.handle_npc_talking_quests(client, [client])
             if await is_spiral_door_open(client):
                 if not await self.new_world_doors(client):
                     await spiral_door_with_quest(client)
         return True
 
     async def _recover_quest_x_direction(self, client, state) -> bool:
-        """A bounded, stationary retry only after this quest point already sent X."""
+        """Search one measured circle at this task point; UI changes are not progress."""
         from src.ibao_runtime import complete_before_cancel
         paused = False
         cancelled = False
+        reason = '状态保护'
 
-        async def unchanged():
-            nonlocal paused
+        async def status():
+            nonlocal paused, reason
+            paused = False
             if (getattr(client, 'quest_interaction_attempt', None) is not state
                     or not getattr(client, 'questing_status', False)
-                    or getattr(client, 'refilling_potions', False)
-                    or getattr(client, 'post_combat_cleanup_active', False)
-                    or getattr(client, 'quest_party_battle_rescue_active', False)
-                    or getattr(client, 'auto_dialogue_running', False) is True
-                    or getattr(client, 'quest_party_probe_pending', False) and not state.get('local_only')
-                    or getattr(client, 'quest_party_quest_worker_restart_requested', False)
-                    or isinstance(getattr(client, 'quest_recovery_owner', None), str)
-                    or await client.is_loading() or await client.in_battle()
-                    or not await is_free_leader_questing(client)
-                    or await is_visible_by_path(client, cancel_multiple_quest_menu_path)
-                    or await is_spiral_door_open(client)):
-                await self._note_quest_x_blocked(client, '已有X重试被对话/加载/战斗/补药/恢复或菜单状态阻塞',
-                                               state['target'])
-                paused = (getattr(client, 'questing_status', False)
-                          and not await client.is_loading() and not await client.in_battle()
-                          and not await is_visible_by_path(client, advance_dialog_path))
-                return False
+                    or await client.is_loading() or await client.in_battle()):
+                reason = '停止/加载/战斗或记录已替换'
+                return 'stop'
             before = state['context'][0]
             if ((await client.quest_id(), await client.goal_id(), await client.zone_name()) != before
                     or await self._dungeon_quest_snapshot(client) != state['progress']
                     or calc_Distance(await client.quest_position.position(), state['target']) > 1.0):
-                await self._note_quest_x_blocked(client, '已有X重试的任务/目标/区域或进度变化', state['target'],
-                                               expected=before)
-                logger.info('[任务X结果] {} 已发送X；任务/目标/区域或进度已变化，停止重试。', client.title)
-                return False
+                reason = '任务/目标/区域或进度变化'
+                return 'stop'
+            if (getattr(client, 'refilling_potions', False)
+                    or getattr(client, 'post_combat_cleanup_active', False)
+                    or getattr(client, 'quest_party_battle_rescue_active', False)
+                    or getattr(client, 'quest_party_probe_pending', False) and not state.get('local_only')
+                    or getattr(client, 'quest_party_quest_worker_restart_requested', False)
+                    or isinstance(getattr(client, 'quest_recovery_owner', None), str)):
+                paused, reason = True, '其他恢复/补药/探测接管'
+                return 'stop'
+            ownership = get_client_automation_ownership(client)
+            if ownership.locked and ownership._owner_task is not asyncio.current_task():
+                paused, reason = True, '其他流程占用本客户端输入'
+                return 'stop'
+            shared = state.get('shared_members')
+            if shared:
+                if tuple([client, *getattr(client, 'quest_party_hitters', [])]) != shared:
+                    reason = '共享成员变化'
+                    return 'stop'
+                for member in shared[1:]:
+                    if (not getattr(member, 'questing_status', False)
+                            or getattr(member, 'refilling_potions', False)
+                            or isinstance(getattr(member, 'quest_recovery_owner', None), str)
+                            or await member.is_loading() or await member.in_battle()
+                            or not await clients_share_live_area(client, member)):
+                        paused, reason = True, '共享成员未就绪/同实例确认未通过'
+                        return 'stop'
             position = await client.body.position()
             if (calc_Distance(position, state['target']) >= 750
                     or calc_Distance(position, state['position']) > 20.0):
-                await self._note_quest_x_blocked(client, '已有X重试距离或位置变化', state['target'],
-                                               moved=calc_Distance(position, state['position']))
-                return False
-            # A turn can expose an entrance. Leave its group checks to its handler.
+                reason = '距离或实际位置变化'
+                return 'stop'
+            if await is_spiral_door_open(client):
+                reason = '世界门打开'
+                return 'stop'
+            if (await is_visible_by_path(client, advance_dialog_path)
+                    or await is_visible_by_path(client, cancel_multiple_quest_menu_path)):
+                paused, reason = True, '真实对话，保留剩余角度'
+                return 'dialogue'
+            if not await is_free_leader_questing(client):
+                paused, reason = True, '动画/其他输入流程未释放'
+                return 'stop'
             prompt = await self.read_popup(client)
-            return (portal_kind(prompt) != 'world_gate'
-                    and not is_dungeon_entry_prompt(prompt)
-                    and not quest_has_action(state['progress'][2], 'photomance'))
+            title = plain_text(await get_popup_title(client))
+            if (portal_kind(title) != 'world_gate'
+                    and (is_dungeon_entry_prompt(prompt)
+                         or await self.party_dungeon_entry_visible(client, prompt))):
+                reason = '入口提示交回入口流程'
+                return 'entry'
+            state['observed_prompt'] = (title, plain_text(prompt))
+            return 'ready'
 
-        async def wait_response(seconds, *, observe_input=True):
-            if seconds > 0:
-                await self._note_quest_x_blocked(client, '等待上次X反馈，尚未到原重试时机', state['target'],
-                                               wait_seconds=round(seconds, 2))
-            # Fixed polling also remains finite when a clock/read is mocked.
-            for _ in range(max(1, math.ceil(seconds / .15))):
-                if not await unchanged():
+        async def settled():
+            nonlocal paused, reason
+            current = await status()
+            if current == 'entry':
+                if getattr(client, 'quest_interaction_attempt', None) is state:
+                    client.quest_interaction_attempt = None
+                await self.handle_quest_interaction(client, state['target'])
+                return False
+            if current != 'dialogue':
+                return current == 'ready'
+            logger.info('[任务转向恢复] {} 暂停转向处理真实对话；已转={:.1f}°。',
+                        client.title, math.degrees(abs(state.get('turn_angle', 0.0))))
+            quiet = 0
+            # Reuse the serialized dialogue step; never hold A or its input lock here.
+            for _ in range(400):
+                current = await status()
+                if current == 'stop':
                     return False
-                if observe_input and (
-                        not await is_visible_by_path(client, npc_range_path)
-                        or plain_text(await get_popup_title(client)) != state['title']
-                        or plain_text(await self.read_popup(client)) != state['prompt']):
-                    state['effect_observed'] = True
-                    logger.info('[任务X结果] {} 已发送X；交互提示已消失或变化，等待任务进度/切区确认。', client.title)
+                if current == 'dialogue':
+                    quiet = 0
+                    await self._advance_npc_dialogue(client)
+                else:
+                    quiet += 1
+                    if quiet >= 20:
+                        logger.info('[任务转向恢复] {} 对话结束仍无任务进展，继续剩余角度。', client.title)
+                        return True
+                await asyncio.sleep(.15)
+            paused, reason = True, '对话等待60秒上限，保留剩余角度'
+            return False
+
+        async def wait_response(seconds):
+            for _ in range(max(1, math.ceil(seconds / .15))):
+                if not await settled():
                     return False
                 if seconds > 0:
                     await asyncio.sleep(.15)
-            return await unchanged()
+            return await settled()
+
+        async def press(code, seconds):
+            # The existing timed_send_key finally sends key-up. Cancel and drain
+            # this exact press when context changes, before releasing our claim.
+            task = asyncio.create_task(client.send_key(code, seconds))
+            try:
+                for _ in range(math.ceil(seconds / .05) + 1):
+                    if await status() != 'ready':
+                        task.cancel()
+                        break
+                    if task.done():
+                        break
+                    await asyncio.sleep(.05)
+                await task
+            except asyncio.CancelledError:
+                if not task.cancelled():
+                    raise
+                if asyncio.current_task().cancelling():
+                    raise
+            finally:
+                if not task.done():
+                    task.cancel()
+                try:
+                    await complete_before_cancel(task)
+                except asyncio.CancelledError:
+                    if asyncio.current_task().cancelling():
+                        raise
 
         try:
             progress = state.get('progress')
             if (not isinstance(progress, tuple) or len(progress) != 3
                     or type(progress[1]) is not int or not isinstance(progress[2], str)
-                    or not progress[2]):
-                await self._note_quest_x_blocked(client, '已有X重试缺少任务进度读取证据', state['target'])
-                return True  # Missing progress evidence never authorizes turning.
-            # The first X and its original short wait remain unchanged.
-            remaining = max(0.0, 4.0 - (time.monotonic() - state['sent_at']))
-            if not await wait_response(remaining):
+                    or not progress[2] or quest_has_action(progress[2], 'photomance')):
+                reason = '缺少可读进度证据或拍照任务'
+                paused = True
                 return True
-            while state.get('turns', 0) < 3:
-                await self._note_quest_x_lock_wait(client, state['target'])
-                async with automation_owner(client, 'quest-interaction'):
-                    if not await unchanged():
-                        return True
-                    # Drain the brief key press on cancellation so key-up is sent.
-                    await complete_before_cancel(asyncio.create_task(client.send_key(Keycode.A, .1)))
-                    state['turns'] = state.get('turns', 0) + 1
-                if not await wait_response(.3, observe_input=False):
+            if not await wait_response(max(0.0, 4.0 - (time.monotonic() - state['sent_at']))):
+                return True
+            state.setdefault('turn_angle', 0.0)
+            state.setdefault('turn_segments', 0)
+            state.setdefault('turn_idle', 0)
+            state.setdefault('turn_x_count', 0)
+            state.setdefault('turn_x_angle', 0.0)
+            logger.info('[任务转向恢复] {} 开始/继续；任务={} 目标={}；已转={:.1f}°；提示={}。',
+                        client.title, state['context'][0], state['target'],
+                        math.degrees(abs(state['turn_angle'])), state.get('observed_prompt'))
+            while abs(state['turn_angle']) < math.tau:
+                if not await settled():
                     return True
+                if state['turn_segments'] >= 256 or state['turn_idle'] >= 20:
+                    reason = '角度读取无进展/分段上限，未完成一圈'
+                    break
                 await self._note_quest_x_lock_wait(client, state['target'])
                 async with automation_owner(client, 'quest-interaction'):
-                    if not await unchanged():
+                    if await status() != 'ready':
                         return True
-                    if not await self.quest_interaction_ready(
-                            client, state['target'], require_objective_match=False):
-                        break
-                    await complete_before_cancel(asyncio.create_task(client.send_key(Keycode.X, .1)))
-                    logger.info('[任务X结果] {} 有限转向重试X发送完成。', client.title)
-                if not await wait_response(4.0):
-                    return True  # Dialogue/progress belongs to the existing handlers.
+                    yaw = float(await client.body.yaw())
+                    if not math.isfinite(yaw):
+                        raise ValueError('unreadable yaw')
+                    state.setdefault('turn_start_yaw', yaw)
+                    await press(Keycode.A, .15)
+                    after = float(await client.body.yaw())
+                    if not math.isfinite(after):
+                        raise ValueError('unreadable yaw')
+                    # Radians wrap at +/-pi or 2pi; signed displacement avoids
+                    # treating back-and-forth movement as a full circle.
+                    delta = math.atan2(math.sin(after - yaw), math.cos(after - yaw))
+                    state['turn_angle'] += delta
+                    state['turn_last_yaw'] = after
+                    state['turn_segments'] += 1
+                    state['turn_idle'] = state['turn_idle'] + 1 if abs(delta) < .001 else 0
+                if not await wait_response(.3):
+                    return True
+                # A missing/changing popup cannot finish the circle. Press X
+                # only for a currently ready local prompt, without name matching.
+                full_circle = abs(state['turn_angle']) >= math.tau
+                if (full_circle or abs(state['turn_angle'] - state['turn_x_angle']) >= math.radians(15)):
+                    async with automation_owner(client, 'quest-interaction'):
+                        if await status() != 'ready':
+                            return True
+                        if await self.quest_interaction_ready(client, state['target'], require_objective_match=False):
+                            if await status() != 'ready':
+                                return True
+                            await press(Keycode.X, .1)
+                            state['turn_x_angle'] = state['turn_angle']
+                            state['turn_x_count'] += 1
+                            logger.info('[任务转向恢复] {} X尝试={}；起始yaw={:.4f} 当前yaw={:.4f}；'
+                                        '累计转角={:.1f}°；当前提示={}。', client.title,
+                                        state['turn_x_count'], state['turn_start_yaw'], state['turn_last_yaw'],
+                                        math.degrees(abs(state['turn_angle'])), state.get('observed_prompt'))
+                    if not await wait_response(4.0):
+                        return True
+            reason = '满360°仍无任务进展' if abs(state['turn_angle']) >= math.tau else reason
             client._quest_x_turn_failed = state['context']
-            logger.warning('[任务X结果] {} X已发送但仍无可观察进展；有限小幅转向重试已结束，交回现有恢复流程。', client.title)
+            client._quest_x_turn_retry_at = time.monotonic() + 30.0
+            logger.warning('[任务转向恢复] {} {}；实际累计={:.1f}°；X尝试={}；冷却30秒，交回现有恢复流程。',
+                           client.title, reason, math.degrees(abs(state['turn_angle'])), state['turn_x_count'])
             return False
         except asyncio.CancelledError:
-            cancelled = True
+            cancelled, reason = True, '任务取消'
             raise
         except Exception as exc:
-            paused = True  # A transient read/input error must not rearm the first X.
-            logger.debug('{} 任务点转向恢复已取消：{}', client.title, exc)
-            return True
+            paused = False
+            reason = f'读角度/输入异常：{type(exc).__name__}'
+            client._quest_x_turn_failed = state['context']
+            client._quest_x_turn_retry_at = time.monotonic() + 30.0
+            logger.warning('[任务转向恢复] {} {}；本轮结束，30秒后再检查。', client.title, reason)
+            return False
         finally:
+            logger.info('[任务转向恢复] {} 停止原因={}；实际累计={:.1f}°；X尝试={}。', client.title,
+                        reason, math.degrees(abs(state.get('turn_angle', 0.0))), state.get('turn_x_count', 0))
             if getattr(client, 'quest_interaction_attempt', None) is state:
-                if not cancelled and (paused or state.get('effect_observed')):
+                if not cancelled and paused:
                     state['next_at'] = time.monotonic() + 1.5
                 else:
                     client.quest_interaction_attempt = None
 
+    async def _quest_rollback_origin_interaction(self, client, xyz, leader_client=None):
+        """Only a confirmed rejected landing suppresses unrelated origin X."""
+        failure = self._quest_movement_waiting.get(id(client))
+        if not isinstance(failure, dict) or failure.get('reason') != 'landing_rejected':
+            return False
+        source = leader_client or failure.get('source', client)
+        old = failure['signature']
+        group = (id(source), tuple((id(p), id(getattr(p, 'quest_party_status_session', None)))
+                                  for p in getattr(source, 'quest_party_hitters', [])),
+                 id(getattr(client, 'quest_party_quester', source)))
+        if (getattr(client, 'questing_status', True) is False
+                or (await source.quest_id(), await source.goal_id(), await client.zone_name()) != old[0]
+                or calc_Distance(XYZ(*old[1]), xyz) > 1
+                or old[3] != group
+                or await self._dungeon_quest_snapshot(source) != old[2]
+                or await client.in_battle()):
+            self._quest_movement_waiting.pop(id(client), None)
+            return False
+        position = await client.body.position()
+        blocked = (calc_Distance(position, failure['pre_move']) <= 25
+                   and calc_Distance(position, xyz) > 60)
+        if blocked and not failure.get('origin_x_logged'):
+            failure['origin_x_logged'] = True
+            logger.debug('[任务TP回弹] {} 当前交互位于回弹后的原区域，任务未推进；不作为本轮移动成功依据', client.title)
+        return blocked
+
     async def _quest_local_interaction_ready(self, client, xyz):
-        """Prefer independently usable local objects or a ready party mechanism."""
+        """Stop movement for a visible local X; its handler retains role guards."""
         try:
-            if not await self.quest_interaction_ready(client, xyz, require_objective_match=False):
+            if await self._quest_rollback_origin_interaction(client, xyz):
                 return False
-            prompt = plain_text(await self.read_popup(client))
-            kind = interaction_kind(prompt)
-            if kind == 'collect':
-                return True
-            hitters = list(getattr(client, 'quest_party_hitters', []))
-            zone = await client.zone_name()
-            title = plain_text(await get_popup_title(client))
-            if (portal_kind(title) != 'world_gate'
-                    and kind in ('use', 'open', 'interact')
-                    and not isinstance(getattr(client, 'quest_party_dungeon_interaction', None), dict)
-                    and (not hitters or getattr(client, 'quest_party_group_dungeon_zone', None) is None)
-                    and await self.quest_interaction_ready(client, xyz)):
-                return True  # Existing ordinary-object routing uses only the task client.
-            if (kind in (None, 'talk') or portal_kind(title) == 'world_gate'
-                    or not hitters or getattr(client, 'in_solo_zone', False)
-                    or getattr(client, 'quest_party_group_dungeon_zone', None) != zone):
-                return False
-            for member in [client, *hitters]:
-                if (not getattr(member, 'questing_status', False)
-                        or getattr(member, 'refilling_potions', False)
-                        or getattr(member, 'post_combat_cleanup_active', False)
-                        or isinstance(getattr(member, 'quest_recovery_owner', None), str)
-                        or isinstance(getattr(member, 'potion_dungeon_returned', None), tuple)
-                        or await member.zone_name() != zone or not await is_free(member)
-                        or not await self.quest_interaction_ready(member, xyz, require_objective_match=False)
-                        or plain_text(await get_popup_title(member)) != title
-                        or plain_text(await self.read_popup(member)) != prompt
-                        or member is not client and not await clients_share_live_area(client, member)):
-                    return False
-            return True
+            ready = await self.quest_interaction_ready(client, xyz)
+            if ready and self._quest_movement_waiting.pop(id(client), None) is not None:
+                logger.debug('[任务移动恢复] {} 旧失败记录失效；原因=有效X', client.title)
+            return ready
         except Exception:
             return False  # Missing/rebuilt UI never authorizes an interaction.
 
     async def move_until_quest_interaction(self, client, xyz, leader_client=None):
+        """Use manual quest TP's navmap path, guarded by the original task/room."""
         source = leader_client or client
         context = getattr(source, 'quest_party_shared_target', None)
         retained = (leader_client is not None and isinstance(context, dict)
@@ -4385,201 +4478,365 @@ class Quester():
                     and calc_Distance(context['xyz'], xyz) <= 1)
         snapshot = ((*context['identity'], context['zone']) if retained else
                     (await source.quest_id(), await source.goal_id(), await source.zone_name()))
+        before = context.get('progress') if retained else await self._dungeon_quest_snapshot(source)
         key = id(client)
-        approaching = False
-        approach_snapshot = None
-        async def interaction_pending():
+        def group_context():
+            return (id(source), tuple((id(p), id(getattr(p, 'quest_party_status_session', None)))
+                                      for p in getattr(source, 'quest_party_hitters', [])),
+                    id(getattr(client, 'quest_party_quester', source)))
+
+        group = group_context()
+        signature = (snapshot, (xyz.x, xyz.y, xyz.z), before, group)
+        syncing = bool(getattr(client, 'quest_party_target_sync_active', False))
+        recovering = (isinstance(getattr(client, 'quest_recovery_owner', None), str)
+                      or getattr(client, 'post_combat_movement_active', False)
+                      or getattr(client, 'mainline_chain_retry_active', False))
+        stop_details = {}
+        landing = {'origin': None, 'candidate': None, 'attempted': False, 'alternative': False}
+
+        async def stop_reason():
+            if group_context() != group:
+                return 'group_changed'
             if (getattr(client, 'questing_status', True) is False
                     or getattr(source, 'questing_status', True) is False
-                    or (client is source and getattr(client, 'quest_party_hitters', [])
-                        and getattr(client, 'quest_party_probe_pending', False)
-                        and not getattr(client, 'quest_party_target_sync_active', False))
-                    or getattr(client, 'refilling_potions', False)
-                    or not await is_free_leader_questing(client)):
-                return True
-            if await client.zone_name() != snapshot[2]:
-                return True
-            if await source.zone_name() != snapshot[2]:
-                # The leader may already be in the next room while a slow
-                # hitter still uses the retained entrance in its source room.
-                if (not retained or context.get('source_tokens', {}).get(id(client)) is None
-                        or await _party_area_token(client) != context['source_tokens'][id(client)]):
-                    return True
-            elif (await source.quest_id(), await source.goal_id()) != snapshot[:2]:
-                return True
-            if client is source and await self._quest_local_interaction_ready(client, xyz):
-                return True
-            if await self.quest_interaction_ready(client, xyz, leader_client):
-                return True
-            if approaching:
-                interaction = getattr(client, 'quest_party_dungeon_interaction', None)
-                return (getattr(client, 'quest_party_probe_pending', False)
-                        or getattr(client, 'quest_party_target_sync_active', False)
+                    or getattr(client, '_character_selection_active', False) is True):
+                return 'state'
+            if (getattr(client, 'refilling_potions', False)
+                    or bool(getattr(client, 'quest_party_target_sync_active', False)) != syncing
+                    or not recovering and (
+                        isinstance(getattr(client, 'quest_recovery_owner', None), str)
                         or isinstance(getattr(client, 'potion_dungeon_returned', None), tuple)
-                        or isinstance(getattr(client, 'quest_recovery_owner', None), str)
                         or getattr(client, 'quest_party_battle_rescue_active', False)
                         or getattr(client, 'quest_party_quest_worker_restart_requested', False)
                         or getattr(client, 'post_combat_movement_active', False)
-                        or getattr(client, 'mainline_chain_retry_active', False)
-                        or getattr(client, '_character_selection_active', False) is True
-                        or isinstance(interaction, dict) and interaction.get('phase') == 'transition'
-                        or await self._dungeon_quest_snapshot(source) != approach_snapshot
-                        or calc_Distance(await source.quest_position.position(), xyz) > 1
-                        or calc_Distance(await client.body.position(), xyz) <= teleport_math._QUEST_POINT_TOLERANCE)
+                        or getattr(client, 'mainline_chain_retry_active', False))
+                    or (client is source and getattr(client, 'quest_party_hitters', [])
+                        and getattr(client, 'quest_party_probe_pending', False)
+                        and not getattr(client, 'quest_party_target_sync_active', False))):
+                return 'pause'
+            if await client.zone_name() != snapshot[2]:
+                return 'zone'
+            if await source.zone_name() != snapshot[2]:
+                # A lagging member may only finish the retained source-room move.
+                if (not retained or context.get('source_tokens', {}).get(key) is None
+                        or await _party_area_token(client) != context['source_tokens'][key]
+                        or await source.quest_id() != snapshot[0]):
+                    return 'source_changed'
+            else:
+                current_identity = await source.quest_id(), await source.goal_id()
+                if current_identity != snapshot[:2]:
+                    stop_details.update(changed='Quest/Goal', actual_identity=current_identity)
+                    return 'target_changed'
+                current_target = await source.quest_position.position()
+                if calc_Distance(current_target, xyz) > 1:
+                    stop_details.update(changed='Target', actual_target=current_target)
+                    return 'target_changed'
+                if before is not None and await self._dungeon_quest_snapshot(source) != before:
+                    stop_details.update(changed='Progress')
+                    return 'target_changed'
+                if (client is not source and retained
+                        and not await clients_share_live_area(source, client)):
+                    return 'source_changed'
+            if not await is_free_leader_questing(client):
+                if await self._quest_rollback_origin_interaction(client, xyz, leader_client):
+                    return 'pause'  # Origin dialogue without progress retains the rejected landing.
+                return 'state'  # Native dialogue/battle/loading handoff, not goal completion.
+            if landing['attempted']:
+                observed = await client.body.position()
+                if calc_Distance(observed, xyz) <= 60:
+                    landing['candidate'] = XYZ(observed.x, observed.y, observed.z)
+            if (not await self._quest_rollback_origin_interaction(client, xyz, leader_client)
+                    and await self.quest_interaction_ready(client, xyz, leader_client)):
+                position = await client.body.position()
+                if landing['candidate'] is None:
+                    landing['candidate'] = XYZ(position.x, position.y, position.z)
+                return 'interaction'
+            return None
+
+        def record_failure(position, reason=None):
+            previous = self._quest_movement_waiting.get(key)
+            rejected = reason == 'landing_rejected'
+            if (reason is None and isinstance(previous, dict)
+                    and previous.get('reason') == 'landing_rejected'
+                    and calc_Distance(position, previous['pre_move']) <= 25):
+                reason = 'landing_rejected'
+            gap = calc_Distance(position, xyz)
+            attempts = previous['attempts'] + 1 if isinstance(previous, dict) else 1
+            if (reason != 'landing_rejected' and isinstance(previous, dict)
+                    and (calc_Distance(position, landing['origin']) > 25
+                         or previous['remaining'] - gap > 25)):
+                attempts = 1
+            cooldown = 30.0 if attempts >= 3 else 5.0
+            self._quest_movement_waiting[key] = {
+                'signature': signature, 'actual': XYZ(position.x, position.y, position.z),
+                'remaining': gap, 'failed_at': time.monotonic(), 'attempts': attempts,
+                'next_at': time.monotonic() + cooldown, 'reason': reason,
+                'pre_move': (previous['pre_move'] if reason == 'landing_rejected' and not rejected
+                             else landing['origin']), 'source': source,
+                'rollback_count': (previous.get('rollback_count', 0) if isinstance(previous, dict) else 0)
+                                  + rejected,
+            }
+            if reason == 'landing_rejected':
+                logger.warning('[任务TP回弹] {} TP后返回原位置；QuestID={} GoalID={} Target={} PreMove={} Actual={}',
+                               client.title, snapshot[0], snapshot[1], xyz, landing['origin'], position)
+                logger.debug('[任务移动恢复] {} 落点被拒绝；Retry={}/3，保留失败记录；Cooldown={}s',
+                             client.title, attempts, cooldown)
+            else:
+                logger.debug('[任务移动恢复] {} 本轮navmap反馈结束；FailureSignature={} Retry={}/3 Cooldown={}s Remaining={:.1f}',
+                             client.title, signature, attempts, cooldown, gap)
+
+        async def confirm_landing():
+            try:
+                return await sample_landing()
+            except asyncio.CancelledError:
+                self._quest_movement_waiting.pop(key, None)
+                raise
+            except Exception as exc:
+                logger.warning('[任务TP稳定确认] {} 落点读取失败，未确认成功：{}', client.title, exc)
+                if landing['origin'] is not None:
+                    record_failure(landing['origin'], 'landing_unconfirmed')
+                return False
+
+        async def sample_landing():
+            """Sample after draining navmap; a transient X is only a candidate."""
+            origin, candidate = landing['origin'], landing['candidate']
+            if origin is None or not landing['attempted']:
+                reason = await stop_reason()
+                if reason in ('zone', 'interaction'):
+                    self._quest_movement_waiting.pop(key, None)
+                return reason in ('zone', 'interaction')
+            if candidate is None:
+                candidate = await client.body.position()
+            logger.debug('[任务TP稳定确认] {} 候选落点={} 目标={} 原点={}', client.title, candidate, xyz, origin)
+            approached = (calc_Distance(candidate, xyz) <= 60
+                          and calc_Distance(origin, xyz) > 60)
+            for _ in range(10):  # One second, observing progress/state on each 100ms tick.
+                reason = await stop_reason()
+                position = await client.body.position()
+                if reason in ('zone', 'target_changed', 'source_changed', 'group_changed'):
+                    self._quest_movement_waiting.pop(key, None)
+                    return reason in ('zone', 'target_changed')
+                if reason == 'pause' or getattr(client, 'questing_status', True) is False:
+                    return False
+                if approached and calc_Distance(position, origin) <= 25:
+                    # A real task update/zone/battle outranks position correction.
+                    if await client.in_battle():
+                        self._quest_movement_waiting.pop(key, None)
+                        return False
+                    record_failure(position, 'landing_rejected')
+                    return False
+                if reason == 'state':
+                    if calc_Distance(position, xyz) <= 60 or await client.in_battle():
+                        self._quest_movement_waiting.pop(key, None)
+                    return False  # Let the existing dialogue/combat/loading loop run.
+                if calc_Distance(position, xyz) <= 60:
+                    approached = True
+                await asyncio.sleep(.1)
+            reason = await stop_reason()
+            position = await client.body.position()
+            if reason in ('zone', 'target_changed'):
+                self._quest_movement_waiting.pop(key, None)
+                return True
+            if approached and calc_Distance(position, origin) <= 25:
+                record_failure(position, 'landing_rejected')
+                return False
+            if (reason == 'interaction' and calc_Distance(position, candidate) <= 25
+                    and calc_Distance(position, xyz) <= 60):
+                self._quest_movement_waiting.pop(key, None)
+                logger.debug('[任务TP稳定确认] {} 落点稳定，允许 interaction 接管', client.title)
+                return True
+            if (reason is None and calc_Distance(position, xyz) <= teleport_math._QUEST_POINT_TOLERANCE):
+                self._quest_movement_waiting.pop(key, None)
+                return True
+            if reason not in ('pause', 'state'):
+                record_failure(position)
             return False
-        if await interaction_pending():
-            self._quest_approach_failed.pop(key, None)
-            return
+
         async def move():
-            nonlocal approaching, approach_snapshot
             await self._note_quest_x_lock_wait(client, xyz)
+            ownership = get_client_automation_ownership(client)
+            if ownership.locked and ownership._owner_task is not asyncio.current_task():
+                logger.debug('[任务TP对照] {} Source=auto Call={} Block=input-owner '
+                             'Owner={} OwnerTask={} Expected={} Target={}',
+                             client.title, id(asyncio.current_task()), ownership.owner_label,
+                             id(ownership._owner_task), snapshot, xyz)
             async with automation_owner(client, 'quest-movement'):
-                if await interaction_pending():
-                    self._quest_approach_failed.pop(key, None)
-                    return
-                if (client is not source
-                        or getattr(client, 'quest_party_target_sync_active', False)
-                        or isinstance(getattr(client, 'quest_recovery_owner', None), str)
-                        or getattr(client, 'post_combat_movement_active', False)
-                        or getattr(client, 'mainline_chain_retry_active', False)):
-                    result = context.get('move_results', {}).get(key) if retained else None
-                    if isinstance(result, dict) and getattr(client, 'quest_party_target_sync_active', False):
-                        await collision_tp(client, xyz, leader_client=leader_client, approach_result=result)
-                    else:
-                        await collision_tp(client, xyz, leader_client=leader_client)
-                    return  # Followers, shared movement and existing recovery retain their path.
-                before = await self._dungeon_quest_snapshot(source)
-                signature = (snapshot, (xyz.x, xyz.y, xyz.z), before)
-                if self._quest_approach_failed.get(key) == signature:
-                    pos = await client.body.position()
-                    if teleport_math._QUEST_POINT_TOLERANCE < calc_Distance(pos, xyz) <= 750:
-                        return  # This proven failed target belongs to existing recovery now.
-                self._quest_approach_failed.pop(key, None)
-                result = {}
-                await collision_tp(client, xyz, leader_client=leader_client, approach_result=result)
-                if (not result.get('landed') or not result.get('walk_attempted')
-                        or result.get('walk_completed') is not False and not result.get('truncated')
-                        or before is None or before[:2] != snapshot[:2]):
-                    return
-                gap = calc_Distance(await client.body.position(), xyz)
-                if not teleport_math._QUEST_POINT_TOLERANCE < gap <= 750:
-                    return
-                approach_snapshot = before
-                approaching = True
-                try:
-                    if await interaction_pending():
-                        return
-                    logger.info('{} 自动任务：碰撞传送已落地，最后步行未完成（剩余 {:.0f}u，节点 {}，截断 {}），补充靠近原任务点。',
-                                client.title, gap, result.get('waypoints'), result.get('truncated'))
-                    await self._finish_quest_target_approach(client, xyz, before, snapshot[2])
-                finally:
-                    approaching = False
+                reason = await stop_reason()
+                if reason:
+                    if reason not in ('pause', 'interaction'):
+                        self._quest_movement_waiting.pop(key, None)
+                    return reason in ('zone', 'interaction')
+                origin = await client.body.position()
+                landing['origin'] = XYZ(origin.x, origin.y, origin.z)
+                failure = self._quest_movement_waiting.get(key)
+                if isinstance(failure, dict):
+                    old = failure['signature']
+                    invalid = None
+                    for previous, current, label in (
+                        (old[0][0], snapshot[0], 'Quest变化'),
+                        (old[0][1], snapshot[1], 'Goal变化'),
+                        (old[0][2], snapshot[2], 'Zone变化'),
+                        (old[2], before, '任务进度变化'), (old[3], group, '分组/任务端变化')):
+                        if previous != current:
+                            invalid = label
+                            break
+                    if invalid is None and calc_Distance(XYZ(*old[1]), xyz) > 1:
+                        invalid = 'Target变化'
+                    if invalid is None and (calc_Distance(origin, failure['actual']) > 25
+                            or failure['remaining'] - calc_Distance(origin, xyz) > 25):
+                        invalid = '位置已推进'
+                    if invalid:
+                        self._quest_movement_waiting.pop(key, None)
+                        logger.debug('[任务移动恢复] {} 旧失败记录失效；原因={}', client.title, invalid)
+                        failure = None
+                    elif not recovering:
+                        landing['alternative'] = failure.get('rollback_count', 0) > 0
+                        if time.monotonic() < failure['next_at']:
+                            if not failure.get('cooldown_logged'):
+                                failure['cooldown_logged'] = True
+                                logger.debug('[任务TP对照] {} Source=auto Block=failure-cooldown '
+                                             'Expected={} Target={} Actual={} Retry={}/3 RemainingCooldown={:.1f}s',
+                                             client.title, snapshot, xyz, origin, failure['attempts'],
+                                             failure['next_at'] - time.monotonic())
+                            return False  # Yield without holding input during the cooldown.
+                        logger.debug('[任务移动恢复] {} 冷却结束；Retry={}/3', client.title, failure['attempts'])
+                        if failure['attempts'] >= 3:
+                            # Run the existing ordinary no-progress reposition,
+                            # scoped to this member and watched by the same context.
+                            async def recovery_ready():
+                                return await stop_reason() is None
+                            failure['next_at'] = time.monotonic() + 30.0
+                            try:
+                                await self.handle_repeated_normal_quest_failures(
+                                    getattr(client, 'process_id', None), snapshot[2], 5,
+                                    recovery_client=client, entry_ready=recovery_ready)
+                            except Exception as exc:
+                                logger.debug('[任务移动恢复] {} 本轮恢复异常；30秒后可重试：{}', client.title, exc)
+                                return False
+                            reason = await stop_reason()
+                            if reason:
+                                if reason != 'pause':
+                                    self._quest_movement_waiting.pop(key, None)
+                                return False
+                            origin = await client.body.position()
+                            # Keep rollback evidence across the existing recovery;
+                            # the next move must still skip the rejected direct XYZ.
+                            failure['attempts'] = 0
+                            landing['origin'] = XYZ(origin.x, origin.y, origin.z)
+                attempted = calc_Distance(origin, xyz) > teleport_math._QUEST_POINT_TOLERANCE
+                landing['attempted'] = attempted
+                error = None
+                if attempted:
+                    try:
+                        logger.debug('[任务TP对照] {} Source=auto Call={} QuestID={} GoalID={} '
+                                     'Zone={} Target={} Start={} Owner=quest-movement '
+                                     'Params=(leader=None,reenter={}) Timeout=30s Shared={}',
+                                     client.title, id(asyncio.current_task()), *snapshot, xyz, origin,
+                                     landing['alternative'], retained)
+                        async with asyncio.timeout(30):
+                            if landing['alternative']:
+                                try:
+                                    await navmap_tp(client, xyz, reenter=True)
+                                except ValueError:
+                                    await teleport_math.fallback_spiral_tp(client, xyz)
+                                else:
+                                    if (await client.zone_name() == snapshot[2]
+                                            and await is_free_leader_questing(client)
+                                            and calc_Distance(await client.body.position(), origin) <= 25):
+                                        await teleport_math.fallback_spiral_tp(client, xyz)
+                            else:
+                                await navmap_tp(client, xyz)
+                    except Exception as exc:
+                        error = f'{type(exc).__name__}: {exc}'
+                # navmap returning (or logging its target) is never arrival evidence.
+                position = await client.body.position()
+                zone = await client.zone_name()
+                reason = await stop_reason()
+                gap = calc_Distance(position, xyz)
+                moved = calc_Distance(position, origin) > 5
+                reached = gap <= teleport_math._QUEST_POINT_TOLERANCE
+                logger.info('[任务TP落点] {} navmap尝试={} 起点={} 实际={} 目标={} '
+                            '剩余={:.1f}u 已移动={} 区域={}->{} 反馈={} 错误={}',
+                            client.title, attempted, origin, position, xyz, gap, moved,
+                            snapshot[2], zone, reason, error)
+                if reason:
+                    if reason not in ('pause', 'interaction'):
+                        self._quest_movement_waiting.pop(key, None)
+                    return reason in ('zone', 'interaction')
+                if reached:
+                    # Already at the point: allow existing X/progress UI to settle,
+                    # without another teleport, goto or navmap re-entry.
+                    for _ in range(math.ceil(teleport_math._WALK_TIMEOUT / .1)):
+                        await asyncio.sleep(.1)
+                        reason = await stop_reason()
+                        if reason:
+                            if reason not in ('pause', 'interaction'):
+                                self._quest_movement_waiting.pop(key, None)
+                            return reason in ('zone', 'interaction')
+                if landing['candidate'] is None:
+                    record_failure(position)
+                if not reached:
+                    logger.warning('{} navmap未确认完成；本轮释放移动，进入有界重试冷却。', client.title)
+                return reached  # Point arrival only, never quest completion or arbitrary NPC success.
+
         async def watch_interaction():
             while True:
+                reason = await stop_reason()
+                if reason:
+                    return reason
                 await asyncio.sleep(.1)
-                if await interaction_pending():
-                    return
+
         await self._note_quest_x_blocked(client, '尚未结束任务点移动或共享同步', xyz)
         movement = asyncio.create_task(move())
         watcher = asyncio.create_task(watch_interaction())
+        reason = None
         try:
             done, _ = await asyncio.wait((movement, watcher), return_when=asyncio.FIRST_COMPLETED)
             if watcher in done:
-                await watcher
-                self._quest_approach_failed.pop(key, None)
-                movement.cancel()
-            if movement in done:
-                await movement
+                reason = await watcher
+                logger.debug('[任务TP对照] {} Source=auto CancelSource=context-watcher '
+                             'NavCall={} Reason={} Expected={} Target={} Changed={} Flags={}',
+                             client.title, id(movement), reason, snapshot, xyz, stop_details,
+                             {name: getattr(client, name, None) for name in (
+                                 'questing_status', 'refilling_potions', 'quest_recovery_owner',
+                                 'quest_party_probe_pending', 'quest_party_target_sync_active',
+                                 'quest_party_quest_worker_restart_requested',
+                                 'post_combat_movement_active', 'mainline_chain_retry_active',
+                                 'entity_detect_combat_status', 'post_combat_cleanup_active',
+                                 '_character_selection_active')})
+                if reason not in ('pause', 'interaction'):
+                    self._quest_movement_waiting.pop(key, None)
+                    logger.debug('[任务移动恢复] {} 旧失败记录失效；原因={}', client.title, reason)
+            else:
+                result = await movement
         finally:
-            if getattr(client, 'questing_status', True) is False:
-                self._quest_approach_failed.pop(key, None)
+            if asyncio.current_task().cancelling():
+                logger.debug('[任务TP对照] {} Source=auto CancelSource=caller-task '
+                             'Caller={} NavCall={} Expected={} Target={}', client.title,
+                             id(asyncio.current_task()), id(movement), snapshot, xyz)
+            if (getattr(client, 'questing_status', True) is False
+                    or asyncio.current_task().cancelling()):
+                self._quest_movement_waiting.pop(key, None)
             movement.cancel()
             watcher.cancel()
             await gather_owned(movement, watcher, return_exceptions=True)
-
-    async def _finish_quest_target_approach(self, client, xyz, before, zone):
-        """Reuse the same bounded final approach after solo or verified party TP."""
-        key = id(client)
-        signature = ((*before[:2], zone), (xyz.x, xyz.y, xyz.z), before)
-        self._quest_approach_failed.pop(key, None)
-
-        async def stopped():
-            if (not getattr(client, 'questing_status', False)
-                    or getattr(client, 'refilling_potions', False)
-                    or getattr(client, 'quest_party_probe_pending', False)
-                    or getattr(client, 'quest_party_target_sync_active', False)
-                    or isinstance(getattr(client, 'quest_recovery_owner', None), str)
-                    or isinstance(getattr(client, 'potion_dungeon_returned', None), tuple)
-                    or getattr(client, 'quest_party_battle_rescue_active', False)
-                    or getattr(client, 'quest_party_quest_worker_restart_requested', False)
-                    or getattr(client, 'post_combat_movement_active', False)
-                    or getattr(client, 'mainline_chain_retry_active', False)
-                    or getattr(client, '_character_selection_active', False) is True
-                    or not await is_free_leader_questing(client)
-                    or await client.zone_name() != zone
-                    or await self._dungeon_quest_snapshot(client) != before
-                    or calc_Distance(await client.quest_position.position(), xyz) > 1):
-                return True
-            state = getattr(client, 'quest_party_dungeon_interaction', None)
-            if isinstance(state, dict) and state.get('phase') == 'transition':
-                return True
-            if (await self._quest_local_interaction_ready(client, xyz)
-                    or await self.quest_interaction_ready(client, xyz)
-                    or calc_Distance(await client.body.position(), xyz) <= teleport_math._QUEST_POINT_TOLERANCE):
-                return True
-            if getattr(client, 'quest_party_group_dungeon_zone', None) == zone:
-                for member in getattr(client, 'quest_party_hitters', []):
-                    if (not getattr(member, 'questing_status', False)
-                            or getattr(member, 'refilling_potions', False)
-                            or isinstance(getattr(member, 'quest_recovery_owner', None), str)
-                            or await member.is_loading() or not await is_free(member)
-                            or await member.zone_name() != zone
-                            or not await clients_share_live_area(client, member)):
-                        return True
-            return False
-
-        async def approach():
-            deadline = time.monotonic() + teleport_math._WALK_TIME_LIMIT
-            for attempt in range(2):
-                if await stopped():
-                    return True
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                try:
-                    async with asyncio.timeout(min(teleport_math._WALK_TIMEOUT, remaining)
-                                               if attempt == 0 else remaining):
-                        if attempt == 0:
-                            await client.goto(xyz.x, xyz.y)
-                        else:
-                            await navmap_tp(client, xyz, reenter=True)
-                except (TimeoutError, ValueError) as exc:
-                    logger.debug('{} 本次任务点靠近未完成：{}', client.title, exc)
-                if await stopped():
-                    return True
-                if attempt == 0:
-                    await asyncio.sleep(min(.5, max(0, deadline - time.monotonic())))
-            self._quest_approach_failed[key] = signature
-            logger.warning('{} 原任务点补充靠近仍未完成，停止重复传送；交回现有无进展/恢复流程。', client.title)
-            return False
-
-        async def watch():
-            while not await stopped():
-                await asyncio.sleep(.1)
-
-        async with automation_owner(client, 'quest-final-approach'):
-            movement = asyncio.create_task(approach())
-            watcher = asyncio.create_task(watch())
+        if reason:
             try:
-                done, _ = await asyncio.wait((movement, watcher), return_when=asyncio.FIRST_COMPLETED)
-                if watcher in done:
-                    await watcher
-                    return True
-                return await movement
-            finally:
-                movement.cancel()
-                watcher.cancel()
-                await gather_owned(movement, watcher, return_exceptions=True)
+                position = await client.body.position()
+                zone = await client.zone_name()
+                current_reason = await stop_reason()
+                logger.info('[任务TP落点] {} 旧移动已释放；实际={} 目标={} 区域={}->{} '
+                            '取消原因={} 释放后反馈={}',
+                            client.title, position, xyz, snapshot[2], zone, reason, current_reason)
+                if reason == 'interaction':
+                    return await confirm_landing()
+                return current_reason in ('zone', 'interaction')
+            except Exception as exc:
+                logger.warning('{} 移动结束后实际落点/状态不可读，未确认移动成功：{}', client.title, exc)
+                return False
+        if landing['candidate'] is not None or result and landing['attempted']:
+            return await confirm_landing()
+        return result
 
     async def _bumbles_pet_stage(self, client):
         if await client.zone_name() != self.BUMBLES_PET_ZONE:
@@ -5352,8 +5609,7 @@ class Quester():
                     if state['dialogue_seen']:
                         state.update(phase='search_init', started_at=now)
                     elif (calc_Distance(await client.body.position(), self.OVERGROWN_ESTATE_DIALOGUE) < 150
-                            and not state['x_sent'] and await is_visible_by_path(client, npc_range_path)
-                            and interaction_kind(await self.read_popup(client)) == 'talk'):
+                            and not state['x_sent'] and await is_visible_by_path(client, npc_range_path)):
                         if not await ready():
                             return True
                         state['x_sent'] = True
@@ -5435,17 +5691,9 @@ class Quester():
                             and await is_visible_by_path(client, npc_range_path)):
                         title = plain_text(await get_popup_title(client))
                         prompt = await self.read_popup(client)
-                        if candidate.display and title.casefold() != plain_text(candidate.display).casefold():
-                            fail(f'{candidate.internal} 附近交互标题不匹配，不按 X')
-                            return True
-                        # A verified clue can expose an investigation/dialogue
-                        # prompt rather than a generic Collect label. Its actual
-                        # display title still must match; never enter a sigil.
-                        kind = interaction_kind(prompt)
-                        if (not title or not plain_text(prompt) or kind in ('enter', 'ride', 'teleport')
-                                or not candidate.display and kind != 'collect'):
-                            if time.monotonic() - state['started_at'] >= 5:
-                                fail(f'{candidate.internal} 线索交互提示未确认')
+                        # The live entity/position selects the clue; popup text
+                        # does not authorize X. Keep real entrance handling separate.
+                        if await self.party_dungeon_entry_visible(client, prompt):
                             return True
                         if (calc_Distance(await candidate.entity.location(), candidate.xyz) >= 100
                                 or calc_Distance(await client.body.position(), candidate.xyz) >= 150):
@@ -5840,9 +6088,8 @@ class Quester():
                         while time.monotonic() < deadline:
                             await ready(moving=True)
                             if (await is_visible_by_path(client, npc_range_path)
-                                    and plain_text(await get_popup_title(client)) == title
                                     and calc_Distance(await client.body.position(), point) < 150
-                                    and plain_text(await get_popup_title(client)) == title):
+                                    ):
                                 await ready(moving=True)
                                 # Mark before X, so cancellation never replays an uncertain interaction.
                                 state['phase'] = 'confirm' if title == '线索' else 'npc_dialogue'
@@ -6088,7 +6335,6 @@ class Quester():
                                 return True
                             current = await ready(snapshot)
                             if (await is_visible_by_path(client, npc_range_path)
-                                    and interaction_kind(await self.read_popup(client)) == 'talk'
                                     and await self.quest_interaction_ready(client, self.DARKMOOR_SHADOWS_POSITION)):
                                 await ready(current)
                                 if not state.get('revisit_x_sent'):
@@ -6135,7 +6381,6 @@ class Quester():
                                 state.update(snapshot=current, phase='ritual', target_clicks=0)
                                 break
                             if (await is_visible_by_path(client, npc_range_path)
-                                    and interaction_kind(await self.read_popup(client)) == 'talk'
                                     and await self.quest_interaction_ready(client, self.DARKMOOR_RITUAL_POSITION)):
                                 await ready(current)
                                 if not state.get('npc_x_sent'):
@@ -6317,11 +6562,8 @@ class Quester():
                             return True
                         # Collection may advance to talking to this same NPC.
                         # Only accept that continuation when the live ID is known.
-                        _, location = split_quest_location(text)
                         return (snapshot is not None and state['phase'] != 'book'
-                                and location.casefold() == 'panopticon'
-                                and quest_has_action(text, 'talk')
-                                and quest_interaction_matches(text, self.PANOPTICON_NPC_TITLE))
+                                and current is not None and current[0] == snapshot[0])
 
                     async def input_ready():
                         if (await client.zone_name() != self.PANOPTICON_BOOK_ZONE
@@ -6372,9 +6614,7 @@ class Quester():
                                 if not await input_ready():
                                     return True
                                 if (await is_visible_by_path(client, npc_range_path)
-                                        and plain_text(await get_popup_title(client)) == self.PANOPTICON_BOOK_TITLE
                                         and calc_Distance(await client.body.position(), self.PANOPTICON_BOOK_POSITION) < 750
-                                        and plain_text(await get_popup_title(client)) == self.PANOPTICON_BOOK_TITLE
                                         and await input_ready()):
                                     # Mark before sending X so an exception/cancellation
                                     # cannot restart the first interaction blindly.
@@ -6431,9 +6671,7 @@ class Quester():
                             if not await input_ready():
                                 return True
                             if (not pressed and await is_visible_by_path(client, npc_range_path)
-                                    and plain_text(await get_popup_title(client)) == self.PANOPTICON_NPC_TITLE
                                     and calc_Distance(await client.body.position(), self.PANOPTICON_NPC_POSITION) < 750
-                                    and plain_text(await get_popup_title(client)) == self.PANOPTICON_NPC_TITLE
                                     and await input_ready()):
                                 await client.send_key(Keycode.X, .1)
                                 pressed = True
@@ -6988,7 +7226,7 @@ class Quester():
                             return True
                         if (calc_Distance(await client.body.position(), point) > 150
                                 or not await is_visible_by_path(client, npc_range_path)
-                                or kind == 'clock' and plain_text(await get_popup_title(client)) != '落地钟'):
+                                ):
                             if now - state['started_at'] > 8:
                                 raise TimeoutError('指定交互提示未出现')
                             return True
@@ -7211,8 +7449,7 @@ class Quester():
         if (zone != "Krokotopia/KT_WorldTeleporter" and not floating_exit and not crystal_exit and not special_exit
                 or floating_exit and calc_Distance(await client.body.position(), stuck) > 150):
             self._krok_exit_watch.pop(key, None)
-            await self.move_until_quest_interaction(client, xyz, leader_client=leader_client)
-            return
+            return await self.move_until_quest_interaction(client, xyz, leader_client=leader_client)
 
         async def interaction_pending():
             return (await is_spiral_door_open(client)
@@ -8023,8 +8260,7 @@ class Quester():
                         state['phase'] = 'failed'
                         logger.warning('{} 未确认藏身处入口落地，停止同阶段重复 TP。', client.title)
                     return True
-                if (not await is_visible_by_path(client, npc_range_path)
-                        or not is_dungeon_entry_prompt(await self.read_popup(client))):
+                if not await is_visible_by_path(client, npc_range_path):
                     return True
         except asyncio.CancelledError:
             raise
@@ -8067,7 +8303,6 @@ class Quester():
                                 or calc_Distance(await member.body.position(), self.NO_BLOOD_HIDEOUT_POSITION) > 150):
                             return False
                     return (await is_visible_by_path(client, npc_range_path)
-                            and is_dungeon_entry_prompt(await self.read_popup(client))
                             and await ready())
 
                 await self.enter_party_dungeon(entry_clients, client, entry_ready=entry_ready)
@@ -8174,9 +8409,9 @@ class Quester():
         # Ordinary doors also need the assigned party at the entrance. Only a
         # visible sigil establishes dungeon state before the transition.
         sigil = await self.party_dungeon_entry_visible(client)
-        if not sigil and not (is_dungeon_entry_prompt(await self.read_popup(client))
-                              and await is_visible_by_path(client, npc_range_path)
-                              and await self.quest_interaction_ready(client, await client.quest_position.position(), require_objective_match=False)):
+        if portal_kind(await get_popup_title(client)) == 'world_gate':
+            return False
+        if not sigil and not await self.quest_interaction_ready(client, await client.quest_position.position()):
             return False
         entry_mainline = await self._mainline_identity(client)
         entry_mainline_id = (entry_mainline[0] if entry_mainline and entry_mainline[3] is not None
@@ -8193,8 +8428,6 @@ class Quester():
             entry_clients = [client, *hitters]
             entrance_title = plain_text(await get_popup_title(client))
             entrance_position = await client.body.position()
-            if not entrance_title:
-                return False
             for member in [client, *hitters]:
                 if (not getattr(member, 'questing_status', False)
                         or getattr(member, 'refilling_potions', False)
@@ -8220,12 +8453,9 @@ class Quester():
                     self._note_quest_entry_wait(client, '成员尚未靠近入口', member=member.title, distance=round(member_distance))
                     return False
                 member_title = plain_text(await get_popup_title(member))
-                if member_title != entrance_title:
-                    self._note_quest_entry_wait(client, '成员入口标题不同或未显示', member=member.title, title=member_title, expected=entrance_title)
+                if member is not client and portal_kind(member_title) == 'world_gate':
                     return False
-                if (not await self.party_dungeon_entry_visible(member) if sigil else
-                        not await is_visible_by_path(member, npc_range_path)
-                        or not is_dungeon_entry_prompt(await self.read_popup(member))):
+                if not await is_visible_by_path(member, npc_range_path):
                     self._note_quest_entry_wait(client, '成员未显示可确认的组队进入提示', member=member.title, prompt=await self.read_popup(member))
                     return False
             if entry_ready is not None and not await entry_ready():
@@ -8236,16 +8466,14 @@ class Quester():
                 if (await member.is_loading() or await member.zone_name() != entry_zone
                         or not await is_free(member)
                         or calc_Distance(await member.body.position(), entrance_position) >= 750
-                        or plain_text(await get_popup_title(member)) != entrance_title
-                        or not is_dungeon_entry_prompt(await self.read_popup(member))
+                        or not await is_visible_by_path(member, npc_range_path)
+                        or member is not client and portal_kind(await get_popup_title(member)) == 'world_gate'
                         or member is not client and not await clients_share_live_area(client, member)):
                     self._note_quest_entry_wait(client, '进入前成员状态已改变，继续等待本组', member=member.title)
                     return False
             if (await client.is_loading() or await client.zone_name() != entry_zone
                     or (not await self.party_dungeon_entry_visible(client) if sigil else
-                        not await is_visible_by_path(client, npc_range_path)
-                        or not is_dungeon_entry_prompt(await self.read_popup(client)))
-                    or plain_text(await get_popup_title(client)) != entrance_title
+                        not await is_visible_by_path(client, npc_range_path))
                     or any(not getattr(p, 'questing_status', False)
                            or getattr(p, 'refilling_potions', False)
                            or getattr(p, 'post_combat_cleanup_active', False)
@@ -8492,8 +8720,7 @@ class Quester():
         shared_interaction = isinstance(getattr(client, 'quest_party_dungeon_interaction', None), dict)
         if not hitters or confirmed_solo or group_zone is None and not shared_interaction:
             client.quest_party_shared_target = None
-            await self.teleport_to_quest_target(client, xyz)
-            return True
+            return await self.teleport_to_quest_target(client, xyz)
         if not zone or group_zone is not None and group_zone != zone:
             self._note_quest_entry_wait(client, '共享房间尚未完成切区；等待入口补跟或手动归队')
             return False  # A split shared room must never fall back to solo TP.
@@ -8502,7 +8729,6 @@ class Quester():
         tasks = []
         movement = watcher = None
         flagged = []
-        move_results = {}
         progress_before = None
         try:
             try:
@@ -8554,11 +8780,8 @@ class Quester():
                 client.in_solo_zone = False  # Whole-party live proof supersedes stale solo classification.
 
             progress_before = await self._dungeon_quest_snapshot(client)
-            failed_signature = ((*before, zone), (xyz.x, xyz.y, xyz.z), progress_before)
-            if self._quest_approach_failed.get(id(client)) == failed_signature:
-                if teleport_math._QUEST_POINT_TOLERANCE < calc_Distance(await client.body.position(), xyz) <= 750:
-                    return False
-            self._quest_approach_failed.pop(id(client), None)
+            # Each member's navmap wrapper owns its bounded failure record.
+            # Do not permanently suppress the entire group at this layer.
 
             source_tokens = {}
             if group_zone == zone:
@@ -8566,11 +8789,10 @@ class Quester():
                     pair = getattr(client, '_party_area_peers', {}).get(id(member))
                     if pair:
                         source_tokens[id(member)] = pair[1]
-            move_results = {id(member): {} for member in participants}
             client.quest_party_shared_target = {
                 'zone': zone, 'identity': before, 'xyz': xyz,
                 'members': tuple(id(p) for p in participants), 'source_tokens': source_tokens,
-                'move_results': move_results,
+                'progress': progress_before,
             }
 
             async def task_changed():
@@ -8578,29 +8800,37 @@ class Quester():
                     await asyncio.sleep(.2)
                     if any(not getattr(p, 'questing_status', False) for p in participants):
                         return
-                    if await self._quest_local_interaction_ready(client, xyz):
+                    # Only the leader's completed stability check may cancel
+                    # peers for X; a transient popup must not cancel that check.
+                    if (tasks and tasks[0].done() and not tasks[0].cancelled()
+                            and tasks[0].exception() is None and tasks[0].result() is not False
+                            and await self._quest_local_interaction_ready(client, xyz)):
                         return
                     # A zone transition is the intended result, not a reason
                     # to cancel slower peers still moving through the doorway.
                     if (await client.zone_name() == zone and not await client.is_loading()
-                            and (await client.quest_id(), await client.goal_id()) != before):
+                            and ((await client.quest_id(), await client.goal_id()) != before
+                                 or calc_Distance(await client.quest_position.position(), xyz) > 1)):
                         return
 
             tasks = [asyncio.create_task(self.teleport_to_quest_target(p, xyz, leader_client=client))
                      for p in participants]
             movement = asyncio.gather(*tasks)
             async with asyncio.timeout(30):
-                if before is None:
-                    await movement
-                else:
-                    watcher = asyncio.create_task(task_changed())
-                    done, _ = await asyncio.wait((movement, watcher), return_when=asyncio.FIRST_COMPLETED)
-                    if watcher in done:
-                        await watcher
-                        logger.info('{} 已出现有效本地交互、任务目标改变或本组停止，取消整组旧目标移动。', client.title)
-                        return False
-                    await movement
+                watcher = asyncio.create_task(task_changed())
+                done, _ = await asyncio.wait((movement, watcher), return_when=asyncio.FIRST_COMPLETED)
+                if watcher in done:
+                    await watcher
+                    logger.debug('[任务TP对照] {} CancelSource=shared-target-watcher Caller={} '
+                                 'Expected={} Target={} Members={}', client.title,
+                                 id(asyncio.current_task()), (*before, zone), xyz,
+                                 [(p.title, getattr(p, 'questing_status', None)) for p in participants])
+                    logger.info('{} 已出现有效本地交互、任务目标改变或本组停止，取消整组旧目标移动。', client.title)
+                    return False
+                results = await movement
         except TimeoutError:
+            logger.debug('[任务TP对照] {} CancelSource=shared-timeout Caller={} '
+                         'Timeout=30s Target={}', client.title, id(asyncio.current_task()), xyz)
             logger.warning('{} 整组地牢传送未完成，暂停本轮；等待任务进展或人工处理。', client.title)
             return False
         finally:
@@ -8612,26 +8842,16 @@ class Quester():
             for member in flagged:
                 member.quest_party_target_sync_active = False
 
-        result = move_results.get(id(client), {})
-        if (result.get('landed') and result.get('walk_attempted')
-                and (result.get('walk_completed') is False or result.get('truncated'))):
-            gap = calc_Distance(await client.body.position(), xyz)
-            if gap <= teleport_math._QUEST_POINT_TOLERANCE:
-                return True
-            if gap > 750:
-                return False
-            if (await client.zone_name() != zone
-                    or (await client.quest_id(), await client.goal_id()) != before
-                    or await self._dungeon_quest_snapshot(client) != progress_before):
-                return False
-            logger.info('{} 共享传送已结束但任务点未到达：剩余 {:.0f}u，成员结果={}；释放同步移动后补充靠近。',
-                        client.title, gap, {p.title: move_results.get(id(p)) for p in participants})
-            if progress_before is None:
-                self._quest_approach_failed[id(client)] = failed_signature
-                logger.warning('{} 最后步行失败且任务快照不可读，暂缓重复原目标传送。', client.title)
-                return False
-            return await self._finish_quest_target_approach(client, xyz, progress_before, zone)
-        return True
+        # Each ordinary member validates its actual position/state in the same
+        # navmap wrapper. Special-zone handlers retain their existing None return.
+        if await client.zone_name() == zone:
+            for member in participants:
+                if (not getattr(member, 'questing_status', False)
+                        or await member.is_loading() or not await is_free(member)
+                        or await member.zone_name() != zone
+                        or member is not client and not await clients_share_live_area(client, member)):
+                    return False
+        return all(result is not False for result in results)
 
     async def _resume_party_dungeon_interaction(self, hitter=None) -> bool:
         """Recover only the follower; never occupy the quester's task loop."""
@@ -8803,8 +9023,7 @@ class Quester():
                             # never the quester's new-room target or prompt.
                             title = plain_text(await get_popup_title(member))
                             prompt = plain_text(await self.read_popup(member))
-                            if (interaction_kind(prompt) in (None, 'talk', 'collect')
-                                    or portal_kind(title) == 'world_gate'
+                            if (portal_kind(title) == 'world_gate'
                                     or time.monotonic() >= state['deadline']
                                     or not all(getattr(p, 'questing_status', False) for p in participants)
                                     or tuple(id(p) for p in [client, *getattr(client, 'quest_party_hitters', [])]) != state['members']
@@ -8816,13 +9035,9 @@ class Quester():
                                     or not await is_free(member)
                                     or (await member.quest_id(), await member.goal_id()) != source_identity
                                     or await _party_area_token(member) != source_token
-                                    or not await self.quest_interaction_ready(member, state['xyz'], require_objective_match=False)
-                                    or plain_text(await get_popup_title(member)) != title
-                                    or plain_text(await self.read_popup(member)) != prompt):
+                                    or not await self.quest_interaction_ready(member, state['xyz'], require_objective_match=False)):
                                 continue
                             source_prompts = state.setdefault('source_prompts', {})
-                            if source_prompts.get(key, (title, prompt)) != (title, prompt):
-                                continue
                             source_prompts[key] = (title, prompt)
                             await member.send_key(Keycode.X, .1)
                             logger.info('[任务X结果] {} 原房间补跟落点X发送完成，继续等待切区确认。', member.title)
@@ -8836,8 +9051,7 @@ class Quester():
                                 or not await is_free(member)
                                 or calc_Distance(await member.body.position(), state['xyz']) >= 750
                                 or not await is_visible_by_path(member, npc_range_path)
-                                or plain_text(await get_popup_title(member)) != state['title']
-                                or plain_text(await self.read_popup(member)) != state['prompt']):
+                                or portal_kind(await get_popup_title(member)) == 'world_gate'):
                             continue
                         state['attempts'][key] = state['attempts'].get(key, 0) + 1
                         state['next_at'][key] = time.monotonic() + 1.5
@@ -8854,6 +9068,9 @@ class Quester():
         """Act on the quester's prompt; followers recover independently if needed."""
         client = self.client
         state = getattr(client, 'quest_party_dungeon_interaction', None)
+        pending = getattr(client, 'quest_interaction_attempt', None)
+        if isinstance(pending, dict) and pending.get('shared_members'):
+            return await self.handle_quest_interaction(client, xyz)
         hitters = list(getattr(client, 'quest_party_hitters', []))
         zone = await client.zone_name() if hitters else None
         if (not hitters or getattr(client, 'in_solo_zone', False)
@@ -8861,6 +9078,14 @@ class Quester():
             return False  # Keep the existing ordinary/solo-client flow.
         participants = [client, *hitters]
         snapshot = await self._dungeon_quest_snapshot(client)
+        failed = getattr(client, '_quest_x_turn_failed', None)
+        if (snapshot is not None and isinstance(failed, tuple)
+                and failed[:3] == ((snapshot[0], snapshot[1], zone), (xyz.x, xyz.y, xyz.z), snapshot)):
+            if time.monotonic() < getattr(client, '_quest_x_turn_retry_at', float('inf')):
+                return True
+            if isinstance(state, dict) and not state.get('changed') and state.get('destination') is None:
+                client.quest_party_dungeon_interaction = state = None
+            client._quest_x_turn_failed = None
         signature = (zone, snapshot, tuple(id(p) for p in participants))
         context = getattr(client, 'quest_party_shared_target', None)
         if isinstance(context, dict) and context['identity'] is not None:
@@ -8874,6 +9099,8 @@ class Quester():
 
         if portal_kind(title) == 'world_gate':
             return False  # Let the ordinary quester-only interaction handle world selection.
+        entry = (await self.party_dungeon_entry_visible(client, prompt)
+                 or is_dungeon_entry_prompt(prompt))
 
         async def ready(member):
             return (getattr(member, 'questing_status', False)
@@ -8885,22 +9112,20 @@ class Quester():
                     and not await member.is_loading() and await member.zone_name() == zone
                     and await is_free(member)
                     and calc_Distance(await member.body.position(), xyz) < 750
-                    and await is_visible_by_path(member, npc_range_path)
-                    and plain_text(await get_popup_title(member)) == title
-                    and plain_text(await self.read_popup(member)) == prompt)
+                    and (not entry and member is not client
+                         or await is_visible_by_path(member, npc_range_path))
+                    and (not entry or member is client
+                         or portal_kind(await get_popup_title(member)) != 'world_gate'))
 
-        if not prompt or not title or not await ready(client):
+        if not await ready(client):
             await self._note_quest_x_blocked(client, '共享交互的提示/标题读取或任务端状态检查未通过', xyz)
             return False
-        if interaction_kind(prompt) is None:
-            return False  # Generic handler logs/waits; party input must not bypass it.
         # A quest-local NPC may exist only on the quester. No follower prompt,
         # readiness check or snapshot is a precondition for this conversation.
         if interaction_kind(prompt) == 'collect':
             return await self.handle_quest_interaction(client, xyz)
         if interaction_kind(prompt) == 'talk':
-            await self.handle_npc_talking_quests(client, [client])
-            return True
+            return await self.handle_quest_interaction(client, xyz)
         # Unlike NPC dialogue, doors/mechanisms are a shared-room action.
         # Missing/busy hitters consume this iteration rather than falling
         # through to the generic quester-only X handler.
@@ -8976,8 +9201,13 @@ class Quester():
                 entry_clients = await self.prepare_party_dungeon_entry()
                 await self.enter_party_dungeon(entry_clients)
             else:
+                input_members = [client]
+                for member in hitters:
+                    if (await is_visible_by_path(member, npc_range_path)
+                            and portal_kind(await get_popup_title(member)) != 'world_gate'):
+                        input_members.append(member)
                 async with AsyncExitStack() as owners:
-                    for member in participants:
+                    for member in input_members:
                         await self._note_quest_x_lock_wait(member, xyz)
                         await owners.enter_async_context(automation_owner(member, 'party-dungeon-interaction'))
                     for member in participants:
@@ -8991,16 +9221,35 @@ class Quester():
                     if await self._dungeon_quest_snapshot(client) != snapshot:
                         await self._note_quest_x_blocked(client, '取得输入锁后共享交互任务进度变化', xyz)
                         return True
-                    for member in participants:
+                    input_members = [member for member in input_members
+                                     if member is client or (await is_visible_by_path(member, npc_range_path)
+                                        and portal_kind(await get_popup_title(member)) != 'world_gate')]
+                    position = await client.body.position()
+                    if (not await ready(client)
+                            or calc_Distance(await client.quest_position.position(), xyz) > 1
+                            or await self._dungeon_quest_snapshot(client) != snapshot):
+                        await self._note_quest_x_blocked(client, '共享X输入前当前任务/目标或状态变化', xyz)
+                        return True
+                    for member in input_members:
                         state['attempts'][id(member)] = previous_attempts + 1
                     state['last_input_at'] = time.monotonic()
-                    await gather_owned(*[member.send_key(Keycode.X, .1) for member in participants])
+                    await gather_owned(*[member.send_key(Keycode.X, .1) for member in input_members])
+                    if not entry:
+                        before = await client.quest_id(), await client.goal_id(), zone
+                        now = time.monotonic()
+                        client.quest_interaction_attempt = dict(
+                            signature=(before, (xyz.x, xyz.y, xyz.z), prompt), attempts=1,
+                            next_at=now + 1.5, sent_at=now, progress=snapshot,
+                            context=(before, (xyz.x, xyz.y, xyz.z), snapshot, title),
+                            target=xyz, position=position, title=title, prompt=prompt,
+                            shared_members=tuple(participants))
             if state['attempts'].get(id(client), 0):
                 state['last_input_at'] = time.monotonic()
                 for member in participants:
                     if state['attempts'].get(id(member), 0):
                         state['attempts'][id(member)] = max(state['attempts'][id(member)], previous_attempts + 1)
-                logger.info('[任务X结果] {} 整组交互X发送完成；等待整组任务进度/切区确认，NPC 对话仍独立。', client.title)
+                logger.info('[任务X结果] {} 共享交互X发送完成；实际输入成员={}；等待任务进度/切区确认。',
+                            client.title, [p.title for p in participants if state['attempts'].get(id(p), 0)])
         finally:
             for member in participants:
                 member.quest_party_target_sync_active = False
@@ -9133,7 +9382,8 @@ class Quester():
                             await self._note_quest_x_blocked(self.client, '共享移动未完成，任务端本地交互检查未通过', quest_xyz)
                         return
                 else:
-                    await self.teleport_to_quest_target(self.client, quest_xyz)
+                    if await self.teleport_to_quest_target(self.client, quest_xyz) is False:
+                        return  # Unverified movement does not authorize post-move NPC retries.
 
                 # confirm exit dungeon early button or wait for client to exit loading
                 await self.handle_questing_zone_change()
@@ -9158,7 +9408,7 @@ class Quester():
                     return
 
                 await asyncio.sleep(.5)
-                if (not self.client.questing_status or not await is_free(self.client)
+                if (not self.client.questing_status or not await is_free_leader_questing(self.client)
                         or calc_Distance(await self.client.quest_position.position(), quest_xyz) > 1
                         or (await self.client.quest_id(), await self.client.goal_id(), await self.client.zone_name()) != move_snapshot):
                     await self._note_quest_x_blocked(self.client, '移动后状态/任务/目标/区域复核未通过', quest_xyz,
@@ -9179,6 +9429,7 @@ class Quester():
                         async def entry_ready():
                             return (self.client.questing_status and not await self.client.is_loading()
                                     and not await self.client.in_battle()
+                                    and calc_Distance(await self.client.quest_position.position(), quest_xyz) <= 1
                                     and (await self.client.quest_id(), await self.client.goal_id(), await self.client.zone_name()) == move_snapshot)
                         entry_clients = await self.prepare_party_dungeon_entry(entry_ready=entry_ready)
                         if not entry_clients:
@@ -9188,9 +9439,19 @@ class Quester():
                         return
                     elif interaction_kind(sigil_msg_check) == "talk":
                         logger.debug('Talking to NPC')
+                        failed = getattr(self.client, '_quest_x_turn_failed', None)
+                        if (isinstance(failed, tuple)
+                                and failed[:3] == (move_snapshot, (quest_xyz.x, quest_xyz.y, quest_xyz.z),
+                                                  await self._dungeon_quest_snapshot(self.client))
+                                and time.monotonic() < getattr(self.client, '_quest_x_turn_retry_at', float('inf'))):
+                            return
                         await self._note_quest_x_lock_wait(self.client, quest_xyz)
                         async with automation_owner(self.client, 'quest-interaction'):
-                            if (not self.client.questing_status or not await is_free(self.client)
+                            if (not self.client.questing_status or not await is_free_leader_questing(self.client)
+                                    or getattr(self.client, 'refilling_potions', False)
+                                    or isinstance(getattr(self.client, 'quest_recovery_owner', None), str)
+                                    or not await self.quest_interaction_ready(self.client, quest_xyz)
+                                    or calc_Distance(await self.client.quest_position.position(), quest_xyz) > 1
                                     or (await self.client.quest_id(), await self.client.goal_id(), await self.client.zone_name()) != move_snapshot):
                                 await self._note_quest_x_blocked(self.client, 'NPC输入前状态/任务/区域复核未通过', quest_xyz,
                                                                expected=move_snapshot)
@@ -9206,7 +9467,11 @@ class Quester():
                     else:
                         await self._note_quest_x_lock_wait(self.client, quest_xyz)
                         async with automation_owner(self.client, 'quest-interaction'):
-                            if (not self.client.questing_status or not await is_free(self.client)
+                            if (not self.client.questing_status or not await is_free_leader_questing(self.client)
+                                    or getattr(self.client, 'refilling_potions', False)
+                                    or isinstance(getattr(self.client, 'quest_recovery_owner', None), str)
+                                    or not await self.quest_interaction_ready(self.client, quest_xyz)
+                                    or calc_Distance(await self.client.quest_position.position(), quest_xyz) > 1
                                     or (await self.client.quest_id(), await self.client.goal_id(), await self.client.zone_name()) != move_snapshot):
                                 await self._note_quest_x_blocked(self.client, '移动后X输入前状态/任务/区域复核未通过', quest_xyz,
                                                                expected=move_snapshot)
@@ -9214,14 +9479,16 @@ class Quester():
                             progress = await self._dungeon_quest_snapshot(self.client)
                             title = plain_text(await get_popup_title(self.client))
                             context = (move_snapshot, (quest_xyz.x, quest_xyz.y, quest_xyz.z), progress, title)
-                            if getattr(self.client, '_quest_x_turn_failed', None) == context:
+                            failed = getattr(self.client, '_quest_x_turn_failed', None)
+                            if (isinstance(failed, tuple) and failed[:3] == context[:3]
+                                    and time.monotonic() < getattr(self.client, '_quest_x_turn_retry_at', float('inf'))):
                                 await self._note_quest_x_blocked(self.client, '已有X重试次数耗尽，等待原恢复流程', quest_xyz,
                                                                expected=move_snapshot)
                                 return
                             failed = getattr(self.client, '_quest_x_turn_failed', None)
                             if (isinstance(failed, tuple) and failed[:3] == context[:3]
                                     and not await self.quest_interaction_ready(self.client, quest_xyz)):
-                                await self._note_quest_x_blocked(self.client, '新交互物件尚未匹配当前任务，保留原X次数限制', quest_xyz)
+                                await self._note_quest_x_blocked(self.client, '新交互提示尚未就绪，保留原X次数限制', quest_xyz)
                                 return
                             self.client._quest_x_turn_failed = None
                             # Observe the original first X without changing its input or wait.
@@ -9272,6 +9539,12 @@ class Quester():
             await asyncio.sleep(1)
             if not self.client.questing_status:
                 return
+            if (id(self.client) in self._quest_movement_waiting
+                    and (await self.client.in_battle()
+                         or await is_visible_by_path(self.client, advance_dialog_path)
+                         or await read_dialogue_text(self.client) != '')):
+                self._quest_movement_waiting.pop(id(self.client), None)
+                logger.debug('[任务移动恢复] {} 旧失败记录失效；原因=战斗/实际NPC对话', self.client.title)
             await self.auto_quest_solo(ignore_pet_level_up=ignore_pet_level_up, play_dance_game=play_dance_game)
 
     async def gather_clients_from_potion_buy(
@@ -9288,13 +9561,26 @@ class Quester():
         return recalled
 
 
-    async def handle_repeated_normal_quest_failures(self, last_leader_pid, last_leader_zone: str, iterations_since_last_quest_change: int):
+    async def handle_repeated_normal_quest_failures(self, last_leader_pid, last_leader_zone: str, iterations_since_last_quest_change: int,
+                                                   *, recovery_client=None, entry_ready=None):
         # In its current form, this attempts to correct for situations where you are standing too close to an NPC or sigil, and need to move away then return to get the popup to talk / enter
         # if after a certain number of loops we've failed to move on from our quest, something is wrong, and we try to correct for this in case this is the cause
 
         # this could be expanded to matching entity name to mob name for situations like the Labyrinth where the game tells you to defeat an enemy but gives you an inaccurate location
 
         # logger.info('ITERATIONS: ' + str(iterations_since_last_quest_change))
+        if recovery_client is not None:
+            # Ordinary navmap recovery already holds this client's input owner;
+            # its watcher cancels/drains this action on task/state/group changes.
+            if iterations_since_last_quest_change >= 5 and await entry_ready():
+                location = await recovery_client.body.position()
+                if not await entry_ready():
+                    return
+                logger.debug('[任务移动恢复] {} 有界重试耗尽，执行现有无进展移开恢复。', recovery_client.title)
+                await asyncio.wait_for(recovery_client.teleport(
+                    XYZ(location.x + 500, location.y, location.z - 1500)), timeout=5)
+                await asyncio.sleep(2.0)
+            return
         if last_leader_pid == self.current_leader_client.process_id and last_leader_zone == await self.current_leader_client.zone_name():
             # more serious than 5 - the issue may be that the XYZ is just incorrect
             # we should scan for entities, teleport to the one that is closest to the given XYZ

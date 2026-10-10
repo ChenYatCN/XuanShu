@@ -204,15 +204,14 @@ class DarkmoorClueTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.handle())
         self.assertEqual(self.events, [])
 
-    async def test_wrong_popup_is_bounded_without_x_or_replay(self):
+    async def test_different_popup_title_sends_x_without_replaying_dialogue(self):
         self.popup_title.side_effect = None
         self.popup_title.return_value = '其他对象'
         await self.handle()
-        self.client.teleport.assert_awaited_once()
-        self.client.send_key.assert_not_awaited()
-        self.assertTrue(await self.handle())
-        self.client.teleport.assert_awaited_once()
-        self.assertLess(self.now, 8)
+        self.assertEqual(self.client.teleport.await_count, 2)
+        self.assertEqual(self.client.send_key.await_count, 2)
+        self.assertFalse(await self.handle())
+        self.assertEqual(self.client.send_key.await_count, 2)
         self.assert_released()
 
     async def test_absent_confirmation_never_moves_to_npc(self):
@@ -314,24 +313,22 @@ class DarkmoorClueTests(unittest.IsolatedAsyncioTestCase):
         await self.quester._handle_darkmoor_clue_confirmation(self.client)
         self.quester._click_ui_window.assert_not_awaited()
 
-    async def test_final_popup_read_takeover_prevents_clue_x(self):
-        reads = 0
-        async def title(client):
-            nonlocal reads
-            reads += 1
-            if reads == 2:
+    async def test_final_visible_window_read_takeover_prevents_clue_x(self):
+        original = self.visible.side_effect
+        async def visible(client, path):
+            if path == npc_range_path:
                 self.client.quest_party_probe_pending = True
-            return self.popup
-        self.popup_title.side_effect = title
+            return original(client, path)
+        self.visible.side_effect = visible
         await self.handle()
         self.client.teleport.assert_awaited_once()
         self.client.send_key.assert_not_awaited()
         self.assert_released()
 
-    async def test_wrong_npc_title_never_interacts_or_runs_second_clue(self):
+    async def test_different_npc_title_still_interacts_without_replaying_clue(self):
         self.popup_title.side_effect = lambda c: '错误的 NPC' if self.popup == '阿克托指挥官' else self.popup
         await self.handle()
-        self.client.send_key.assert_awaited_once_with(Keycode.X, .1)
+        self.assertEqual(self.client.send_key.await_count, 2)
         self.assertEqual(self.client.teleport.await_count, 2)
         self.assert_released()
 

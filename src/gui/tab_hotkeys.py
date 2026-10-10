@@ -1,6 +1,9 @@
 # Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
 import os
+import time
 from html import escape
+
+from loguru import logger
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QPixmap
@@ -59,9 +62,14 @@ def build_hotkeys_tab(ctx):
         return [name for name, check in client_checks.items() if check.isChecked()]
 
     def scoped_callback(aid):
-        def invoke():
+        def invoke(*, trigger=None):
+            if aid == 'toggle_questing':
+                trigger = dict(trigger or {'source': 'ui_callback', 'event': 'callback'})
+                trigger['gui_dispatch_ns'] = time.monotonic_ns()
+                trigger['selected_clients'] = selected_clients()
+                logger.info('[quest_toggle] gui_dispatch trigger={}', trigger)
             send_queue.put(GUICommand(GUICommandType.ToggleHotkeyGroup,
-                {'action': aid, 'clients': selected_clients()}))
+                {'action': aid, 'clients': selected_clients()}, trigger=trigger))
         return invoke
 
     # Callbacks used by bindable actions
@@ -517,6 +525,14 @@ def build_hotkeys_tab(ctx):
         removable=False,
         category=None,
     ):
+        def invoke_name_event(event):
+            if action_id == 'toggle_questing':
+                callback(trigger={'source': 'ui', 'event': 'mouse_press',
+                    'button': event.button().name, 'event_type': event.type().name,
+                    'event_ns': time.monotonic_ns()})
+            else:
+                callback()
+
         # Parent widgets to hk_scroll_widget to prevent them from briefly
         # appearing as top-level windows (parentless QPushButtons flash on Windows).
         _p = hk_scroll_widget
@@ -571,9 +587,7 @@ def build_hotkeys_tab(ctx):
             )
             if callback:
                 name_group.setCursor(Qt.CursorShape.PointingHandCursor)
-                name_group.mousePressEvent = (lambda cb_ref: lambda e: cb_ref())(
-                    callback
-                )
+                name_group.mousePressEvent = invoke_name_event
             row.addWidget(name_group)
         else:
             name_label.setFixedWidth(_name_max)
@@ -584,9 +598,7 @@ def build_hotkeys_tab(ctx):
             )
             if callback:
                 name_label.setCursor(Qt.CursorShape.PointingHandCursor)
-                name_label.mousePressEvent = (lambda cb_ref: lambda e: cb_ref())(
-                    callback
-                )
+                name_label.mousePressEvent = invoke_name_event
             row.addWidget(name_label)
 
         key_label = QLabel(registry.get_binding_display(action_id), _p)

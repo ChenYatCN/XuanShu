@@ -105,15 +105,15 @@ class PanopticonBookTests(unittest.IsolatedAsyncioTestCase):
             setattr(self.client, name, original)
         self.client.teleport.assert_not_awaited()
 
-    async def test_wrong_book_never_sends_x_or_npc_tp(self):
+    async def test_different_book_title_sends_x_at_confirmed_point(self):
         original = self.client.teleport.side_effect
         async def teleport(point):
             await original(point)
             self.popup = '错误的书'
         self.client.teleport.side_effect = teleport
         await self.handle()
-        self.assertEqual(self.client.teleport.await_count, 2)
-        self.client.send_key.assert_not_awaited()
+        self.client.teleport.assert_awaited_once_with(Quester.PANOPTICON_BOOK_POSITION)
+        self.client.send_key.assert_awaited_once_with(Keycode.X, .1)
         self.assert_released()
 
     async def test_book_without_response_never_runs_npc_tp_or_replays(self):
@@ -178,7 +178,7 @@ class PanopticonBookTests(unittest.IsolatedAsyncioTestCase):
         self.client.teleport.assert_awaited_once()
         self.assert_released()
 
-    async def test_wrong_npc_prompt_is_bounded_without_wrong_x(self):
+    async def test_different_npc_title_still_sends_x(self):
         original = self.client.teleport.side_effect
         async def teleport(point):
             await original(point)
@@ -186,8 +186,8 @@ class PanopticonBookTests(unittest.IsolatedAsyncioTestCase):
                 self.popup = '其他 NPC'
         self.client.teleport.side_effect = teleport
         await self.handle()
-        self.assertEqual(self.client.teleport.await_count, 3)
-        self.client.send_key.assert_awaited_once()
+        self.assertEqual(self.client.teleport.await_count, 2)
+        self.assertEqual(self.client.send_key.await_count, 2)
         self.assertLess(self.now, 15)
         self.assert_released()
 
@@ -213,16 +213,14 @@ class PanopticonBookTests(unittest.IsolatedAsyncioTestCase):
         self.quester.move_until_quest_interaction.assert_not_awaited()
         self.client.teleport.assert_not_awaited()
 
-    async def test_refill_during_last_book_title_read_prevents_x(self):
-        reads = 0
-        async def title(client):
-            nonlocal reads
-            reads += 1
-            if reads == 2:
+    async def test_refill_during_book_x_window_read_prevents_x(self):
+        async def visible(client, path):
+            if path == npc_range_path:
                 client.refilling_potions = True
-            return self.popup
-        self.popup_title.side_effect = title
-        await self.handle()
+                return bool(self.popup)
+            return client.is_in_dialog.return_value if path == advance_dialog_path else False
+        with patch('src.questing.is_visible_by_path', AsyncMock(side_effect=visible)):
+            await self.handle()
         self.client.teleport.assert_awaited_once()
         self.client.send_key.assert_not_awaited()
         self.assert_released()

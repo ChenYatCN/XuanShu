@@ -60,11 +60,11 @@ class PartyDungeonInteractionTests(unittest.IsolatedAsyncioTestCase):
     def token(self, member):
         return (self.source, id(member), 7, getattr(member, '_party_area_generation', 0))
 
-    async def test_unknown_prompt_never_bypasses_generic_wait_guard(self):
+    async def test_unknown_prompt_allows_existing_shared_x_with_live_proof(self):
         self.prompt = '按X 未知动作'
-        self.assertFalse(await self.quester.handle_party_dungeon_interaction(self.target))
-        self.p1.send_key.assert_not_awaited()
-        self.p2.send_key.assert_not_awaited()
+        self.assertTrue(await self.quester.handle_party_dungeon_interaction(self.target))
+        self.p1.send_key.assert_awaited_once_with(Keycode.X, .1)
+        self.p2.send_key.assert_awaited_once_with(Keycode.X, .1)
 
     async def test_world_gate_uses_only_quester_input_and_world_selection(self):
         self.prompt = '按下 X 或 <icon;mouse> 互动'
@@ -105,6 +105,7 @@ class PartyDungeonInteractionTests(unittest.IsolatedAsyncioTestCase):
 
     def member(self, title):
         return Member(title=title, questing_status=True, in_solo_zone=False,
+            entity_detect_combat_status=False, post_combat_cleanup_active=False,
             refilling_potions=False, quest_recovery_owner=None, potion_dungeon_returned=None,
             quest_id=AsyncMock(side_effect=lambda: self.identity[0]),
             goal_id=AsyncMock(side_effect=lambda: self.identity[1]),
@@ -396,7 +397,7 @@ class PartyDungeonInteractionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.p2.quest_party_target_sync_active)
 
     async def test_source_landing_x_is_cancelled_for_loading_new_quest_instance_or_world_gate(self):
-        for change in ('loading', 'quest', 'instance', 'stopped', 'world_gate', 'unknown'):
+        for change in ('loading', 'quest', 'instance', 'stopped', 'world_gate', 'empty_prompt'):
             with self.subTest(change=change):
                 self.setUp()
                 self.automatic_transition()
@@ -413,7 +414,7 @@ class PartyDungeonInteractionTests(unittest.IsolatedAsyncioTestCase):
                     elif change == 'world_gate':
                         self.title = '世界之门'
                     else:
-                        self.prompt = '按 X 未知动作'
+                        self.prompt = ''
                 with patch('src.questing.collision_tp', AsyncMock(side_effect=invalidate)):
                     await self.quester._resume_party_dungeon_interaction(self.p2)
                 self.p2.send_key.assert_not_awaited()

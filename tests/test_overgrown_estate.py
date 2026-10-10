@@ -270,14 +270,13 @@ class OvergrownEstateTests(unittest.IsolatedAsyncioTestCase):
         await self.until('search_init')
         self.assertTrue(self.state()['dialogue_seen'])
 
-    async def test_wrong_clue_popup_never_presses_x(self):
+    async def test_different_clue_popup_title_still_presses_x(self):
         await self.start()
         await self.until('clue_interact')
         self.popup_title.side_effect = None
         self.popup_title.return_value = 'Other NPC'
         await self.tick()
-        self.assertEqual(self.state()['phase'], 'failed')
-        self.client.send_key.assert_not_awaited()
+        self.client.send_key.assert_awaited_once_with(Keycode.X, .1)
 
     async def test_unconfirmed_clue_landing_never_presses_x(self):
         await self.start()

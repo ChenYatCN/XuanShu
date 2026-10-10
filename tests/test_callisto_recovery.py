@@ -141,12 +141,12 @@ class CallistoRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.client.teleport.await_count, 1)
         self.assert_released()
 
-    async def test_wrong_jar_popup_never_presses_x(self):
+    async def test_different_jar_popup_title_still_presses_x(self):
         self.jar_stage()
         self.popup = '卡利斯托'
         self.assertTrue(await self.handle())
         self.client.teleport.assert_awaited_once_with(Quester.CALLISTO_JAR)
-        self.client.send_key.assert_not_awaited()
+        self.client.send_key.assert_awaited_once_with(Keycode.X, .1)
         self.assertLess(self.now, 6)
         self.assert_released()
 
@@ -209,11 +209,11 @@ class CallistoRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.client.send_key.assert_not_awaited()
         self.assert_released()
 
-    async def test_popup_replaced_before_x_aborts(self):
+    async def test_popup_wording_change_does_not_block_x(self):
         self.jar_stage()
         self.title.side_effect = ['罐子', '门', '门', '门']
         await self.handle()
-        self.client.send_key.assert_not_awaited()
+        self.client.send_key.assert_awaited_once_with(Keycode.X, .1)
         self.assert_released()
 
     async def test_cancellation_releases_both_locks(self):
@@ -237,16 +237,14 @@ class CallistoRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.client.teleport.assert_not_awaited()
         self.assert_released()
 
-    async def test_refill_started_during_last_popup_read_prevents_x(self):
+    async def test_refill_started_during_x_window_read_prevents_x(self):
         self.jar_stage()
-        reads = 0
-        async def title(c):
-            nonlocal reads
-            reads += 1
-            if reads == 2:
+        async def visible(c, path):
+            if path == npc_range_path:
                 self.client.refilling_potions = True
-            return '罐子'
-        self.title.side_effect = title
+                return True
+            return False
+        self.visible.side_effect = visible
         await self.handle()
         self.client.send_key.assert_not_awaited()
         self.assert_released()

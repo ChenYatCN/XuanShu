@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from wizwalker import XYZ
 from src.questing import Quester
+from src.automation_ownership import automation_owner
 
 
 class ZoneProbeWaitTests(unittest.IsolatedAsyncioTestCase):
@@ -28,6 +29,7 @@ class ZoneProbeWaitTests(unittest.IsolatedAsyncioTestCase):
         self.goal = 7
         self.session = object()
         self.hitter = SimpleNamespace(title='p2', questing_status=True,
+                                      is_loading=AsyncMock(return_value=False),
                                       quest_party_status_session=self.session)
         self.client = SimpleNamespace(title='p1', questing_status=True,
             in_solo_zone=False, quest_party_solo_gear_active=False,
@@ -39,12 +41,13 @@ class ZoneProbeWaitTests(unittest.IsolatedAsyncioTestCase):
             zone_name=AsyncMock(side_effect=lambda: self.zone),
             is_loading=AsyncMock(return_value=False), in_battle=AsyncMock(return_value=False),
             send_key=AsyncMock())
+        self.client.quest_position = SimpleNamespace(position=AsyncMock(return_value=XYZ(0, 0, 0)))
         self.hitter.quest_party_quester = self.client
         self.quester = Quester(self.client, [self.client], None)
         self.equipment = AsyncMock(return_value=True)
         self.restart = Mock()
         self.roster = [self.client, self.hitter]
-        self.namespace = dict(asyncio=asyncio, is_probe_hitter=True,
+        self.namespace = dict(asyncio=asyncio, automation_owner=automation_owner, is_probe_hitter=True,
             members=None, questing_status=True, hitter=self.hitter, quester=self.client,
             walker=SimpleNamespace(clients=self.roster),
             gear_switching_in_solo_zones=True, change_party_equipment=self.equipment,
@@ -64,7 +67,7 @@ class ZoneProbeWaitTests(unittest.IsolatedAsyncioTestCase):
     async def finish(self, solo, context):
         await self.namespace['complete_zone_probe'](solo, context)
 
-    async def blocked_equipment(self):
+    async def blocked_equipment(self, solo=True):
         started, release, drained = asyncio.Event(), asyncio.Event(), asyncio.Event()
         async def equip(*args):
             started.set()
@@ -75,7 +78,7 @@ class ZoneProbeWaitTests(unittest.IsolatedAsyncioTestCase):
                 drained.set()
         self.equipment.side_effect = equip
         context = await self.context()
-        task = asyncio.create_task(self.finish(True, context))
+        task = asyncio.create_task(self.finish(solo, context))
         await asyncio.wait_for(started.wait(), 1)
         self.addAsyncCleanup(self.drain, task)
         return task, release, drained, context
@@ -285,6 +288,28 @@ class ZoneProbeWaitTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.client.quest_party_probe_pending)
         self.restart.assert_not_called()
         self.assertFalse(self.client.in_solo_zone)
+
+    async def test_rejoin_restore_is_cancelled_when_live_area_proof_is_lost(self):
+        self.client.in_solo_zone = self.client.quest_party_solo_gear_active = True
+        task, _, drained, _ = await self.blocked_equipment(solo=False)
+        self.namespace['clients_share_live_area'].return_value = False
+        await asyncio.wait_for(task, 1)
+        self.assertTrue(drained.is_set())
+        self.assertTrue(self.client.in_solo_zone)
+        self.assertTrue(self.client.quest_party_solo_gear_active)
+        self.restart.assert_not_called()
+
+    async def test_hitter_refill_or_loading_cancels_probe_equipment_without_solo_result(self):
+        for state in ('refill', 'loading'):
+            with self.subTest(state=state):
+                self.setUp()
+                task, _, drained, _ = await self.blocked_equipment()
+                if state == 'refill': self.hitter.refilling_potions = True
+                else: self.hitter.is_loading.return_value = True
+                await asyncio.wait_for(task, 1)
+                self.assertTrue(drained.is_set())
+                self.assertFalse(self.client.in_solo_zone)
+                self.restart.assert_not_called()
 
     async def test_pending_probe_prevents_assigned_quester_exploration_reentry(self):
         self.quester._dungeon_quest_snapshot = AsyncMock(return_value=(42, 7, 'Go to the door'))

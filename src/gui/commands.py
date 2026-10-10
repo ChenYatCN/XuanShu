@@ -180,9 +180,10 @@ class GUIKeys:
 
 
 class GUICommand:
-    def __init__(self, com_type: GUICommandType, data=None):
+    def __init__(self, com_type: GUICommandType, data=None, *, trigger=None):
         self.com_type = com_type
         self.data = data
+        self.trigger = trigger
 
 
 # Maps Qt key codes to wizwalker Keycode member names

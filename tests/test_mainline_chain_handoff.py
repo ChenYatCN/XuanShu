@@ -55,7 +55,7 @@ class MainlineChainHandoffTests(unittest.IsolatedAsyncioTestCase):
             item.start()
             self.addCleanup(item.stop)
 
-    async def test_snapshot_requires_a_mainline_and_named_talk_prompt(self):
+    async def test_snapshot_requires_mainline_identity_but_not_named_talk_prompt(self):
         self.client.quest_id.return_value = 10
         self.assertEqual(
             await self.quester._mainline_turn_in_snapshot(self.client, 10),
@@ -63,7 +63,7 @@ class MainlineChainHandoffTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNone(await self.quester._mainline_turn_in_snapshot(self.client, 12))
         self.quester.read_popup.return_value = "Press X to Enter"
-        self.assertIsNone(await self.quester._mainline_turn_in_snapshot(self.client, 10))
+        self.assertEqual(await self.quester._mainline_turn_in_snapshot(self.client, 10), self.snapshot)
 
     async def test_new_mainline_or_unchanged_quest_never_presses_x(self):
         self.client.quest_id.return_value = 11
@@ -73,13 +73,14 @@ class MainlineChainHandoffTests(unittest.IsolatedAsyncioTestCase):
         await self.quester._continue_mainline_chain(self.client, self.snapshot)
         self.client.send_key.assert_not_awaited()
 
-    async def test_wrong_npc_or_recovery_never_presses_x(self):
+    async def test_recovery_blocks_but_different_npc_title_can_press_x(self):
         self.client.quest_party_probe_pending = True
         await self.quester._continue_mainline_chain(self.client, self.snapshot)
+        self.client.send_key.assert_not_awaited()
         self.client.quest_party_probe_pending = False
         with patch("src.questing.get_popup_title", new=AsyncMock(return_value="Other NPC")):
             await self.quester._continue_mainline_chain(self.client, self.snapshot)
-        self.client.send_key.assert_not_awaited()
+        self.assertEqual(self.client.send_key.await_count, 2)
 
     async def test_accepting_new_mainline_stops_after_one_x(self):
         async def quest_id():

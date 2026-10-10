@@ -30,7 +30,7 @@ from src import gui as xuanshu_gui
 from src import wizpatch_runner
 from src.auto_fish_original_adapter import fish_bot
 from src.auto_pet import nomnom
-from src.automation_ownership import automation_owner
+from src.automation_ownership import automation_owner, get_client_automation_ownership
 from src.bot_targeting import (
     bot_group_key,
     normalize_client_titles,
@@ -625,6 +625,17 @@ async def navmap_teleport(
         try:
             if not xyz:
                 xyz = await client.quest_position.position()
+            try:
+                ownership = get_client_automation_ownership(client)
+                logger.debug('[任务TP对照] {} Source=manual Call={} QuestID={} GoalID={} '
+                             'Zone={} Target={} Start={} Owner={} OwnerTask={} '
+                             'Params=(leader=None,reenter=False) Timeout=None',
+                             client.title, id(asyncio.current_task()), await client.quest_id(),
+                             await client.goal_id(), await client.zone_name(), xyz,
+                             await client.body.position(), ownership.owner_label,
+                             id(ownership._owner_task) if ownership.locked else None)
+            except Exception as exc:
+                logger.debug('[任务TP对照] {} Source=manual 诊断读取失败：{}', client.title, exc)
             await navmap_tp(client, xyz)
         except Exception as exc:
             if not isolate_errors:
@@ -1686,13 +1697,37 @@ async def main():
 
     hotkey_groups = HotkeyGroups(lambda: walker.clients, run_hotkey_group)
 
+    def _log_quest_toggle(stage, trigger=None, clients=None):
+        logger.info(
+            '[quest_toggle] {} trigger={} requested={} listener={} enabled={} '
+            'legacy={} groups={} clients={}', stage,
+            trigger or {'source': 'command_without_source'}, clients, id(listener),
+            hotkey_status, questing_status,
+            [([c.title for c in members], not task.done())
+             for key, (members, task) in hotkey_groups.groups.items()
+             if key[0] == 'toggle_questing'],
+            [(c.title, getattr(c, 'questing_status', False)) for c in walker.clients],
+        )
+
     # Generic hotkey callback factory — sends InvokeAction to GUI thread,
     # which calls the button's click handler. Works for ANY registered action.
     def _make_hotkey_callback(action_id):
+        binding = settings.get_hotkeys().get(action_id) if action_id == 'toggle_questing' else None
+        callback_listener = listener
         async def _callback():
+            trigger = None
+            if action_id == 'toggle_questing':
+                trigger = {'source': 'hotkey', 'event': 'WM_HOTKEY',
+                    'callback_ns': time.monotonic_ns(), 'listener_id': id(callback_listener),
+                    'callback_id': id(_callback), 'binding': binding,
+                    'registration_id': getattr(_callback, 'registration_id', None),
+                    'enabled_at_callback': hotkey_status,
+                    'binding_active_at_callback': action_id in _active_bindings,
+                    'repeat': 'not_provided_by_WM_HOTKEY'}
+                _log_quest_toggle('callback_queued', trigger)
             gui_send_queue.put(
                 xuanshu_gui.GUICommand(
-                    xuanshu_gui.GUICommandType.InvokeAction, action_id
+                    xuanshu_gui.GUICommandType.InvokeAction, action_id, trigger=trigger
                 )
             )
 
@@ -1746,21 +1781,32 @@ async def main():
                 for m in binding.get("modifiers", []):
                     mods |= ModifierKeys[m]
                 try:
+                    callback = _make_hotkey_callback(action_id)
                     await listener.add_hotkey(
                         Keycode[binding["key"]],
-                        _make_hotkey_callback(action_id),
+                        callback,
                         modifiers=mods,
                     )
                     _active_bindings[action_id] = binding
+                    if action_id == 'toggle_questing':
+                        callback.registration_id = getattr(listener, '_hotkeys', {}).get(
+                            (Keycode[binding['key']].value, int(mods)))
+                        _log_quest_toggle('listener_registered', {
+                            'source': 'listener', 'binding': binding, 'norepeat': True,
+                            'callback_id': id(callback), 'registration_id': callback.registration_id,
+                            'module': getattr(sys.modules.get(type(listener).__module__), '__file__', None)})
                 except Exception as e:
                     logger.debug(f"Failed to register hotkey for {action_id}: {e}")
             hotkey_status = True
+            if 'toggle_questing' in _active_bindings:
+                _log_quest_toggle('listener_bindings_enabled')
 
     async def disable_hotkeys(
         exclude_freecam: bool = False, debug: bool = False, exclude_kill: bool = True
     ):
         global hotkey_status
         if hotkey_status:
+            quest_binding_active = 'toggle_questing' in _active_bindings
             if debug:
                 logger.debug("Client not selected, stopping hotkey listener.")
             for action_id, binding in list(_active_bindings.items()):
@@ -1779,9 +1825,16 @@ async def main():
                         Keycode[binding["key"]], modifiers=mods
                     )
                     del _active_bindings[action_id]
+                    if action_id == 'toggle_questing':
+                        _log_quest_toggle('listener_unregistered', {
+                            'source': 'listener', 'binding': binding,
+                            'callback_mapping_retained': (Keycode[binding['key']].value,
+                                int(mods & ~ModifierKeys.NOREPEAT)) in getattr(listener, '_callbacks', {})})
                 except Exception as e:
                     logger.debug(f"Failed to remove hotkey for {action_id}: {e}")
             hotkey_status = False
+            if quest_binding_active:
+                _log_quest_toggle('listener_bindings_disabled')
 
     def get_foreground_client():
         if not walker.clients:
@@ -2121,10 +2174,21 @@ async def main():
             blocked_instance_retry_at = 0.0
             failure_count = 0
             next_retry_at = 0.0
+            busy_evidence = None
+            potion_settle_until = 0.0
             quest_reader = Quester(quester, [quester], None)
 
+            def follow_is_current():
+                return bool(
+                    (members is not None or questing_status)
+                    and hitter.questing_status and quester.questing_status
+                    and hitter in walker.clients and quester in walker.clients
+                    and hitter in getattr(quester, 'quest_party_hitters', [])
+                    and getattr(hitter, 'quest_party_quester', quester) is quester
+                    and getattr(hitter, 'quest_party_status_session', None) is follow_session)
+
             async def complete_zone_probe(solo_zone: bool, probe_context):
-                if not is_probe_hitter:
+                if solo_zone and not is_probe_hitter:
                     return
                 probe_zone, identity, wait, session, was_pending = probe_context
                 equipment_task = watcher = None
@@ -2152,7 +2216,12 @@ async def main():
                             and (not isinstance(wait, dict)
                                  or getattr(quester, 'quest_party_probe_wait', None) is wait)
                             and getattr(quester, '_character_selection_active', False) is not True
+                            and getattr(hitter, '_character_selection_active', False) is not True
+                            and not getattr(hitter, 'refilling_potions', False)
+                            and not getattr(quester, 'refilling_potions', False)
+                            and not await hitter.is_loading()
                             and not await quester.is_loading()
+                            and (solo_zone or await clients_share_live_area(quester, hitter))
                             and await quester.zone_name() == probe_zone
                             and (await quester.quest_id(), await quester.goal_id()) == identity
                         )
@@ -2187,14 +2256,18 @@ async def main():
                             logger.info(
                                 f"已确认 {quester.title} 离开单人区域，恢复第一套装备。"
                             )
+                            logger.debug('[单人探测] {} 原solo判定已失效；原因={} 已成功归队；恢复第一套装备。',
+                                         quester.title, hitter.title)
                             set_number = 0
                     if set_number is not None:
                         if isinstance(wait, dict):
                             wait['equipping'] = True
 
                         async def switch_if_current():
-                            if await probe_is_current():
-                                return await change_party_equipment(quester, set_number)
+                            async with asyncio.timeout(20):
+                                async with automation_owner(quester, 'party-probe-equipment'):
+                                    if await probe_is_current():
+                                        return await change_party_equipment(quester, set_number)
                             return False
 
                         async def watch_probe():
@@ -2255,6 +2328,59 @@ async def main():
                         except Exception:
                             pass  # Disconnected clients cannot retain this wait.
 
+            async def stable_probe(context, hitter_zone):
+                """Only settled, current friend probes can accumulate solo evidence."""
+                try:
+                    return bool(
+                        context is not None
+                        and (members is not None or questing_status)
+                        and hitter.questing_status and quester.questing_status
+                        and hitter in walker.clients and quester in walker.clients
+                        and hitter in getattr(quester, 'quest_party_hitters', [])
+                        and getattr(hitter, 'quest_party_quester', quester) is quester
+                        and getattr(hitter, 'quest_party_status_session', None) is follow_session
+                        and not getattr(hitter, '_character_selection_active', False)
+                        and not getattr(quester, '_character_selection_active', False)
+                        and not getattr(hitter, 'refilling_potions', False)
+                        and not getattr(quester, 'refilling_potions', False)
+                        and not get_client_automation_ownership(quester).locked
+                        and not isinstance(getattr(hitter, 'potion_dungeon_returned', None), tuple)
+                        and not isinstance(getattr(quester, 'potion_dungeon_returned', None), tuple)
+                        and loop.time() >= potion_settle_until
+                        and not await hitter.is_loading() and not await quester.is_loading()
+                        and await hitter.zone_name() == hitter_zone
+                        and await quester.zone_name() == context[0]
+                        and (await quester.quest_id(), await quester.goal_id()) == context[1]
+                        and await is_free(hitter) and await is_free(quester))
+                except Exception:
+                    return False
+
+            async def record_busy_probe(context, hitter_zone, eligible):
+                nonlocal busy_evidence, next_retry_at, blocked_instance_zone, blocked_instance_retry_at
+                if not eligible or not await stable_probe(context, hitter_zone):
+                    busy_evidence = None
+                    next_retry_at = loop.time() + 3.0
+                    logger.debug('[单人探测] {} 当前结果未确认；原因=补药恢复/Loading/区域或任务状态未稳定。', quester.title)
+                    return
+                signature = (context[0], context[1], follow_session, hitter_zone,
+                             tuple(id(p) for p in getattr(quester, 'quest_party_hitters', [])))
+                if busy_evidence is None or busy_evidence['signature'] != signature:
+                    busy_evidence = {'signature': signature, 'attempts': 0}
+                busy_evidence['attempts'] += 1
+                if busy_evidence['attempts'] < 2:
+                    next_retry_at = loop.time() + 3.0
+                    logger.debug('[单人探测] {} 当前结果未确认；原因=好友传送多义失败；attempt=1/2，稳定后再探测。', quester.title)
+                    return
+                blocked_instance_zone = context[0]
+                blocked_instance_retry_at = loop.time() + 60.0
+                if getattr(quester, 'quest_party_group_dungeon_zone', None) is None:
+                    await complete_zone_probe(True, context)
+                    if getattr(quester, 'in_solo_zone', False):
+                        logger.debug('[单人探测] {} 已确认单人区域；证据={} 补药/加载结束后同任务同区域两次稳定好友传送失败。',
+                                     quester.title, hitter.title)
+                busy_evidence = None
+                update_party_status(hitter, quester, '等待归队，可手动进入原副本')
+
             async def hitter_is_in_quester_area() -> bool:
                 """Confirm both clients are in the same live area/instance."""
                 try:
@@ -2283,7 +2409,18 @@ async def main():
 
             async def close_stale_friend_ui(client: Client):
                 """Close friend-list remnants without opening a closed list."""
-                await close_friend_windows(client)
+                async with automation_owner(client, 'party-friend-close'):
+                    if (follow_is_current() and not getattr(client, 'refilling_potions', False)
+                            and not await client.is_loading()):
+                        await close_friend_windows(client)
+
+            async def dismiss_friend_error():
+                async with automation_owner(hitter, 'party-friend-error'):
+                    if (follow_is_current() and not getattr(hitter, 'refilling_potions', False)
+                            and not await hitter.is_loading()):
+                        async with hitter.mouse_handler:
+                            if follow_is_current():
+                                await click_window_by_path(hitter, friend_is_busy_and_dungeon_reset_path)
 
             async def teleport_to_quester_from_friend_list(
                 client: Client, wizard_name, friend_icon
@@ -2351,6 +2488,9 @@ async def main():
                             or getattr(hitter, 'quest_party_target_sync_active', False)
                             or isinstance(getattr(hitter, 'quest_recovery_owner', None), str)
                             or isinstance(getattr(quester, 'quest_recovery_owner', None), str)):
+                        busy_evidence = None
+                        if getattr(hitter, 'refilling_potions', False):
+                            potion_settle_until = loop.time() + 3.0
                         update_party_status(hitter, quester, '等待本组当前操作完成')
                         continue
                     interaction = getattr(quester, 'quest_party_dungeon_interaction', None)
@@ -2383,6 +2523,7 @@ async def main():
                         next_retry_at = 0.0
                         continue
                     if await quester.is_loading():
+                        busy_evidence = None
                         quester_zone_stable_since = None
                         objective_stable_since = None
                         update_party_status(hitter, quester, "等待切换世界")
@@ -2408,6 +2549,7 @@ async def main():
                         blocked_instance_retry_at = 0.0
                         failure_count = 0
                         next_retry_at = 0.0
+                        busy_evidence = None
                     elif quester_zone_stable_since is None:
                         quester_zone_stable_since = now
 
@@ -2417,6 +2559,7 @@ async def main():
                         or hitter.entity_detect_combat_status
                         or getattr(hitter, "quest_party_battle_rescue_active", False)
                     ):
+                        busy_evidence = None
                         update_party_status(hitter, quester, "等待战斗或加载")
                         continue
 
@@ -2439,6 +2582,9 @@ async def main():
                             )
                             failure_count = 0
                             next_retry_at = 0.0
+                            busy_evidence = None
+                            potion_settle_until = loop.time() + 3.0
+                            logger.debug('[单人探测] {} 当前结果未确认；原因={} 补药返回后等待区域稳定。', quester.title, hitter.title)
                             continue
 
                     hitter_zone = await hitter.zone_name()
@@ -2451,7 +2597,7 @@ async def main():
                         update_party_status(hitter, quester, "等待单人区域探测")
                         continue
 
-                    probe_context = None if not is_probe_hitter else (
+                    probe_context = (
                         quester_zone, (await quester.quest_id(), await quester.goal_id()),
                         getattr(quester, 'quest_party_probe_wait', None),
                         follow_session, probe_pending,
@@ -2471,12 +2617,15 @@ async def main():
                             marker[2].discard(id(hitter))
                             if not marker[2]:
                                 quester.potion_dungeon_returned = None
-                        if probe_pending:
+                        if (probe_pending or getattr(quester, 'in_solo_zone', False)
+                                or getattr(quester, 'quest_party_solo_gear_active', False)):
                             await complete_zone_probe(False, probe_context)
                         blocked_instance_zone = None
                         blocked_instance_retry_at = 0.0
                         failure_count = 0
                         next_retry_at = 0.0
+                        busy_evidence = None
+                        potion_settle_until = 0.0
                         if not await is_free(hitter):
                             update_party_status(hitter, quester, "等待战斗")
                             continue
@@ -2499,7 +2648,11 @@ async def main():
 
                     if (isinstance(getattr(hitter, 'potion_dungeon_returned', None), tuple)
                             or isinstance(getattr(quester, 'potion_dungeon_returned', None), tuple)):
+                        busy_evidence = None
                         update_party_status(hitter, quester, '等待确认原副本，可手动归队')
+                        continue
+                    if now < potion_settle_until:
+                        update_party_status(hitter, quester, '补药已返回，等待区域稳定')
                         continue
                     confirmed_room = getattr(quester, 'quest_party_group_dungeon_zone', None)
                     if (confirmed_room is not None and hitter_zone == quester_zone
@@ -2582,13 +2735,23 @@ async def main():
                     logger.debug(
                         f"打手 {hitter.title} 尝试好友传送跟随/探测 {quester.title}。"
                     )
+                    logger.debug('[单人探测] {} 等待hitter {}；refilling={} loading={} hitter_zone={} quester_zone={} attempt={}/2',
+                                 quester.title, hitter.title, getattr(hitter, 'refilling_potions', False),
+                                 await hitter.is_loading(), hitter_zone, quester_zone,
+                                 1 if busy_evidence is None else 2)
                     update_party_status(hitter, quester, "正在好友传送")
+                    eligible = await stable_probe(probe_context, hitter_zone)
                     try:
                         hitter_zone_before_probe = hitter_zone
                         await close_stale_friend_ui(hitter)
                         async with automation_owner(hitter, 'party-friend-follow'):
                             if (not hitter.questing_status or not quester.questing_status
                                     or not await is_free(hitter)
+                                    or getattr(hitter, 'refilling_potions', False)
+                                    or getattr(quester, 'refilling_potions', False)
+                                    or getattr(hitter, 'quest_party_status_session', None) is not follow_session
+                                    or getattr(hitter, 'quest_party_quester', quester) is not quester
+                                    or hitter not in getattr(quester, 'quest_party_hitters', [])
                                     or getattr(quester, 'quest_party_target_sync_active', False)):
                                 continue
                             async with hitter.mouse_handler:
@@ -2605,22 +2768,19 @@ async def main():
                         # "friend busy / closed instance" response to appear even
                         # when both clients report the same zone path.
                         await asyncio.sleep(6.0 if same_zone_probe else 1.0)
+                        if not follow_is_current():
+                            return
                         if await is_friend_teleport_error(hitter):
-                            async with hitter.mouse_handler:
-                                await click_window_by_path(
-                                    hitter, friend_is_busy_and_dungeon_reset_path
-                                )
+                            await dismiss_friend_error()
                             raise FriendBusyOrInstanceClosed()
 
                         if hitter_zone_before_probe != quester_zone:
                             arrival_deadline = loop.time() + 15.0
                             while loop.time() < arrival_deadline:
+                                if not follow_is_current():
+                                    return
                                 if await is_friend_teleport_error(hitter):
-                                    async with hitter.mouse_handler:
-                                        await click_window_by_path(
-                                            hitter,
-                                            friend_is_busy_and_dungeon_reset_path,
-                                        )
+                                    await dismiss_friend_error()
                                     raise FriendBusyOrInstanceClosed()
                                 if not await hitter.is_loading() and (
                                     await hitter.zone_name() == quester_zone
@@ -2630,40 +2790,38 @@ async def main():
                             else:
                                 raise RuntimeError("好友传送未到达任务客户端所在区域")
 
-                        if probe_pending:
+                        if (await hitter.zone_name() == quester_zone
+                                and await clients_share_live_area(hitter, quester)
+                                and (probe_pending or getattr(quester, 'in_solo_zone', False)
+                                     or getattr(quester, 'quest_party_solo_gear_active', False))):
                             await complete_zone_probe(False, probe_context)
+                        busy_evidence = None
                         failure_count = 0
                         next_retry_at = 0.0
                     except asyncio.CancelledError:
                         raise
                     except FriendBusyOrInstanceClosed as exc:
+                        if not follow_is_current():
+                            return
                         await close_stale_friend_ui(hitter)
-                        blocked_instance_zone = quester_zone
-                        blocked_instance_retry_at = loop.time() + 60.0
-                        if getattr(quester, 'quest_party_group_dungeon_zone', None) is None:
-                            await complete_zone_probe(True, probe_context)
-                        update_party_status(hitter, quester, "等待归队，可手动进入原副本")
+                        await record_busy_probe(probe_context, hitter_zone, eligible)
                         logger.debug(
                             f"打手 {hitter.title} 无法进入 {quester.title} 当前区域，"
-                            f"将在任务客户端离开该区域后重试：{exc}"
+                            f"已按本轮确认结果安排有界重试：{exc}"
                         )
                     except Exception as exc:
+                        if not follow_is_current():
+                            return
                         if await is_friend_teleport_error(hitter):
-                            async with hitter.mouse_handler:
-                                await click_window_by_path(
-                                    hitter, friend_is_busy_and_dungeon_reset_path
-                                )
-                            blocked_instance_zone = quester_zone
-                            blocked_instance_retry_at = loop.time() + 60.0
-                            if getattr(quester, 'quest_party_group_dungeon_zone', None) is None:
-                                await complete_zone_probe(True, probe_context)
-                            update_party_status(hitter, quester, "等待归队，可手动进入原副本")
+                            await dismiss_friend_error()
+                            await record_busy_probe(probe_context, hitter_zone, eligible)
                             logger.debug(
-                                f"打手 {hitter.title} 检测到无法进入的实例，"
-                                f"等待 {quester.title} 离开当前区域。"
+                                f"打手 {hitter.title} 收到多义好友传送错误，"
+                                f"已按稳定探测结果安排重试。"
                             )
                             continue
                         await close_stale_friend_ui(hitter)
+                        busy_evidence = None
                         failure_count += 1
                         delay = friend_follow_retry_delay(failure_count)
                         next_retry_at = loop.time() + delay
@@ -4890,6 +5048,8 @@ async def main():
                             raise xuanshu_gui.ToolClosedException
                         case xuanshu_gui.GUICommandType.ToggleHotkeyGroup:
                             action = com.data.get("action")
+                            if action == 'toggle_questing':
+                                _log_quest_toggle('toggle_request', getattr(com, 'trigger', None), com.data.get('clients'))
                             if action not in grouped_hotkey_actions:
                                 logger.warning("该快捷键不参与客户端分组。")
                                 continue
@@ -4918,11 +5078,16 @@ async def main():
                                 )
                                 continue
                             try:
+                                if action == 'toggle_questing':
+                                    _log_quest_toggle('toggle_begin', getattr(com, 'trigger', None), com.data.get('clients'))
                                 await hotkey_groups.toggle(
                                     action, com.data.get("clients")
                                 )
                             except ValueError as exc:
                                 logger.warning(str(exc))
+                            finally:
+                                if action == 'toggle_questing':
+                                    _log_quest_toggle('toggle_end', getattr(com, 'trigger', None), com.data.get('clients'))
 
                         case xuanshu_gui.GUICommandType.ToggleOption:
                             grouped_action = {
@@ -4954,7 +5119,11 @@ async def main():
                                 case GUIKeys.toggle_sigil:
                                     await toggle_sigil_hotkey()
                                 case GUIKeys.toggle_questing:
-                                    await toggle_questing_hotkey()
+                                    _log_quest_toggle('legacy_toggle_begin', getattr(com, 'trigger', None))
+                                    try:
+                                        await toggle_questing_hotkey()
+                                    finally:
+                                        _log_quest_toggle('legacy_toggle_end', getattr(com, 'trigger', None))
                                 case GUIKeys.toggle_auto_pet:
                                     await toggle_auto_pet_hotkey()
                                 case GUIKeys.toggle_auto_potion:
@@ -5360,9 +5529,14 @@ async def main():
                                         await listener.remove_hotkey(
                                             Keycode[old_binding["key"]], modifiers=old_mods
                                         )
-                                    except Exception:
-                                        pass
+                                    except Exception as exc:
+                                        if action_id == 'toggle_questing':
+                                            _log_quest_toggle('listener_rebind_remove_failed', {
+                                                'source': 'listener', 'binding': old_binding, 'error': str(exc)})
                                 del _active_bindings[action_id]
+                                if action_id == 'toggle_questing':
+                                    _log_quest_toggle('listener_binding_removed_for_rebind', {
+                                        'source': 'listener', 'binding': old_binding})
                             # Register new binding
                             if new_key:
                                 callback = (
@@ -5380,6 +5554,13 @@ async def main():
                                             await listener.add_hotkey(
                                                 Keycode[new_key], callback, modifiers=mods
                                             )
+                                            if action_id == 'toggle_questing':
+                                                callback.registration_id = getattr(listener, '_hotkeys', {}).get(
+                                                    (Keycode[new_key].value, int(mods)))
+                                                _log_quest_toggle('listener_rebound', {
+                                                    'source': 'listener', 'key': new_key, 'modifiers': new_mods,
+                                                    'norepeat': True, 'callback_id': id(callback),
+                                                    'registration_id': callback.registration_id})
                                         _active_bindings[action_id] = {
                                             "key": new_key,
                                             "modifiers": new_mods,

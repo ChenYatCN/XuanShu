@@ -23,6 +23,12 @@ class SharedMovementInteractionTests(unittest.IsolatedAsyncioTestCase):
             zone_name=AsyncMock(side_effect=lambda: self.zone),
             body=SimpleNamespace(position=AsyncMock(side_effect=lambda: self.peer_position)),
             goto=AsyncMock(), send_key=AsyncMock())
+        async def teleport_peer(xyz):
+            self.peer_position = xyz
+        async def walk_peer(x, y):
+            self.peer_position = XYZ(x, y, self.target.z)
+        self.peer.teleport = AsyncMock(side_effect=teleport_peer)
+        self.peer.goto.side_effect = walk_peer
         self.client.quest_party_hitters = [self.peer]
         self.client.quest_party_group_dungeon_zone = self.zone
         self.visible = False
@@ -126,15 +132,15 @@ class SharedMovementInteractionTests(unittest.IsolatedAsyncioTestCase):
                     self.tp.assert_not_awaited()
                     self.proof.assert_not_awaited()
 
-    async def test_ordinary_unmatched_mechanism_still_waits_for_probe(self):
+    async def test_ordinary_different_name_mechanism_precedes_probe(self):
         self.west_time_dune()
         self.client.quest_party_group_dungeon_zone = None
         self.client.quest_party_probe_pending = True
         self.prompt, self.popup_title = 'Press X to Use', 'Unrelated Lever'
         self.probe.return_value = True
         await self.quester.auto_quest_solo()
-        self.probe.assert_awaited_once()
-        self.client.send_key.assert_not_awaited()
+        self.probe.assert_not_awaited()
+        self.client.send_key.assert_awaited_once()
 
     async def test_local_collection_pending_feedback_is_not_owned_by_hitter_probe(self):
         self.west_time_dune()
@@ -151,13 +157,12 @@ class SharedMovementInteractionTests(unittest.IsolatedAsyncioTestCase):
         self.probe.assert_not_awaited()
         self.peer.send_key.assert_not_awaited()
 
-    async def test_unknown_empty_hidden_far_or_loading_prompt_never_skips_probe_or_sends_x(self):
-        for event in ('unknown', 'empty', 'hidden', 'far', 'loading', 'battle'):
+    async def test_empty_hidden_far_or_busy_prompt_never_skips_probe_or_sends_x(self):
+        for event in ('empty_prompt', 'hidden', 'far', 'loading', 'battle'):
             with self.subTest(event=event):
                 self.west_time_dune()
                 self.loading = self.battle = False
-                if event == 'unknown': self.prompt = 'Press X to Something'
-                elif event == 'empty': self.popup_title = ''
+                if event == 'empty_prompt': self.prompt = ''
                 elif event == 'hidden': self.visible = False
                 elif event == 'far': self.position = XYZ(self.target.x - 800, self.target.y, self.target.z)
                 elif event == 'loading': self.loading = True
@@ -202,61 +207,83 @@ class SharedMovementInteractionTests(unittest.IsolatedAsyncioTestCase):
     async def test_door_with_missing_hitter_prompt_still_waits_for_group(self):
         self.west_time_dune()
         self.prompt = 'Press X to Open'
-        self.assertFalse(await self.quester._quest_local_interaction_ready(self.client, self.target))
+        self.assertTrue(await self.quester._quest_local_interaction_ready(self.client, self.target))
         self.assertTrue(await self.quester.handle_party_dungeon_interaction(self.target))
         self.client.send_key.assert_not_awaited()
         self.peer.send_key.assert_not_awaited()
 
-    async def test_broken_tower_real_shared_collision_zero_nodes_gets_bounded_final_walk(self):
+    async def test_shared_room_members_use_one_target_and_manual_navmap_path(self):
         self.broken_tower()
         self.assertTrue(await self.quester.teleport_party_to_quest_target(self.target))
-        reports = self.client.quest_party_shared_target['move_results']
-        for member in (self.client, self.peer):
-            self.assertEqual(reports[id(member)]['waypoints'], 0)
-            self.assertTrue(reports[id(member)]['truncated'])
-            self.assertFalse(reports[id(member)]['walk_completed'])
-        self.assertEqual(self.tp.await_count, 4)
-        self.client.goto.assert_awaited_once_with(self.target.x, self.target.y)
+        self.assertNotIn('move_results', self.client.quest_party_shared_target)
+        self.assertEqual(self.navmap.await_count, 2)
+        for call in self.navmap.await_args_list:
+            self.assertIs(call.args[1], self.target)
+        self.tp.assert_not_awaited()
+        self.client.goto.assert_not_awaited()
         self.peer.goto.assert_not_awaited()
         self.assertLess(q.calc_Distance(self.position, self.target), 5)
-        self.navmap.assert_not_awaited()
-        self.client.send_key.assert_not_awaited()
+        self.assertLess(q.calc_Distance(self.peer_position, self.target), 5)
         self.assert_drained()
 
-    async def test_broken_tower_failed_final_walk_returns_false_and_does_not_repeat_tp(self):
-        self.broken_tower()
-        self.client.goto.side_effect = None
+    async def test_shared_104u_landing_is_not_goal_completion_or_duplicate_approach(self):
+        async def land(member, point):
+            position = XYZ(point.x - 104, point.y, point.z)
+            if member is self.client: self.position = position
+            else: self.peer_position = position
+        self.client.teleport.side_effect = lambda xyz: None
+        self.peer.teleport.side_effect = lambda xyz: None
+        async def native(member, xyz):
+            await land(member, xyz)
+        self.navmap.side_effect = native
         for _ in range(3):
             self.assertFalse(await self.quester.teleport_party_to_quest_target(self.target))
-        self.assertEqual(self.tp.await_count, 4)
-        self.client.goto.assert_awaited_once()
-        self.navmap.assert_awaited_once()
-        self.log.warning.assert_called_once()
-        self.assert_drained()
-
-    async def test_truncated_report_does_not_reject_a_client_already_at_exact_target(self):
-        self.broken_tower()
-        async def completed(member, xyz, **kwargs):
-            self.client.quest_party_shared_target['move_results'][id(member)].update(
-                landed=True, walk_attempted=True, walk_completed=False, truncated=True, waypoints=0)
-            if member is self.client:
-                self.position = XYZ(xyz.x, xyz.y, xyz.z)
-        with patch.object(self.quester, 'teleport_to_quest_target', AsyncMock(side_effect=completed)):
-            self.assertTrue(await self.quester.teleport_party_to_quest_target(self.target))
+        self.assertEqual(self.navmap.await_count, 2)
         self.client.goto.assert_not_awaited()
-        self.navmap.assert_not_awaited()
+        self.peer.goto.assert_not_awaited()
         self.assert_drained()
 
-    async def test_broken_tower_progress_change_permits_new_task_movement(self):
+    async def test_shared_navmap_failed_walk_does_not_add_final_approach_or_repeat(self):
         self.broken_tower()
-        self.client.goto.side_effect = None
+        async def land(member, point):
+            if point is not self.target:
+                if member is self.client: self.position = point
+                else: self.peer_position = point
+        async def lead(point): await land(self.client, point)
+        async def peer(point): await land(self.peer, point)
+        self.client.teleport.side_effect = lead
+        self.peer.teleport.side_effect = peer
+        self.client.goto.side_effect = self.peer.goto.side_effect = None
+        for _ in range(3):
+            self.assertFalse(await self.quester.teleport_party_to_quest_target(self.target))
+        self.assertEqual(self.navmap.await_count, 2)
+        self.client.goto.assert_awaited_once_with(self.target.x, self.target.y)
+        self.peer.goto.assert_awaited_once_with(self.target.x, self.target.y)
+        self.tp.assert_not_awaited()
+        self.assert_drained()
+
+    async def test_shared_unchanged_far_position_is_failure_despite_normal_return(self):
+        self.broken_tower()
+        self.navmap.side_effect = None
+        self.navmap.return_value = None
+        self.assertFalse(await self.quester.teleport_party_to_quest_target(self.target))
+        self.assertFalse(await self.quester.teleport_party_to_quest_target(self.target))
+        self.assertEqual(self.navmap.await_count, 2)
+        self.client.goto.assert_not_awaited()
+        self.peer.goto.assert_not_awaited()
+        self.assert_drained()
+
+    async def test_shared_progress_change_permits_a_new_navmap_attempt(self):
+        self.broken_tower()
+        self.navmap.side_effect = None
+        self.navmap.return_value = None
         self.assertFalse(await self.quester.teleport_party_to_quest_target(self.target))
         self.objective = 'Go to the tower (1/2)'
-        async def walk(x, y): self.position = XYZ(x, y, 0)
-        self.client.goto.side_effect = walk
+        self.navmap.side_effect = tm.navmap_tp
         self.assertTrue(await self.quester.teleport_party_to_quest_target(self.target))
-        self.assertEqual(self.tp.await_count, 8)
-        self.assertEqual(self.quester._quest_approach_failed, {})
+        self.assertEqual(self.navmap.await_count, 4)
+        self.assertEqual(self.quester._quest_movement_waiting[id(self.client)]['signature'][2][-1], self.objective)
+        self.assert_drained()
 
     async def test_missing_group_proof_or_busy_hitter_never_authorizes_fallback(self):
         self.broken_tower()
@@ -276,18 +303,63 @@ class SharedMovementInteractionTests(unittest.IsolatedAsyncioTestCase):
                 self.navmap.assert_not_awaited()
         self.assert_drained()
 
-    async def test_late_hitter_zone_change_blocks_final_walk(self):
+    async def test_late_hitter_zone_change_does_not_claim_shared_room_completion(self):
         self.broken_tower()
-        original = self.land
-        async def land(member, dest, *args):
-            landed = await original(member, dest, *args)
-            if landed and member is self.peer:
-                self.peer.zone_name.side_effect = lambda: 'Other'
-            return landed
-        self.tp.side_effect = land
-        await self.quester.teleport_party_to_quest_target(self.target)
+        async def move(member, xyz):
+            if member is self.client: self.position = xyz
+            else: self.peer.zone_name.side_effect = lambda: 'Other'
+        self.navmap.side_effect = move
+        self.assertFalse(await self.quester.teleport_party_to_quest_target(self.target))
         self.client.goto.assert_not_awaited()
-        self.navmap.assert_not_awaited()
+        self.peer.goto.assert_not_awaited()
+        self.assert_drained()
+
+    async def test_valid_retained_source_token_keeps_one_old_target_after_leader_transition(self):
+        original = self.target
+        self.client._party_area_peers = {id(self.peer): ('leader-token', 'source-token')}
+        self.peer.zone_name.side_effect = lambda: 'World/Zone'
+        targets = []
+        async def move(member, xyz):
+            targets.append((member.title, xyz))
+            if member is self.client:
+                self.zone = 'World/Next'
+                self.target = XYZ(9999, 9999, 0)
+            else:
+                self.peer_position = xyz
+        self.navmap.side_effect = move
+        with patch.object(q, '_party_area_token', AsyncMock(return_value='source-token')):
+            await self.quester.teleport_party_to_quest_target(original)
+        self.assertEqual(len(targets), 2)
+        self.assertTrue(all(xyz is original for _, xyz in targets))
+        self.assertIs(self.client.quest_party_shared_target['xyz'], original)
+        self.assert_drained()
+
+    async def test_invalid_retained_source_token_never_sends_leaders_new_room_coordinates(self):
+        original = self.target
+        self.client._party_area_peers = {id(self.peer): ('leader-token', 'source-token')}
+        self.peer.zone_name.side_effect = lambda: 'World/Zone'
+        targets = []
+        async def move(member, xyz):
+            targets.append(member.title)
+            self.zone = 'World/Next'
+            self.target = XYZ(9999, 9999, 0)
+        self.navmap.side_effect = move
+        with patch.object(q, '_party_area_token', AsyncMock(return_value='different-instance')):
+            self.assertFalse(await self.quester.teleport_party_to_quest_target(original))
+        self.assertEqual(targets, [self.client.title])
+        self.peer.teleport.assert_not_awaited()
+        self.assert_drained()
+
+    async def test_failed_solo_move_does_not_loop_navmap_or_enter_post_move_npc_retries(self):
+        self.client.quest_party_hitters = []
+        self.client.quest_party_group_dungeon_zone = None
+        self.navmap.side_effect = None
+        npc = self.quester.handle_npc_talking_quests = AsyncMock(return_value=False)
+        await self.quester.auto_quest_solo()
+        await self.quester.auto_quest_solo()
+        self.navmap.assert_awaited_once_with(self.client, self.target)
+        self.client.send_key.assert_not_awaited()
+        npc.assert_not_awaited()
         self.assert_drained()
 
     async def test_collection_appearing_during_group_move_cancels_peers_then_runs_checked_x(self):

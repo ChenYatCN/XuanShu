@@ -1,4 +1,5 @@
 import asyncio
+import math
 from contextlib import ExitStack
 from types import SimpleNamespace
 import unittest
@@ -29,6 +30,7 @@ class QuestXTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.free = True
         self.range_visible = True
         self.keys = []
+        self.yaw = 6.1
         self.client = SimpleNamespace(
             title='p1', questing_status=True, refilling_potions=False,
             post_combat_cleanup_active=False, quest_party_battle_rescue_active=False,
@@ -38,11 +40,14 @@ class QuestXTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
             quest_id=AsyncMock(return_value=42), goal_id=AsyncMock(return_value=7),
             zone_name=AsyncMock(return_value='World/Area'),
             quest_position=SimpleNamespace(position=AsyncMock(side_effect=lambda: self.target)),
-            body=SimpleNamespace(position=AsyncMock(side_effect=lambda: self.position)),
+            body=SimpleNamespace(position=AsyncMock(side_effect=lambda: self.position),
+                                 yaw=AsyncMock(side_effect=lambda: self.yaw % math.tau)),
             teleport=AsyncMock(), root_window=object())
 
         async def key(code, seconds):
             self.keys.append((code, self.now))
+            if code == Keycode.A:
+                self.yaw += math.radians(150) * seconds
             self.now += seconds
         self.client.send_key = AsyncMock(side_effect=key)
         self.quester = Quester(self.client, [self.client], None)
@@ -51,6 +56,7 @@ class QuestXTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.quester._maybe_photo_giant_vat = AsyncMock(return_value=False)
         self.quester.handle_npc_talking_quests = AsyncMock(return_value=True)
         self.quester.new_world_doors = AsyncMock(return_value=False)
+        self.quester._advance_npc_dialogue = AsyncMock(side_effect=lambda _: setattr(self, 'dialogue', False))
 
         async def tick(seconds):
             self.now += seconds
@@ -82,6 +88,8 @@ class QuestXTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.now = 1.6
         def done(code, seconds):
             self.keys.append((code, self.now))
+            if code == Keycode.A:
+                self.yaw += .4
             if code == Keycode.X:
                 self.client.goal_id.return_value = 8
         self.client.send_key.side_effect = done
@@ -103,26 +111,23 @@ class QuestXTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn('sent_at', self.client.quest_interaction_attempt)
                 self.assertFalse(get_client_automation_ownership(self.client).locked)
 
-    async def test_new_named_object_releases_exhausted_context_without_rearming_same_object(self):
+    async def test_new_named_object_does_not_reset_same_task_cooldown(self):
         await self.first_x()
         self.now = 4.0
         await self.quester.handle_quest_interaction(self.client, self.target)
-        self.now += 60
+        count = len(self.keys)
         with (patch('src.questing.get_popup_title', AsyncMock(return_value='Second Lever')),
               patch('src.questing.get_quest_name', AsyncMock(return_value='Use Lever and Second Lever in Area'))):
             await self.quester.handle_quest_interaction(self.client, self.target)
-        self.assertEqual(len(self.keys), 8)
-        self.assertEqual(self.keys[-1][0], Keycode.X)
+        self.assertEqual(len(self.keys), count)
 
     async def test_disappeared_prompt_waits_for_delayed_progress_without_more_input(self):
         await self.first_x()
         self.range_visible = False
         self.now = 4.0
-        await self.quester.handle_quest_interaction(self.client, self.target)
-        self.assertIsNotNone(self.client.quest_interaction_attempt)
         self.text = 'Use Lever (1/2)'
+        await self.quester.handle_quest_interaction(self.client, self.target)
         self.now = 6.0
-        self.assertFalse(await self.quester.handle_quest_interaction(self.client, self.target))
         self.assertEqual([key for key, _ in self.keys], [Keycode.X])
         self.assertIsNone(self.client.quest_interaction_attempt)
         self.assertIsNone(getattr(self.client, '_quest_x_turn_failed', None))
@@ -136,23 +141,31 @@ class QuestXTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(self.client.quest_interaction_attempt, state)
         self.client.quest_party_probe_pending = False
         await self.quester.handle_quest_interaction(self.client, self.target)
-        self.assertEqual([key for key, _ in self.keys], [Keycode.X] + [Keycode.A, Keycode.X] * 3)
+        self.assertGreaterEqual(abs(state['turn_angle']), math.tau)
 
-    async def test_pause_between_retries_preserves_three_turn_limit(self):
+    async def test_pause_between_retries_preserves_remaining_circle(self):
         state = await self.first_x()
         self.now = 4.0
         def pause(code, seconds):
             self.keys.append((code, self.now))
+            if code == Keycode.A:
+                self.yaw += .4
             if code == Keycode.X:
                 self.client.quest_recovery_owner = 'other-recovery'
         self.client.send_key.side_effect = pause
         await self.quester._recover_quest_x_direction(self.client, state)
         self.assertIs(self.client.quest_interaction_attempt, state)
         self.client.quest_recovery_owner = None
-        self.client.send_key.side_effect = lambda code, seconds: self.keys.append((code, self.now))
-        self.now = 6.0
+        async def resume(code, seconds):
+            self.keys.append((code, self.now))
+            if code == Keycode.A:
+                self.yaw += .4
+            self.now += seconds
+        self.client.send_key.side_effect = resume
+        self.now = max(self.now, state['next_at']) + .1
         await self.quester.handle_quest_interaction(self.client, self.target)
-        self.assertEqual([key for key, _ in self.keys], [Keycode.X] + [Keycode.A, Keycode.X] * 3)
+        self.assertGreaterEqual(abs(state['turn_angle']), math.tau)
+        self.assertLess(abs(state['turn_angle']), math.tau + .4)
 
     async def test_first_x_progress_or_dialogue_never_turns(self):
         for event in ('quest', 'goal', 'count', 'dialogue'):
@@ -171,38 +184,44 @@ class QuestXTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
                     else: self.dialogue = True
                 self.client.send_key.side_effect = done
                 await self.first_x()
-                self.assertIsNone(self.client.quest_interaction_attempt)
+                if event == 'dialogue':
+                    self.assertIsNotNone(self.client.quest_interaction_attempt)
+                else:
+                    self.assertIsNone(self.client.quest_interaction_attempt)
 
-    async def test_recovered_dialogue_hands_over_without_dialogue_input(self):
-        await self.first_x()
+    async def test_recovered_dialogue_resumes_without_npc_handler_recursion(self):
+        state = await self.first_x()
         self.now = 4.0
         def done(code, seconds):
             self.keys.append((code, self.now))
             if code == Keycode.A:
+                self.yaw += .4
                 self.prompt = 'Press X to Talk'  # Different nearby object, same quest point.
             else:
                 self.dialogue = True
         self.client.send_key.side_effect = done
         await self.quester.handle_quest_interaction(self.client, self.target)
-        self.assertEqual([key for key, _ in self.keys], [Keycode.X, Keycode.A, Keycode.X])
+        self.assertGreaterEqual(abs(state['turn_angle']), math.tau)
+        self.quester._advance_npc_dialogue.assert_awaited()
         self.quester.handle_npc_talking_quests.assert_not_awaited()
         self.assertIsNone(self.client.quest_interaction_attempt)
         self.assertFalse(get_client_automation_ownership(self.client).locked)
 
     async def test_exhaustion_is_finite_warns_once_and_does_not_rearm_on_prompt_change(self):
-        await self.first_x()
+        state = await self.first_x()
         self.now = 4.0
         with patch('src.questing.logger.warning') as warning:
             self.assertFalse(await self.quester.handle_quest_interaction(self.client, self.target))
             self.assertIsNone(self.client.quest_interaction_attempt)
             self.prompt = 'Press X to Open'
             for _ in range(3):
-                self.now += 60
+                self.now += 5
                 self.assertFalse(await self.quester.handle_quest_interaction(self.client, self.target))
             warning.assert_called_once()
-        self.assertEqual([key for key, _ in self.keys], [Keycode.X] + [Keycode.A, Keycode.X] * 3)
-        for index in (3, 5):
-            self.assertGreaterEqual(self.keys[index][1] - self.keys[index - 1][1], 4.0)
+        self.assertGreaterEqual(abs(state['turn_angle']), math.tau)
+        attempts = [at for key, at in self.keys if key == Keycode.X]
+        for previous, current in zip(attempts, attempts[1:]):
+            self.assertGreaterEqual(current - previous, 4.0)
         self.assertFalse(get_client_automation_ownership(self.client).locked)
 
     async def test_invalid_context_cancels_before_any_turn(self):
@@ -216,7 +235,6 @@ class QuestXTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
             lambda: setattr(self.client.in_battle, 'return_value', True),
             lambda: setattr(self, 'position', XYZ(1000, 200, 0)),
             lambda: setattr(self, 'target', XYZ(100, 210, 0)),
-            lambda: setattr(self, 'dialogue', True),
             lambda: setattr(self, 'free', False),  # Includes existing forced-dialogue/animation guard.
             lambda: setattr(self, 'menu', True),
             lambda: setattr(self.client, 'quest_recovery_owner', 'other-recovery'),
@@ -263,11 +281,14 @@ class QuestXTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 started, released = asyncio.Event(), asyncio.Event()
                 async def key(code, seconds):
                     self.keys.append((code, self.now))
+                    if code == Keycode.A:
+                        self.yaw += .4
                     if code == cancelled_key:
                         started.set()
-                        await REAL_SLEEP(0)
-                        await REAL_SLEEP(0)
-                        released.set()
+                        try:
+                            await asyncio.Event().wait()
+                        finally:
+                            released.set()
                 self.client.send_key.side_effect = key
                 worker = asyncio.create_task(self.quester._recover_quest_x_direction(self.client, state))
                 worker.add_done_callback(lambda _: started.set())
@@ -280,25 +301,22 @@ class QuestXTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(self.client.quest_interaction_attempt)
                 self.assertFalse(get_client_automation_ownership(self.client).locked)
 
-    async def test_missing_prompt_waits_finitely_without_claiming_progress_or_more_x(self):
-        await self.first_x()
+    async def test_missing_prompt_searches_one_circle_without_claiming_progress_or_more_x(self):
+        state = await self.first_x()
         self.range_visible = False
         self.now = 4.0
         with patch('src.questing.logger.warning') as warning:
-            self.assertTrue(await self.quester.handle_quest_interaction(self.client, self.target))
-            warning.assert_not_called()
-            self.assertIsNotNone(self.client.quest_interaction_attempt)
-            self.now = 31.0
             self.assertFalse(await self.quester.handle_quest_interaction(self.client, self.target))
             warning.assert_called_once()
-        self.assertEqual([key for key, _ in self.keys], [Keycode.X])
+        self.assertGreaterEqual(abs(state['turn_angle']), math.tau)
+        self.assertEqual(sum(key == Keycode.X for key, _ in self.keys), 1)
         self.assertIsNone(self.client.quest_interaction_attempt)
 
     async def test_normal_talk_still_uses_existing_handler(self):
         self.prompt = 'Press X to Talk'
         await self.quester.handle_quest_interaction(self.client, self.target)
         self.quester.handle_npc_talking_quests.assert_awaited_once_with(self.client, [self.client])
-        self.client.send_key.assert_not_awaited()
+        self.client.send_key.assert_awaited_once_with(Keycode.X, .1)
 
     async def test_unreadable_progress_keeps_original_x_backoff_without_turning(self):
         self.text = ''
@@ -314,15 +332,26 @@ class QuestXTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class QuestXTurnSoloIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        asyncio.get_running_loop().set_debug(False)
+
     def setUp(self):
         ordinary_fixture.OrdinaryQuest415Tests.setUp(self)
         # Reuse the ordinary-flow fixture with the current optional movement result.
         async def move(client, target, leader_client=None, **kwargs):
             await self.move(client, target, leader_client=leader_client)
-        patcher = patch('src.questing.collision_tp', side_effect=move)
+        patcher = patch('src.questing.navmap_tp', side_effect=move)
         patcher.start()
         self.addCleanup(patcher.stop)
         self.quester.read_quest_txt = AsyncMock(side_effect=lambda _: self.objective)
+        self.yaw = 6.1
+        self.client.body.yaw = AsyncMock(side_effect=lambda: self.yaw % math.tau)
+        async def key(key, seconds):
+            code = key
+            if code == Keycode.A:
+                self.yaw += .4
+            self.now += seconds
+        self.client.send_key.side_effect = key
 
     async def test_legacy_first_x_records_context_and_recovers_before_another_tp(self):
         await self.quester.auto_quest_solo()
@@ -330,6 +359,8 @@ class QuestXTurnSoloIntegrationTests(unittest.IsolatedAsyncioTestCase):
         moves = self.move.await_count
         self.now = 4.0
         def done(code, seconds):
+            if code == Keycode.A:
+                self.yaw += .4
             if code == Keycode.X:
                 self.client.goal_id.return_value = 8
         self.client.send_key.side_effect = done
@@ -347,16 +378,19 @@ class QuestXTurnSoloIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(self.client.quest_interaction_attempt, state)
         self.client.send_key.assert_awaited_once()
 
-    async def test_legacy_exhaustion_cannot_send_more_x_on_same_target(self):
+    async def test_legacy_full_circle_cooldown_cannot_send_more_x_on_same_target(self):
         await self.quester.auto_quest_solo()
+        state = self.client.quest_interaction_attempt
         self.now = 4.0
         with patch('src.questing.logger.warning') as warning:
             await self.quester.auto_quest_solo()
             for _ in range(3):
-                self.now += 60
+                self.now += 5
                 await self.quester.auto_quest_solo()
             warning.assert_called_once()
-        self.assertEqual(self.client.send_key.await_count, 7)
+        self.assertGreaterEqual(abs(state['turn_angle']), math.tau)
+        self.assertEqual(sum(call.args[0] == Keycode.X for call in self.client.send_key.await_args_list),
+                         1 + state['turn_x_count'])
         self.assertIsNone(self.client.quest_interaction_attempt)
 
     async def test_photomancy_keeps_existing_key_order_without_arming_recovery(self):
