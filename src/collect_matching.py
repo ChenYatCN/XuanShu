@@ -12,10 +12,6 @@ from src.interaction_prompts import plain_text, split_quest_location, quest_has_
 
 
 _COUNT = re.compile(r"[（(]\s*(\d+)\s*(?:of|/|／)\s*(\d+)\s*[)）]\s*$", re.I)
-_PROGRESS_COUNT = re.compile(r"(?:[（(]\s*)?(\d+)\s*(?:of|/|／)\s*(\d+)\s*[)）]?\s*$", re.I)
-_INTERACTION_ACTIONS = re.compile(
-    r"^(?:activate|inspect|smash|operate|interact\s+with|examine)\s+"
-    r"|^(?:激活|啟動|启动|检查|檢查|调查|調查|检视|檢視|操作|粉碎|砸碎)\s*", re.I)
 _ACTIONS = re.compile(
     r"^(?:collect|gather|find|search(?:\s+for)?|pick(?:\s+up)?|take|recover|retrieve|catch|steal|break|destroy|get|use|open)\s+"
     r"|^(?:收集|聚集|采集|採集|寻找|尋找|找到|搜寻|搜尋|搜索|拾取|捡起|撿起|拾起|获取|獲取|获得|獲得|取回|恢复|恢復|找回|检索|檢索|捕捉|捕获|捕獲|拿取|偷取|窃取|竊取|破坏|破壞|毁坏|毀壞|打破|得到|摧毁|摧毀|使用|打开|打開)\s*"
@@ -45,28 +41,18 @@ class CollectGoal:
         return normalize_name(self.target), normalize_name(self.location)
 
 
-def parse_collect_goal(text, *, allow_interaction=False):
+def parse_collect_goal(text):
     text = plain_text(text)
     if not text or quest_has_action(text, 'defeat'):
         return None
-    count_pattern = _PROGRESS_COUNT if allow_interaction else _COUNT
-    count = count_pattern.search(text)
+    count = _COUNT.search(text)
     current, total = (int(count[1]), int(count[2])) if count else (None, None)
     if count:
         if total <= 0 or current > total:
             return None
         text = text[:count.start()].strip()
     objective, location = split_quest_location(text)
-    if allow_interaction and count is None:
-        count = count_pattern.search(objective)
-        if count:
-            current, total = int(count[1]), int(count[2])
-            if total <= 0 or current > total:
-                return None
-            objective = objective[:count.start()].strip()
     action = _ACTIONS.match(objective)
-    if action is None and allow_interaction:
-        action = _INTERACTION_ACTIONS.match(objective)
     if not action:
         return None
     target = objective[action.end():].strip()
@@ -89,13 +75,6 @@ class CollectNames:
                 self.by_id[code.casefold()] = aliases
             for name in aliases:
                 self.by_name[name].update(aliases)
-        # Monkey Men: the objective names Stolen Food, while the collectible
-        # AZ-FoodStores and its popup use Food Stores (verified game labels
-        # WizardGameObjects_00000553 / WizardGameObjects_00000549).
-        food = {normalize_name(name) for name in
-                ('Stolen Food', '被偷走的食物', 'Food Stores', '食品店')}
-        for name in food:
-            self.by_name[name].update(food)
 
     def aliases(self, name):
         key = normalize_name(name)

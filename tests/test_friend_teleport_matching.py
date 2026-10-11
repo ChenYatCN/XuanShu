@@ -274,12 +274,14 @@ class CloseFriendWindowsTests(unittest.IsolatedAsyncioTestCase):
         panel.write_flags.assert_not_awaited()
         self.client.mouse_handler.click_window.assert_not_awaited()
 
-    async def test_actual_follow_cleanup_delegates_without_esc(self):
+    async def test_task_follow_cleanup_uses_the_baseline_escape_sequence(self):
         tree = ast.parse(Path('XuanShu.py').read_text(encoding='utf-8'))
         fn = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == 'close_stale_friend_ui')
-        close = AsyncMock()
-        ns = dict(Client=object, close_friend_windows=close)
+        from wizwalker import Keycode
+        visible = AsyncMock(side_effect=[True, False])
+        client = SimpleNamespace(send_key=AsyncMock())
+        ns = dict(Client=object, Keycode=Keycode, friend_ui_is_open=visible,
+                  asyncio=SimpleNamespace(sleep=AsyncMock()))
         exec(compile(ast.Module(body=[fn], type_ignores=[]), 'XuanShu.py', 'exec'), ns)
-        await ns['close_stale_friend_ui'](self.client)
-        close.assert_awaited_once_with(self.client)
-        self.client.send_key.assert_not_awaited()
+        await ns['close_stale_friend_ui'](client)
+        client.send_key.assert_awaited_once_with(Keycode.ESC, 0.1)

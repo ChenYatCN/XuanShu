@@ -18,11 +18,11 @@ from src.task_lifecycle import gather_owned
 
 
 class PetEnergyStopTests(unittest.IsolatedAsyncioTestCase):
-    async def test_questing_does_not_send_stopped_client_back_to_pet_game(self):
+    async def test_independent_pet_does_not_send_stopped_client_back_to_pet_game(self):
         client = AsyncMock()
         client.auto_pet_status = False
         client.feeding_pet_status = True
-        await auto_pet(client, False, False, questing=True)
+        await auto_pet(client, False, False, questing=False)
         self.assertFalse(client.feeding_pet_status)
         client.zone_name.assert_not_awaited()
         client.send_key.assert_not_awaited()

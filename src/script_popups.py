@@ -165,11 +165,13 @@ async def _photo_buttons(client):
 
 
 async def discard_photo_popup(client):
+    was_questing = getattr(client, 'questing_status', False)
     buttons = await _photo_buttons(client)
     if set(buttons) != {'discard', 'keep'}:
         return False
     async with client.mouse_handler:
-        if await client.is_loading():
+        if (await client.is_loading() or (hasattr(client, 'in_battle') and await client.in_battle())
+                or (was_questing and not client.questing_status)):
             return False
         buttons = await _photo_buttons(client)
         if set(buttons) != {'discard', 'keep'}:
@@ -302,16 +304,16 @@ async def skip_magic_wheel_tutorial(client):
 async def _close_automation_popup_owned(client):
     if await closed_dungeon_popup(client, dismiss=True):
         client._xuanshu_missing_area_retry = None
-        if not getattr(client, 'refilling_potions', False):
-            client.questing_status = False
         return True
-    if getattr(client, '_xuanshu_zone_retry_users', 0):
-        if await _retry_missing_area_popup_owned(client):
-            return True
+    if getattr(client, "questing_status", False) is not True:
+        if getattr(client, '_xuanshu_zone_retry_users', 0):
+            if await _retry_missing_area_popup_owned(client):
+                return True
     if await client.is_loading():
         return False
-    if await close_class_picture_popup(client):
-        return True
+    if getattr(client, "questing_status", False) is not True:
+        if await close_class_picture_popup(client):
+            return True
     now = time.monotonic()
     if (hasattr(client.root_window, 'get_windows_with_predicate')
             and now >= getattr(client, '_xuanshu_photo_scan_at', 0)):

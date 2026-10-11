@@ -23,25 +23,6 @@ class DungeonPromptTests(unittest.TestCase):
 
 
 class VerifiedLanguageTests(unittest.TestCase):
-    def test_verified_generic_actions_and_exact_forms(self):
-        from src.game_text_catalog import INTERACTION_RECORDS
-        for text_id, texts in INTERACTION_RECORDS.items():
-            for text in (*texts, f'<string;{text_id}>'):
-                with self.subTest(text_id=text_id, text=text):
-                    self.assertIsNotNone(interaction_kind(text))
-        for prompt, expected in (
-            ('按X或<icon;mouse>使用', 'use'), ('Press X to Use', 'use'),
-            ('按下 X 激活', 'interact'), ('Press X to Read', 'interact'),
-            ('按下 X 解锁', 'interact'), ('按下 X 修理', 'interact'),
-            ('按下 X 攀爬', 'interact'), ('Press X to Use Desk', 'use'),
-            ('Press X to Use Imaginary Device', None), ('按下 X 未知动作', None),
-            ('Press X to use Bank', None), ('Press X to Hatch', None),
-            ('Press X to Play', None), ('Press X to Fish', None),
-            ('Press X to Consume [key type] Key', None),
-        ):
-            with self.subTest(prompt=prompt):
-                self.assertEqual(interaction_kind(prompt), expected)
-
     def test_known_ids_have_verified_translations(self):
         self.assertEqual(TEXT_RECORDS['PetGames_Action_Go'], ['Go!', '开始重复！'])
         self.assertEqual(TEXT_RECORDS['GUI_NPCInteractNoClick'][1], '按下 &Icons_XKey& 交谈')
@@ -70,16 +51,6 @@ class VerifiedLanguageTests(unittest.TestCase):
         self.assertTrue(matches_text('开始重复！', 'PetGames_Action_Go'))
         self.assertFalse(matches_text('完成！', 'PetGames_Action_Go'))
 
-    def test_verified_boat_raft_and_ride_records_are_transport_not_dungeon(self):
-        for text_id in ('GUI_00000029', 'GUI_00005988', 'GUI_00006657',
-                        'GUI_00008359', 'GUI_00010697'):
-            for text in (*TEXT_RECORDS[text_id], f'<string;{text_id}>'):
-                with self.subTest(text=text):
-                    self.assertEqual(interaction_kind(text), 'ride')
-                    self.assertFalse(is_dungeon_entry_prompt(text))
-        self.assertEqual(interaction_kind('Press X to Enter Boat'), 'ride')
-        self.assertEqual(interaction_kind('按X 进入船'), 'ride')
-
     def test_quest_location_and_object_extraction(self):
         for text, location in (
             ('<center>Collect Cog in Triton Avenue (0 of 3)</center>', 'Triton Avenue'),
@@ -95,11 +66,6 @@ class VerifiedLanguageTests(unittest.TestCase):
     def test_quest_action_recognition(self):
         for text in ('Defeat Malorn in The Commons', '击败 马龙 地点：大基地', '击败并收集 齿轮'):
             self.assertTrue(quest_has_action(text, 'defeat'))
-        for text in ('Talk To Merle', '拜访 梅尔', 'WizardQuestGoals_TalkNPC'):
-            self.assertTrue(quest_has_action(text, 'talk'))
-        for text in ('Use the lever', '使用 拉杆', 'WizardQuestGoals_UseItem'):
-            self.assertTrue(quest_has_action(text, 'use'))
-        self.assertFalse(quest_has_action('Defeat Malorn', 'talk'))
         for text in ('Press Z to Photomance a Photo of Tower', '按下 Z 来拍照', '取得这个目标的照片：高塔'):
             self.assertTrue(quest_has_action(text, 'photomance'))
         self.assertFalse(quest_has_action('Collect a photo', 'photomance'))

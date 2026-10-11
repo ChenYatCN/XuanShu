@@ -11,7 +11,6 @@ class KrokExitFallbackTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.client = AsyncMock()
         self.client.title = 'p1'
-        self.client.refilling_potions = False
         self.client.zone_name.return_value = 'Krokotopia/KT_WorldTeleporter'
         self.client.is_loading.return_value = False
         self.client.body.position.return_value = XYZ(0, 0, 0)
@@ -37,14 +36,6 @@ class KrokExitFallbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_entering_room_uses_normal_tp(self):
         await self.attempt(0)
         self.move.assert_awaited_once_with(self.client, self.target, leader_client=None)
-        self.client.send_key.assert_not_awaited()
-
-    async def test_missing_title_during_move_does_not_clear_stall_as_progress(self):
-        await self.attempt(0)
-        state = self.quester._krok_exit_watch[id(self.client)]
-        self.quest.side_effect = ['Go outside', '']
-        await self.attempt(5)
-        self.assertIs(self.quester._krok_exit_watch[id(self.client)], state)
         self.client.send_key.assert_not_awaited()
 
     async def test_three_stalled_attempts_over_ten_seconds_trigger_end(self):

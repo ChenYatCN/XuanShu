@@ -228,6 +228,7 @@ class CharacterSessionTests(unittest.IsolatedAsyncioTestCase):
         self.namespace['stop_questing_on_client_loss'].assert_not_awaited()
 
     async def test_selection_is_not_free_even_when_old_memory_claims_idle(self):
+        self.client.questing_status = False
         self.client._character_selection_active = True
         self.assertFalse(await is_free(self.client))
         self.client.is_loading.assert_not_awaited()
