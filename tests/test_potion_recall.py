@@ -141,13 +141,13 @@ class PotionRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(call.kwargs['dungeon_return'] for call in
                             self.mocks['buy_potions'].await_args_list))
 
-    async def test_failed_dungeon_return_stops_only_refilling_client(self):
+    async def test_failed_dungeon_return_releases_refill_without_stopping_client(self):
         self.client.questing_status = True
         self.client.quest_party_group_dungeon_zone = 'Original'
         self.mocks['buy_potions'].return_value = False
         self.assertFalse(await utils.refill_potions(self.client))
         self.assertFalse(self.client.refilling_potions)
-        self.assertFalse(self.client.questing_status)
+        self.assertTrue(self.client.questing_status)
 
     async def test_simultaneous_refills_keep_client_states_independent(self):
         other = SimpleNamespace(title='p2', questing_status=True,
@@ -175,7 +175,7 @@ class PotionRecallTests(unittest.IsolatedAsyncioTestCase):
             await first
         self.assertFalse(self.client.refilling_potions)
 
-    async def test_dungeon_cancel_clears_state_and_prevents_worker_restart(self):
+    async def test_dungeon_cancel_clears_owned_state_without_changing_task_switch(self):
         for refill in (utils.refill_potions, utils.auto_potions_force_buy):
             with self.subTest(refill=refill.__name__):
                 self.client.questing_status = True
@@ -184,18 +184,19 @@ class PotionRecallTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(asyncio.CancelledError):
                     await refill(self.client)
                 self.assertFalse(self.client.refilling_potions)
-                self.assertFalse(self.client.questing_status)
+                self.assertTrue(self.client.questing_status)
 
     async def test_dungeon_disconnect_does_not_attempt_another_zone_read(self):
         for refill in (utils.refill_potions, utils.auto_potions_force_buy):
             with self.subTest(refill=refill.__name__):
                 self.client.questing_status = True
+                self.client.potion_return_context = None
                 self.client.quest_party_group_dungeon_zone = 'Original'
                 self.client.zone_name.side_effect = ['Original', 'Original', RuntimeError('closed')]
                 self.mocks['navigate_to_ravenwood'].side_effect = RuntimeError('closed')
                 self.assertFalse(await refill(self.client))
                 self.assertFalse(self.client.refilling_potions)
-                self.assertFalse(self.client.questing_status)
+                self.assertTrue(self.client.questing_status)
 
     async def test_exit_confirmation_alone_does_not_select_dungeon_return(self):
         self.client.quest_party_confirmed_dungeon_transition = ('Dungeon/Room', 'Original')
@@ -296,7 +297,7 @@ class DungeonReturnTests(unittest.IsolatedAsyncioTestCase):
                 dungeon_return.assert_not_awaited()
                 mark_return.assert_awaited_once()
 
-    async def test_red_button_verification_failure_stops_unclassified_client(self):
+    async def test_red_button_verification_failure_preserves_unclassified_task_switch(self):
         client = SimpleNamespace(title='p1', questing_status=True,
             potion_return_context={'zone': 'Dungeon/Unknown', 'group_zone': 'Dungeon/Unknown'},
             zone_name=AsyncMock(return_value='WizardCity/WC_Hub'),
@@ -313,7 +314,7 @@ class DungeonReturnTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(await utils.buy_potions(client, original_zone='Dungeon/Unknown'))
         dungeon_return.assert_awaited_once()
         mark_return.assert_not_awaited()
-        self.assertFalse(client.questing_status)
+        self.assertTrue(client.questing_status)
 
     async def test_failed_mark_without_resume_button_is_not_retried(self):
         client = SimpleNamespace(title='p1', questing_status=True,
@@ -344,7 +345,7 @@ class DungeonReturnTests(unittest.IsolatedAsyncioTestCase):
                 client, recall=True, original_zone='Dungeon/Room', dungeon_return=True))
         dungeon_return.assert_awaited_once_with(client, 'Dungeon/Room')
         mark_return.assert_not_awaited()
-        self.assertFalse(client.questing_status)
+        self.assertTrue(client.questing_status)
 
     async def test_red_button_return_waits_for_stable_original_zone(self):
         client = SimpleNamespace(title='p2', is_loading=AsyncMock(return_value=False),
@@ -384,7 +385,7 @@ class DungeonReturnTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PotionSynchronizationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_legacy_failed_refill_removes_only_failed_client_from_local_roster(self):
+    async def test_legacy_failed_refill_preserves_enabled_client_roster(self):
         from src.questing import Quester
         leader = SimpleNamespace(process_id=1, questing_status=True,
             stats=SimpleNamespace(potion_charge=AsyncMock(return_value=1)))
@@ -399,12 +400,13 @@ class PotionSynchronizationTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(await quester.heal_and_handle_potions())
         self.assertEqual([call.args[0] for call in refill.await_args_list], [leader, other])
         self.assertTrue(leader.questing_status)
-        self.assertFalse(other.questing_status)
-        self.assertEqual(quester.clients, [leader])
+        self.assertTrue(other.questing_status)
+        self.assertEqual(quester.clients, [leader, other])
         self.assertEqual(roster, [leader, other])
         quester.collect_wisps.reset_mock()
+        other.stats.potion_charge.return_value = 1
         self.assertTrue(await quester.heal_and_handle_potions())
-        quester.collect_wisps.assert_awaited_once_with(leader)
+        self.assertEqual([call.args[0] for call in quester.collect_wisps.await_args_list], [leader, other])
 
     async def test_legacy_zone_and_movement_skip_refilling_or_stopped_client(self):
         from src.questing import Quester

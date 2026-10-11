@@ -282,7 +282,7 @@ class SharedMovementInteractionTests(unittest.IsolatedAsyncioTestCase):
         self.navmap.side_effect = tm.navmap_tp
         self.assertTrue(await self.quester.teleport_party_to_quest_target(self.target))
         self.assertEqual(self.navmap.await_count, 4)
-        self.assertEqual(self.quester._quest_movement_waiting[id(self.client)]['signature'][2][-1], self.objective)
+        self.assertNotIn(id(self.client), self.quester._quest_movement_waiting)
         self.assert_drained()
 
     async def test_missing_group_proof_or_busy_hitter_never_authorizes_fallback(self):
@@ -369,6 +369,8 @@ class SharedMovementInteractionTests(unittest.IsolatedAsyncioTestCase):
         async def move(member, *args, **kwargs):
             if member is self.client:
                 self.visible = True
+                cancelled.append(member.title)
+                return True  # The leader's wrapper has confirmed its stable landing.
             try:
                 await asyncio.Future()
             finally:

@@ -140,7 +140,7 @@ class QuestFinalApproachTests(unittest.IsolatedAsyncioTestCase):
         self.position = XYZ(999, 0, 0)
         self.assertTrue(await self.quester.teleport_to_quest_target(self.client, self.target))
         for _ in range(2):
-            self.assertFalse(await self.quester.teleport_to_quest_target(self.client, self.target))
+            self.assertTrue(await self.quester.teleport_to_quest_target(self.client, self.target))
         self.navmap.assert_not_awaited()
         self.client.goto.assert_not_awaited()
         self.client.send_key.assert_not_awaited()
@@ -194,7 +194,7 @@ class QuestFinalApproachTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_state_or_target_change_cancels_old_navmap_and_releases_owner(self):
         for event in ('quest', 'goal', 'progress', 'target', 'zone', 'loading', 'battle',
-                      'dialogue', 'interaction', 'probe', 'stop', 'sync', 'recovery',
+                      'dialogue', 'probe', 'stop', 'sync', 'recovery',
                       'postcombat', 'mainline', 'rescue', 'restart'):
             with self.subTest(event=event):
                 self.position = XYZ(0, 0, 0)
@@ -256,18 +256,25 @@ class QuestFinalApproachTests(unittest.IsolatedAsyncioTestCase):
                     self.assertFalse(await self.quester.teleport_to_quest_target(self.client, self.target))
                 self.navmap.assert_not_awaited()
 
-    async def test_movement_timeout_is_bounded_and_does_not_restart_same_move(self):
+    async def test_native_fallback_is_not_stopped_by_an_outer_timeout(self):
+        entered = asyncio.Event()
         cancelled = []
         async def pending(*args):
+            entered.set()
             try:
                 await asyncio.Future()
             finally:
                 cancelled.append(True)
-        real_timeout = asyncio.timeout
         self.navmap.side_effect = pending
-        with patch.object(q.asyncio, 'timeout', side_effect=lambda seconds: real_timeout(.02)):
-            self.assertFalse(await self.quester.teleport_to_quest_target(self.client, self.target))
-        self.assertFalse(await self.quester.teleport_to_quest_target(self.client, self.target))
+        with patch.object(q.asyncio, 'timeout', side_effect=AssertionError('outer timeout used')):
+            task = asyncio.create_task(self.quester.teleport_to_quest_target(self.client, self.target))
+            await entered.wait()
+            for _ in range(5):
+                await REAL_SLEEP(0)
+            self.assertFalse(task.done())
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
         self.assertEqual(cancelled, [True])
         self.assertFalse(get_client_automation_ownership(self.client).locked)
         self.navmap.assert_awaited_once()

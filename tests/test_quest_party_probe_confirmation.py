@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
+from wizwalker import XYZ
+from src.questing import Quester
 from src.automation_ownership import automation_owner, get_client_automation_ownership
 from src.utils import FriendBusyOrInstanceClosed
 
@@ -42,6 +44,7 @@ class ProbeConfirmationTests(unittest.IsolatedAsyncioTestCase):
             is_loading=AsyncMock(return_value=False), in_battle=AsyncMock(return_value=False),
             zone_name=AsyncMock(return_value='World/New'), quest_id=AsyncMock(return_value=42),
             goal_id=AsyncMock(return_value=7), body=SimpleNamespace(position=AsyncMock(return_value=0)))
+        self.quester.quest_position = SimpleNamespace(position=AsyncMock(return_value=XYZ(0, 0, 0)))
         self.hitter.quest_party_quester = self.quester
         self.peer = State(title='p3', questing_status=True, in_solo_zone=True,
                           quest_party_solo_gear_active=True, quest_party_probe_pending=True)
@@ -50,6 +53,7 @@ class ProbeConfirmationTests(unittest.IsolatedAsyncioTestCase):
         self.equip = AsyncMock(return_value=True)
         self.restart, self.status = Mock(), Mock()
         self.reader = SimpleNamespace(handle_pending_dungeon_confirmation=AsyncMock(return_value=False),
+            _valid_quest_target=Quester._valid_quest_target,
             _resume_party_dungeon_interaction=AsyncMock(return_value=False),
             get_truncated_quest_objectives=AsyncMock(return_value='Defeat Boss'))
         self.namespace = dict(asyncio=asyncio, Client=object, logger=Mock(),
@@ -61,6 +65,7 @@ class ProbeConfirmationTests(unittest.IsolatedAsyncioTestCase):
             remove_party_status=Mock(), gear_switching_in_solo_zones=True,
             change_party_equipment=self.equip, restart_quest_worker_after_probe=self.restart,
             is_free=AsyncMock(side_effect=lambda c: not c.is_loading.return_value),
+            is_free_leader_questing=AsyncMock(return_value=True),
             clients_share_live_area=AsyncMock(side_effect=lambda *a: self.same_area),
             close_automation_popup=AsyncMock(return_value=False),
             is_spiral_door_open=AsyncMock(return_value=False),

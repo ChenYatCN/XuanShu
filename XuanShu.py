@@ -59,6 +59,7 @@ from src.ibao_runtime import IbaoGroups
 from src.interaction_prompts import portal_kind
 from src.paths import (
     advance_dialog_path,
+    cancel_multiple_quest_menu_path,
     decline_quest_path,
     friend_is_busy_and_dungeon_reset_path,
     play_button_path,
@@ -73,7 +74,7 @@ from src.quest_party import (
     resolve_quester_friend_icon,
     stable_client_identity,
 )
-from src.questing import Quester, claim_quest_recovery, release_quest_recovery
+from src.questing import Quester, claim_quest_recovery, release_quest_recovery, is_free_leader_questing
 from src.script_popups import close_automation_popup, run_with_script_popups
 from src.settings_manager import XuanShuSettings
 from src.sigil import Sigil
@@ -96,6 +97,8 @@ from src.utils import (
     reconcile_combat_state,
     clients_share_live_area,
     observe_party_area,
+    _party_area_token,
+    collect_wisps_with_limit,
     get_window_from_path,
     get_popup_title,
     index_with_str,
@@ -1902,30 +1905,55 @@ async def main():
 
         await asyncio.gather(*[async_in_combat(p) for p in walker.clients])
 
-    async def clear_post_combat_phase(client: Client):
-        """Nudge a client after combat so the game clears its phased state."""
-        if getattr(client, "post_combat_movement_active", False) or getattr(
-            client, "quest_party_battle_rescue_active", False
-        ) or getattr(client, 'post_combat_cleanup_active', False):
+    async def clear_post_combat_phase(client: Client, *, cleanup=False):
+        """Finish this client's existing post-battle actions before resuming quests."""
+        if (getattr(client, 'post_combat_movement_active', False)
+                or getattr(client, 'quest_party_battle_rescue_active', False)
+                or getattr(client, 'post_combat_cleanup_active', False)):
             return
-
         now = asyncio.get_running_loop().time()
-        if now - getattr(client, "post_combat_movement_at", 0.0) < 3.0:
+        if not cleanup and now - getattr(client, 'post_combat_movement_at', 0.0) < 3.0:
             return
-
         client.post_combat_movement_active = True
+        client.post_combat_cleanup_active = cleanup
         try:
-            # A combat can finish just as a loading screen starts.  Wait briefly
-            # rather than sending movement into a screen that cannot receive it.
+            if cleanup:
+                # just_left_combat is consumed once by the detector for questers
+                # and hitters. The combat worker does not run a second nudge.
+                async with automation_owner(client, 'post-combat'):
+                    if (not client.questing_status or await client.is_loading()
+                            or await client.in_battle()):
+                        return
+                    area = await _party_area_token(client)
+                    duel_id = await client.duel.duel_id_full()
+                    await collect_wisps_with_limit(client, limit=2)
+                    if (not client.questing_status or await client.in_battle()
+                            or await client.is_loading() or await _party_area_token(client) != area
+                            or await client.duel.duel_id_full() != duel_id):
+                        return
+                    await client.send_key(key=Keycode.A, seconds=0.3)
+                    if (not client.questing_status or await client.in_battle()
+                            or await client.is_loading() or await _party_area_token(client) != area
+                            or await client.duel.duel_id_full() != duel_id):
+                        return
+                    await client.send_key(key=Keycode.D, seconds=0.3)
+                    client.post_combat_movement_at = asyncio.get_running_loop().time()
+                    if (not client.questing_status or await client.in_battle()
+                            or await client.is_loading() or await _party_area_token(client) != area
+                            or await client.duel.duel_id_full() != duel_id):
+                        logger.debug('{} 跳过旧战后的深处TP：状态或区域已变化。', client.title)
+                        return
+                    await client.teleport(XYZ(0, 0, -10000))
+                    logger.info('{} 战后吃球和A/D完成，TP到(0, 0, -10000)，恢复任务/跟随。', client.title)
+                return
+            # Preserve the standalone combat nudge outside quest automation.
             loading_deadline = now + 10.0
             while await client.is_loading():
                 if asyncio.get_running_loop().time() >= loading_deadline:
                     return
                 await asyncio.sleep(0.25)
-
             if await client.in_battle():
                 return
-
             await client.send_key(key=Keycode.A, seconds=0.3)
             if not await client.in_battle():
                 await client.send_key(key=Keycode.D, seconds=0.3)
@@ -1933,6 +1961,7 @@ async def main():
             logger.debug(f"Client {client.title} - post-combat movement completed.")
         finally:
             client.post_combat_movement_active = False
+            client.post_combat_cleanup_active = False
 
     async def combat_loop(members=None):
         logger.catch()
@@ -1962,7 +1991,8 @@ async def main():
                                 True,
                             )
                             await battle.wait_for_combat()
-                            await clear_post_combat_phase(client)
+                            if not client.questing_status:
+                                await clear_post_combat_phase(client)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -1998,50 +2028,34 @@ async def main():
     async def dialogue_loop(members=None, *, questing=False):
         # auto advances dialogue for every client, individually and concurrently
         async def async_dialogue(client: Client):
+            if questing:
+                return  # Quest workers never enable dialogue on the user's behalf.
             if not questing:
                 client.auto_dialogue_running = True
             try:
+                dialogue_quester = Quester(client, [client], None)
                 while True:
-                    if questing:
-                        if not getattr(client, 'questing_status', False):
-                            return
-                        if getattr(client, 'auto_dialogue_running', False) is True:
-                            await asyncio.sleep(.05)
-                            continue
+                    client._auto_dialogue_accept_sidequests = side_quest_status
                     if (not freecam_status
                             and getattr(client, '_character_selection_active', False) is not True
                             and not getattr(client, 'refilling_potions', False)
                             and not getattr(client, 'post_combat_cleanup_active', False)
-                            and not getattr(client, 'quest_party_target_sync_active', False)
-                            and not isinstance(getattr(client, 'quest_recovery_owner', None), str)
                             and not await client.is_loading() and not await client.in_battle()):
-                        async with automation_owner(client, 'npc-dialogue'):
-                            if (freecam_status or questing and not getattr(client, 'questing_status', False)
-                                    or await client.is_loading() or await client.in_battle()
-                                    or getattr(client, '_character_selection_active', False) is True
-                                    or getattr(client, 'refilling_potions', False)
-                                    or isinstance(getattr(client, 'quest_recovery_owner', None), str)):
-                                continue
-                            if await close_npc_quest_menu(client):
-                                continue
-                            if await is_visible_by_path(client, advance_dialog_path):
-                                has_decline_button = await is_visible_by_path(
-                                    client, decline_quest_path
-                                )
-                                if has_decline_button and not getattr(
-                                    client, "hotkey_accept_sidequests", side_quest_status
-                                ):
-                                    await client.send_key(key=Keycode.ESC)
-                                    await asyncio.sleep(0.5)
-                                    if (not await client.is_loading() and not await client.in_battle()
-                                            and not getattr(client, 'refilling_potions', False)
-                                            and await is_visible_by_path(client, advance_dialog_path)):
-                                        await client.send_key(key=Keycode.ESC)
-                                    await asyncio.sleep(0.5)
-                                else:
-                                    await client.send_key(key=Keycode.SPACEBAR)
-                                    await asyncio.sleep(0.35)
-                                continue
+                        if (await is_visible_by_path(client, advance_dialog_path)
+                                or await is_visible_by_path(client, cancel_multiple_quest_menu_path)):
+                            async with automation_owner(client, 'npc-dialogue'):
+                                if (freecam_status or await client.is_loading() or await client.in_battle()
+                                        or getattr(client, '_character_selection_active', False) is True
+                                        or getattr(client, 'refilling_potions', False)
+                                        or getattr(client, 'post_combat_cleanup_active', False)):
+                                    continue
+                                if not await close_npc_quest_menu(client, select_mainlines=(
+                                        getattr(client, 'questing_status', False)
+                                        and getattr(client, 'mainline_finder_enabled', False))):
+                                    await dialogue_quester._advance_npc_dialogue(
+                                        client, accept_sidequests=side_quest_status)
+                            await asyncio.sleep(0.5)
+                            continue
                     await asyncio.sleep(0.05)
 
             finally:
@@ -2580,12 +2594,16 @@ async def main():
                                 recall=True,
                                 original_zone=await hitter.zone_name(),
                             )
-                            failure_count = 0
-                            next_retry_at = 0.0
-                            busy_evidence = None
-                            potion_settle_until = loop.time() + 3.0
-                            logger.debug('[单人探测] {} 当前结果未确认；原因={} 补药返回后等待区域稳定。', quester.title, hitter.title)
-                            continue
+                            refill_context = getattr(hitter, 'potion_return_context', None)
+                            refill_failure = refill_context.get('failure') if isinstance(refill_context, dict) else None
+                            if not (isinstance(refill_failure, dict) and refill_failure.get('handed_off')):
+                                failure_count = 0
+                                next_retry_at = 0.0
+                                busy_evidence = None
+                                potion_settle_until = loop.time() + 3.0
+                                logger.debug('[单人探测] {} 当前结果未确认；原因={} 补药返回后等待区域稳定。', quester.title, hitter.title)
+                                continue
+                            update_party_status(hitter, quester, '补药回传未确认，交回原归队流程')
 
                     hitter_zone = await hitter.zone_name()
                     probe_pending = bool(
@@ -2602,6 +2620,23 @@ async def main():
                         getattr(quester, 'quest_party_probe_wait', None),
                         follow_session, probe_pending,
                     )
+
+                    # Ordinary coordinate/friend follow starts after arrival.
+                    # The existing single-player probe and native battle/dialogue
+                    # follow retain their own lifecycle.
+                    if not probe_pending and await is_free_leader_questing(quester):
+                        target = await quester.quest_position.position()
+                        actual = await quester.body.position()
+                        arrival = getattr(quester, 'quest_party_shared_target', None)
+                        confirmed = (isinstance(arrival, dict) and arrival.get('actual') is not None
+                                     and arrival.get('zone') == quester_zone
+                                     and arrival.get('identity') == probe_context[1]
+                                     and calc_Distance(arrival['xyz'], target) <= 25
+                                     and calc_Distance(arrival['actual'], actual) <= 25)
+                        if (quest_reader._valid_quest_target(target)
+                                and calc_Distance(actual, target) > 60 and not confirmed):
+                            update_party_status(hitter, quester, '等待任务端到达当前任务点')
+                            continue
 
                     same_live_area = False
                     if hitter_zone == quester_zone:
@@ -2646,8 +2681,9 @@ async def main():
                             update_party_status(hitter, quester, "已归队")
                         continue
 
-                    if (isinstance(getattr(hitter, 'potion_dungeon_returned', None), tuple)
-                            or isinstance(getattr(quester, 'potion_dungeon_returned', None), tuple)):
+                    if (hitter_zone == quester_zone
+                            and (isinstance(getattr(hitter, 'potion_dungeon_returned', None), tuple)
+                                 or isinstance(getattr(quester, 'potion_dungeon_returned', None), tuple))):
                         busy_evidence = None
                         update_party_status(hitter, quester, '等待确认原副本，可手动归队')
                         continue
@@ -2871,10 +2907,7 @@ async def main():
                     f"Client {client.title} - Handling assigned questing role."
                 )
                 questing = Quester(client, [client], None)
-                await gather_owned(
-                    questing.auto_quest(ignore_pet_level_up, only_play_dance_game),
-                    dialogue_loop([client], questing=True),
-                )
+                await questing.auto_quest(ignore_pet_level_up, only_play_dance_game)
             elif (
                 questing_leader_pid is not None
                 and len(roster) > 1
@@ -2885,20 +2918,14 @@ async def main():
                         f"Client {client.title} - Handling questing for all clients."
                     )
                     questing = Quester(client, roster, questing_leader_pid)
-                    await gather_owned(
-                        questing.auto_quest_leader(
-                            questing_friend_tp, gear_switching_in_solo_zones,
-                            hitter_client, ignore_pet_level_up, only_play_dance_game,
-                        ),
-                        dialogue_loop(roster, questing=True),
+                    await questing.auto_quest_leader(
+                        questing_friend_tp, gear_switching_in_solo_zones,
+                        hitter_client, ignore_pet_level_up, only_play_dance_game,
                     )
             else:
                 logger.debug(f"Client {client.title} - Handling questing.")
                 questing = Quester(client, roster, None)
-                await gather_owned(
-                    questing.auto_quest(ignore_pet_level_up, only_play_dance_game),
-                    dialogue_loop([client], questing=True),
-                )
+                await questing.auto_quest(ignore_pet_level_up, only_play_dance_game)
 
         # Supervise each quest client separately.  A solo-zone probe can cancel
         # and recreate only the affected worker without stopping hitter follow.
@@ -3806,18 +3833,9 @@ async def main():
 
                             if p.just_left_combat and await is_free(p):
                                 p.just_left_combat = False
-                                await clear_post_combat_phase(p)
-                                if (getattr(p, 'post_combat_movement_active', False)
-                                        or not await is_free(p)
-                                        or getattr(p, 'refilling_potions', False)
-                                        or isinstance(getattr(p, 'potion_dungeon_returned', None), tuple)
-                                        or isinstance(getattr(p, 'quest_recovery_owner', None), str)):
-                                    p.just_left_combat = True
-                                    continue
-                                # Hand movement back to the quest worker now.
-                                # It owns resource recovery and the current
-                                # shared target; never chase wisps or return to
-                                # a stale pre-battle point from this detector.
+                                await clear_post_combat_phase(p, cleanup=True)
+                                if await p.in_battle():
+                                    continue  # A new battle owns its own eventual cleanup.
                                 p.entity_detect_combat_status = False
                                 original_client_locations.pop(p.process_id, None)
                                 p.original_location_before_combat = None

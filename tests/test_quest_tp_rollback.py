@@ -32,7 +32,7 @@ class QuestTeleportRollbackTests(unittest.IsolatedAsyncioTestCase):
 
         async def tick(_):
             await lifecycle.REAL_SLEEP(0)
-            if self.drained.is_set():
+            if self.started.is_set():
                 self.ticks += 1
                 if self.on_tick:
                     self.on_tick()
@@ -44,7 +44,8 @@ class QuestTeleportRollbackTests(unittest.IsolatedAsyncioTestCase):
         self.position, self.interaction = self.target, True
         self.started.set()
         try:
-            await asyncio.Future()
+            for _ in range(15):
+                await q.asyncio.sleep(.1)  # Native path completes; X cannot cancel it.
         finally:
             self.drained.set()
 
@@ -92,7 +93,7 @@ class QuestTeleportRollbackTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(q, 'is_visible_by_path', AsyncMock(return_value=True)):
             self.assertFalse(await self.runner.quest_interaction_ready(self.client, self.target))
 
-    async def test_repeated_rollback_skips_direct_and_runs_bounded_existing_recovery(self):
+    async def test_repeated_rollback_retries_full_path_and_runs_existing_recovery(self):
         await self.rejected()
         self.runner.handle_repeated_normal_quest_failures = AsyncMock()
         for when, calls in ((1, 1), (5, 2), (6, 2), (10, 3), (11, 3), (39, 3), (40, 4)):
@@ -102,7 +103,7 @@ class QuestTeleportRollbackTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(await self.move())
             self.assertEqual(self.nav.await_count, calls)
         self.assertNotIn('reenter', self.nav.await_args_list[0].kwargs)
-        self.assertTrue(all(call.kwargs.get('reenter') for call in self.nav.await_args_list[1:]))
+        self.assertTrue(all(call.kwargs == {} for call in self.nav.await_args_list))
         self.runner.handle_repeated_normal_quest_failures.assert_awaited_once()
         self.assertEqual(self.runner._quest_movement_waiting[id(self.client)]['attempts'], 1)
 
@@ -136,7 +137,7 @@ class QuestTeleportRollbackTests(unittest.IsolatedAsyncioTestCase):
                         elif event == 'progress': self.progress += ' 1/2'
                         else: self.zone += '/Next'
                 self.on_tick = advance
-                self.assertTrue(await self.move())
+                self.assertEqual(await self.move(), event == 'zone')
                 self.assertLess(self.ticks, 10)
                 self.assertEqual(self.runner._quest_movement_waiting, {})
 
@@ -199,25 +200,49 @@ class QuestTeleportRollbackTests(unittest.IsolatedAsyncioTestCase):
         member.title, member.quest_party_quester = 'p2', self.client
         self.client.quest_party_hitters = [member]
         self.client.quest_party_group_dungeon_zone = self.zone
+        peer_position = self.origin
+        member.body = SimpleNamespace(position=AsyncMock(side_effect=lambda: peer_position))
+        self.runner.quest_interaction_ready.side_effect = lambda c, *a: (
+            self.interaction and q.calc_Distance(self.position if c is self.client else peer_position, self.target) < 60)
+        async def land(c, *a, **kw):
+            nonlocal peer_position
+            if c is self.client:
+                self.position = self.target
+            else:
+                peer_position = self.target
+            self.interaction = True
+            self.started.set()
+            try:
+                for _ in range(15):
+                    await q.asyncio.sleep(.1)
+            finally:
+                self.drained.set()
+        self.nav.side_effect = land
         self.runner._note_quest_entry_wait = lambda *a, **kw: None
-        self.on_tick = self.rollback
+        def recoil():
+            nonlocal peer_position
+            self.rollback()
+            if self.ticks >= 2:
+                peer_position = self.origin
+        self.on_tick = recoil
         with (patch.object(q, 'clients_share_live_area', AsyncMock(return_value=True)),
               patch.object(q, '_party_area_token', AsyncMock(return_value=('room', 1))),
               patch.object(q, 'is_free', AsyncMock(return_value=True))):
             async with asyncio.timeout(2):
                 self.assertFalse(await self.runner.teleport_party_to_quest_target(self.target))
-        for client in (self.client, member):
-            self.assertIn(id(client), self.runner._quest_movement_waiting, str(q.logger.mock_calls))
-            self.assertEqual(self.runner._quest_movement_waiting[id(client)]['reason'], 'landing_rejected')
-            self.assertFalse(get_client_automation_ownership(client).locked)
-            self.assertFalse(client.quest_party_target_sync_active)
+        self.assertIn(id(self.client), self.runner._quest_movement_waiting)
+        self.assertEqual(self.runner._quest_movement_waiting[id(self.client)]['reason'], 'landing_rejected')
+        self.assertNotIn(id(member), self.runner._quest_movement_waiting)
+        self.assertEqual(self.nav.await_count, 1)
+        self.assertFalse(get_client_automation_ownership(self.client).locked)
+        self.assertFalse(self.client.quest_party_target_sync_active)
 
     async def test_rollback_retry_executes_real_nav_landing_and_existing_walk(self):
         await self.rejected()
         self.now, self.on_tick = 5, None
         self.nav.side_effect = q.teleport_math.navmap_tp
         async def teleport(point):
-            self.position = point
+            self.position = self.origin if point is self.target else point
             self.interaction = q.calc_Distance(point, self.target) <= 60
         async def walk(x, y):
             self.position = XYZ(x, y, self.target.z)
@@ -231,19 +256,21 @@ class QuestTeleportRollbackTests(unittest.IsolatedAsyncioTestCase):
               patch.object(tm, 'load_wad', AsyncMock(return_value=SimpleNamespace(get_file=AsyncMock(return_value=b'nav')))),
               patch.object(tm, 'parse_nav_data', return_value=(vertices, [(0, 1)]))):
             self.assertTrue(await self.move())
-        self.nav.assert_awaited_with(self.client, self.target, reenter=True)
-        self.assertGreater(q.calc_Distance(self.client.teleport.await_args.args[0], self.target), 60)
+        self.nav.assert_awaited_with(self.client, self.target)
+        self.assertIs(self.client.teleport.await_args_list[0].args[0], self.target)
         self.client.goto.assert_awaited_once_with(self.target.x, self.target.y)
         self.assertEqual(self.runner._quest_movement_waiting, {})
 
-    async def test_missing_nav_data_reuses_existing_spiral_only_on_rollback_retry(self):
+    async def test_missing_nav_data_is_handled_by_native_path_on_fresh_retry(self):
         await self.rejected()
         self.now, self.on_tick = 5, None
-        self.nav.side_effect = ValueError('nav data unavailable')
+        self.nav.side_effect = q.teleport_math.navmap_tp
         async def spiral(*args):
             self.position = self.target
         self.spiral_mock.side_effect = spiral
-        self.assertTrue(await self.move())
+        with (patch.object(q.teleport_math, 'is_free', AsyncMock(return_value=True)),
+              patch.object(q.teleport_math, 'load_wad', AsyncMock(side_effect=ValueError('no nav')))):
+            self.assertTrue(await self.move())
         self.spiral_mock.assert_awaited_once_with(self.client, self.target)
 
     async def test_origin_dialogue_without_progress_keeps_rejected_landing(self):
@@ -259,4 +286,64 @@ class QuestTeleportRollbackTests(unittest.IsolatedAsyncioTestCase):
         self.goal += 1
         self.assertFalse(await self.runner._quest_rollback_origin_interaction(self.client, self.target))
         self.assertEqual(self.runner._quest_movement_waiting, {})
+
+    async def test_native_nav_keeps_running_until_candidate_is_stably_confirmed(self):
+        observed = []
+        def sample():
+            if self.ticks < 10:
+                observed.append(self.drained.is_set())
+        self.on_tick = sample
+        self.assertTrue(await self.move())
+        self.assertTrue(observed)
+        self.assertFalse(any(observed))
+        self.assertTrue(self.drained.is_set())
+
+    async def test_late_server_rollback_revokes_accepted_landing_before_next_x(self):
+        self.assertTrue(await self.move())
+        self.assertIn(id(self.client), self.runner._quest_movement_landings)
+        self.position = self.origin
+        self.now = 1
+        self.assertTrue(await self.runner._quest_rollback_origin_interaction(self.client, self.target))
+        self.assertNotIn(id(self.client), self.runner._quest_movement_landings)
+        failure = self.runner._quest_movement_waiting[id(self.client)]
+        self.assertEqual((failure['reason'], failure['attempts']), ('landing_rejected', 1))
+        self.assertFalse(await self.runner._quest_local_interaction_ready(self.client, self.target))
+        self.client.send_key.assert_not_awaited()
+
+    async def test_small_target_and_html_jitter_preserve_retry_and_origin_suppression(self):
+        record = await self.rejected()
+        self.target = XYZ(self.target.x + 5, self.target.y, self.target.z)
+        self.progress = '<center>' + self.progress + '</center>'
+        self.assertTrue(await self.runner._quest_rollback_origin_interaction(self.client, self.target))
+        self.assertIs(self.runner._quest_movement_waiting[id(self.client)], record)
+        self.now = 1
+        self.assertFalse(await self.move())
+        self.nav.assert_awaited_once()
+
+    async def test_guidance_disappearance_releases_coordinate_without_claiming_quest_success(self):
+        self.on_tick = lambda: setattr(self, 'target', XYZ(0, 0, 0))
+        old_target = self.target
+        self.assertFalse(await self.runner.move_until_quest_interaction(self.client, old_target))
+        self.assertTrue(self.drained.is_set())
+        self.client.send_key.assert_not_awaited()
+        self.assertFalse(get_client_automation_ownership(self.client).locked)
+
+    async def test_auto_loop_does_not_handoff_origin_npc_while_rollback_cools_down(self):
+        record = await self.rejected()
+        self.now = 1
+        self.client.quest_party_hitters = [SimpleNamespace(title='p2')]
+        signature = record['signature']
+        group = (id(self.client), tuple((id(p), id(getattr(p, 'quest_party_status_session', None)))
+                                       for p in self.client.quest_party_hitters), id(self.client))
+        record['signature'] = (*signature[:3], group)
+        self.runner._quest_dialogue_blocks_movement = AsyncMock(return_value=False)
+        self.runner._unguided_collect_context = AsyncMock(return_value=None)
+        self.runner._quest_party_probe_blocks_movement = AsyncMock(return_value=True)
+        self.runner.handle_quest_interaction = AsyncMock()
+        self.runner.handle_npc_talking_quests = AsyncMock()
+        await self.runner.auto_quest_solo()
+        self.runner.handle_quest_interaction.assert_not_awaited()
+        self.runner.handle_npc_talking_quests.assert_not_awaited()
+        self.client.send_key.assert_not_awaited()
+        self.assertIs(self.runner._quest_movement_waiting[id(self.client)], record)
 

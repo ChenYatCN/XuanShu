@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from src.questing import Quester
+from src.automation_ownership import automation_owner
 from wizwalker import Keycode
 
 
@@ -18,6 +19,16 @@ class NpcQuestAcceptTests(unittest.IsolatedAsyncioTestCase):
         self.button = SimpleNamespace(is_visible=AsyncMock(return_value=True),
             is_control_grayed=AsyncMock(return_value=False))
         self.quester = Quester(self.client, [self.client], None)
+        self.client.auto_dialogue_running = True
+        # These acceptance cases now run as the explicitly enabled dialogue
+        # worker; task-only/no-owner behavior has its own boundary tests.
+        advance = Quester._advance_npc_dialogue
+        async def dialogue_step(quester, client):
+            async with automation_owner(client, 'npc-dialogue'):
+                return await advance(quester, client)
+        worker = patch.object(Quester, '_advance_npc_dialogue', dialogue_step)
+        worker.start()
+        self.addCleanup(worker.stop)
         self.quester._window_text = AsyncMock(return_value='接受')
         self.quester._click_ui_window = AsyncMock()
         self.quester._mainline_identity = AsyncMock(return_value=(43, '', '', {'number': 2}, True))
@@ -46,7 +57,10 @@ class NpcQuestAcceptTests(unittest.IsolatedAsyncioTestCase):
                             side_effect=lambda client, path: path == decline_quest_path)),
                           patch('src.questing.asyncio.sleep', AsyncMock())):
                         await self.quester._advance_npc_dialogue(self.client)
-                    if accept:
+                    if not dialogue:
+                        self.quester._click_ui_window.assert_not_awaited()
+                        self.client.send_key.assert_not_awaited()
+                    elif accept:
                         self.quester._click_ui_window.assert_awaited_once()
                         self.client.send_key.assert_not_awaited()
                     else:
@@ -99,10 +113,13 @@ class NpcQuestAcceptTests(unittest.IsolatedAsyncioTestCase):
         self.quester._click_ui_window.assert_awaited_once()
 
     async def test_visible_offer_blocks_movement_even_after_quest_update(self):
-        await self.quester._quest_dialogue_blocks_movement(self.client)
-        self.client.quest_id.return_value = 43
-        self.now = 5.0
-        self.assertTrue(await self.quester._quest_dialogue_blocks_movement(self.client))
+        from src.paths import advance_dialog_path
+        with patch('src.questing.is_visible_by_path', AsyncMock(
+                side_effect=lambda client, path: path == advance_dialog_path)):
+            await self.quester._quest_dialogue_blocks_movement(self.client)
+            self.client.quest_id.return_value = 43
+            self.now = 5.0
+            self.assertTrue(await self.quester._quest_dialogue_blocks_movement(self.client))
         self.quester._mainline_identity.assert_not_awaited()
 
     async def test_new_mainline_id_must_stabilize_after_offer_closes(self):
@@ -203,7 +220,7 @@ class NpcQuestAcceptTests(unittest.IsolatedAsyncioTestCase):
                 ('refilling_potions', True, False),
                 ('quest_party_battle_rescue_active', True, False),
                 ('quest_recovery_owner', 'mainline_finder', None),
-                ('questing_status', False, True)):
+                ('auto_dialogue_running', False, True)):
             with self.subTest(guard=name):
                 setattr(self.client, name, blocked)
                 self.assertFalse(await self.quester._advance_npc_dialogue(self.client))

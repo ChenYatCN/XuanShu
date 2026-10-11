@@ -208,7 +208,11 @@ class QuestPartyDungeonTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(await quester.enter_party_dungeon([client, hitter]))
             self.proof.return_value = True
             quester.read_popup.side_effect = lambda p: 'Press X to Enter' if p is client else ''
-            self.assertFalse(await quester.enter_party_dungeon([client, hitter]))
+            # Empty wording is allowed; an absent member X window is not.
+            from src.paths import npc_range_path
+            with patch('src.questing.is_visible_by_path', AsyncMock(
+                    side_effect=lambda p, path: not (p is hitter and path == npc_range_path))):
+                self.assertFalse(await quester.enter_party_dungeon([client, hitter]))
             quester.read_popup.side_effect = None
             self.title_reader.side_effect = lambda p: 'Dungeon Entrance' if p is client else 'World Gate'
             self.assertFalse(await quester.enter_party_dungeon([client, hitter]))

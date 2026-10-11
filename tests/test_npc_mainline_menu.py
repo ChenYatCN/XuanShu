@@ -10,6 +10,7 @@ from src.mainline_progress import quest_rows
 from src.paths import advance_dialog_path, cancel_multiple_quest_menu_path, decline_quest_path
 from src.questing import Quester
 from src.utils import close_npc_quest_menu
+from src.automation_ownership import automation_owner
 
 
 def window(name, text='', children=(), visible=True, kind='ControlText'):
@@ -44,7 +45,7 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
         self.quests = {99: SimpleNamespace(
             name_lang_key=AsyncMock(return_value='SideTitle'), mainline=AsyncMock(return_value=False))}
         self.client = SimpleNamespace(
-            title='p1', root_window=root, questing_status=True, auto_dialogue_running=False,
+            title='p1', root_window=root, questing_status=True, auto_dialogue_running=True,
             quest_recovery_owner=None, mainline_finder_enabled=True,
             is_loading=AsyncMock(return_value=False), in_battle=AsyncMock(return_value=False),
             zone_name=AsyncMock(return_value='Empyrea/Area'), quest_id=AsyncMock(return_value=99),
@@ -54,6 +55,16 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
                 next((r['english'] for r in rows if code in r['keys']), 'Unindexed sidequest'))),
         )
         self.quester = Quester(self.client, [self.client], None)
+        # Direct list/page calls below emulate the enabled dialogue worker.
+        # Task-originated UI calls are tested without this adapter elsewhere.
+        for name in ('_advance_npc_dialogue', '_select_npc_mainline_menu'):
+            original = getattr(Quester, name)
+            async def dialogue_step(quester, client, *args, _method=original, **kwargs):
+                async with automation_owner(client, 'npc-dialogue'):
+                    return await _method(quester, client, *args, **kwargs)
+            worker = patch.object(Quester, name, dialogue_step)
+            worker.start()
+            self.addCleanup(worker.stop)
         self.target_rows = {}
         self.chosen = None
         self.accepted = asyncio.Event()
@@ -291,6 +302,7 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
         await self.quester._advance_npc_dialogue(self.client)
         self.accept.is_control_grayed.return_value = False
         self.client.questing_status = False
+        self.client.auto_dialogue_running = False
         await self.quester._advance_npc_dialogue(self.client)
         self.click.assert_not_awaited()
 
@@ -302,12 +314,13 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
             reads += 1
             if reads == 2:
                 self.client.questing_status = False
+                self.client.auto_dialogue_running = False
             return '完成'
         self.accept.maybe_text.side_effect = caption
         await self.quester._advance_npc_dialogue(self.client)
         self.click.assert_not_awaited()
 
-    async def test_finder_can_accept_late_response_after_list_limit(self):
+    async def test_finder_recognizes_late_accepted_response_after_list_limit(self):
         click = self.click.side_effect
         self.click.side_effect = None
         self.quests[99].name_lang_key.return_value = '任务搜寻'
@@ -320,11 +333,20 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
         self.offer_title.is_visible.return_value = True
         self.offer_title.maybe_text.return_value = self.row['english']
         self.quester._restore_owned_mainline = AsyncMock(return_value=False)
-        async def accept(client, path):
-            await self.click(client, self.accept)
-        with patch('src.questing.click_window_by_path', AsyncMock(side_effect=accept)), \
+        # Model the server's delayed accepted response, rather than making
+        # the quest finder send another acceptance click after the limit.
+        real_sleep = asyncio.sleep
+        delivered = False
+        async def delayed_response(seconds):
+            nonlocal delivered
+            if not delivered:
+                delivered = True
+                await click(self.client, self.accept)
+            self.now += seconds
+            await real_sleep(0)
+        with patch('src.questing.asyncio.sleep', delayed_response), \
                 patch('src.mainline_progress.log_mainline_progress', AsyncMock()):
-            self.assertTrue(await self.quester._run_mainline_finder(self.client))
+            self.assertTrue(await asyncio.wait_for(self.quester._run_mainline_finder(self.client), 2))
         self.assertEqual(self.client.quest_id.return_value, 42)
 
     async def test_stop_during_final_title_read_prevents_click(self):
@@ -351,6 +373,7 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
     async def test_stopping_automation_before_acceptance_does_not_click_accept(self):
         await close_npc_quest_menu(self.client, select_mainlines=True)
         self.client.questing_status = False
+        self.client.auto_dialogue_running = False
         await self.quester._advance_npc_dialogue(self.client)
         self.assertEqual(self.click.await_count, 1)
 
@@ -600,13 +623,23 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
         self.quests[99].name_lang_key.return_value = '任务搜寻'
         self.quester._restore_owned_mainline = AsyncMock(return_value=False)
 
-        async def accept(client, path):
-            await self.click(client, self.accept)
-
-        with patch('src.questing.click_window_by_path', new=AsyncMock(
-                side_effect=accept)), \
-             patch('src.mainline_progress.log_mainline_progress', new=AsyncMock()):
-            self.assertTrue(await self.quester._run_mainline_finder(self.client))
+        real_sleep = asyncio.sleep
+        async def dialogue():
+            while True:
+                await close_npc_quest_menu(self.client, select_mainlines=True)
+                await self.quester._advance_npc_dialogue(self.client)
+                await real_sleep(0)
+        async def tick(seconds):
+            self.now += seconds
+            await real_sleep(0)
+        worker = asyncio.create_task(dialogue())
+        try:
+            with patch('src.questing.asyncio.sleep', tick), \
+                    patch('src.mainline_progress.log_mainline_progress', AsyncMock()):
+                self.assertTrue(await asyncio.wait_for(self.quester._run_mainline_finder(self.client), 2))
+        finally:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
         self.assertEqual(self.click.await_count, 2)
         self.assertEqual(self.client.quest_id.return_value, 42)
         self.cancel.assert_not_awaited()
@@ -625,6 +658,7 @@ class NpcMainlineMenuTests(unittest.IsolatedAsyncioTestCase):
         from src.task_lifecycle import gather_owned
         from src.utils import is_visible_by_path
         namespace.update(gather_owned=gather_owned, is_visible_by_path=is_visible_by_path)
+        namespace['automation_owner'] = automation_owner
         exec(compile('from __future__ import annotations\n' + ast.unparse(function),
                      'XuanShu.py', 'exec'), namespace)
         closed = asyncio.Event()

@@ -92,7 +92,7 @@ class PotionInstanceSafetyTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(utils, 'recall_to_teleport_mark', AsyncMock()) as mark:
             self.assertFalse(await utils.buy_potions(self.client, original_zone='Dungeon/Room'))
         mark.assert_not_awaited()
-        self.assertFalse(self.client.questing_status)
+        self.assertTrue(self.client.questing_status)
         self.assertNotIn('returned_snapshot', self.client.potion_return_context)
 
     async def test_solo_return_does_not_wait_for_unreachable_hitter(self):
@@ -227,7 +227,7 @@ class PotionRoutingSafetyTests(unittest.IsolatedAsyncioTestCase):
              patch.object(utils, 'navigate_to_ravenwood', AsyncMock()) as travel:
             self.assertFalse(await utils.refill_potions(client))
         travel.assert_not_awaited()
-        self.assertFalse(client.questing_status)
+        self.assertTrue(client.questing_status)
         self.assertFalse(client.refilling_potions)
         self.assertIsNone(client.quest_recovery_owner)
 

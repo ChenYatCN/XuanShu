@@ -147,11 +147,12 @@ class PotionReturnValidationTests(unittest.IsolatedAsyncioTestCase):
         mark.assert_awaited_once()
         resume.assert_awaited_once_with(self.client, 'Khrysalis/KR_Z00_Hub')
 
-    async def test_returned_scene_changed_peer_token_cannot_confirm_instance(self):
+    async def test_changed_peer_token_does_not_negate_own_verified_return(self):
         self.peer.area.read_base_address.return_value = 2002
-        self.assertFalse(await utils.return_to_dungeon_after_potions(self.client, self.ZONE))
+        self.assertTrue(await utils.return_to_dungeon_after_potions(self.client, self.ZONE))
         self.tp.assert_not_awaited()
-        self.assertNotIn('returned_snapshot', self.client.potion_return_context)
+        self.assertEqual(self.last_validation()['same_instance'], 'unproved')
+        self.assertTrue(self.last_validation()['client_returned'])
 
     async def test_returned_scene_changed_zone_id_is_rejected(self):
         self.client.area.zone_id.return_value = 456
@@ -213,8 +214,8 @@ class PotionReturnValidationTests(unittest.IsolatedAsyncioTestCase):
         await utils.observe_party_area(self.peer)
         self.peer.is_loading.return_value = False
         await utils.observe_party_area(self.peer)
-        self.assertFalse(await utils.return_to_dungeon_after_potions(self.client, self.ZONE))
-        self.assertEqual(self.last_validation()['condition'], 'same_instance_unproved')
+        self.assertTrue(await utils.return_to_dungeon_after_potions(self.client, self.ZONE))
+        self.assertEqual(self.last_validation()['same_instance'], 'unproved')
 
     async def test_missing_original_zone_id_cannot_bootstrap_same_instance(self):
         self.client.potion_return_context['zone_id'] = None
@@ -263,7 +264,7 @@ class PotionReturnValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.client.questing_status)
         self.assertTrue(self.peer.questing_status)
 
-    async def test_refill_failure_stops_only_p1_and_releases_protection(self):
+    async def test_refill_failure_preserves_tasks_and_releases_protection(self):
         self.client.zone_name.return_value = self.ZONE
         self.client.stats = SimpleNamespace(reference_level=AsyncMock(return_value=100),
                                            current_gold=AsyncMock(return_value=100000))
@@ -272,7 +273,7 @@ class PotionReturnValidationTests(unittest.IsolatedAsyncioTestCase):
             client.zone_name.return_value = 'WizardCity/WC_Hub'
             await utils.observe_party_area(client)
             self.entities.return_value = []
-            self.peer.area.read_base_address.return_value = 2002
+            client.area.zone_id.return_value = 456
         async def buy(client, *args, **kwargs):
             return await utils.return_to_dungeon_after_potions(client, self.ZONE)
         with patch.object(utils, 'navigate_to_ravenwood', AsyncMock(side_effect=leave)), \
@@ -282,7 +283,7 @@ class PotionReturnValidationTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(await utils.refill_potions(self.client))
         self.assertFalse(self.client.refilling_potions)
         self.assertIsNone(self.client.quest_recovery_owner)
-        self.assertFalse(self.client.questing_status)
+        self.assertTrue(self.client.questing_status)
         self.assertTrue(self.peer.questing_status)
         self.assertNotIn('returned_snapshot', self.client.potion_return_context)
 
@@ -330,6 +331,8 @@ class PotionReturnValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await utils.return_to_dungeon_after_potions(self.client, self.ZONE))
         app, follower = self.production_follower()
         self.client.body = SimpleNamespace(position=AsyncMock(return_value=XYZ(2000, 0, 0)))
+        self.client.quest_position = SimpleNamespace(position=AsyncMock(return_value=XYZ(2000, 0, 0)))
+        self.client.entity_detect_combat_status = False
         self.peer.body = SimpleNamespace(position=AsyncMock(return_value=XYZ(0, 0, 0)))
         self.peer.entity_detect_combat_status = False
         self.peer.send_key = AsyncMock()
@@ -338,7 +341,8 @@ class PotionReturnValidationTests(unittest.IsolatedAsyncioTestCase):
             self.peer.questing_status = False  # Finish this simulated session after one input.
         self.peer.teleport = AsyncMock(side_effect=follow)
         reader = SimpleNamespace(handle_pending_dungeon_confirmation=AsyncMock(return_value=False),
-            _resume_party_dungeon_interaction=AsyncMock(return_value=False))
+            _resume_party_dungeon_interaction=AsyncMock(return_value=False),
+            _valid_quest_target=Quester._valid_quest_target)
         async def tick(seconds):
             self.now += seconds
             self.assertLess(self.now, 5, 'real follower failed to resume after confirmed return')
@@ -378,7 +382,7 @@ class PotionReturnValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await quester._resume_party_dungeon_interaction(self.peer))
         self.assertIsNone(self.client.quest_party_dungeon_interaction)
         self.assertFalse(self.client.quest_party_probe_pending)
-        self.assertEqual(self.client.quest_party_shared_target['source_tokens'], {})
+        self.assertIsNone(self.client.quest_party_shared_target)
         self.tp.assert_not_awaited()
 
 

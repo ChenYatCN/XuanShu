@@ -20,6 +20,7 @@ class MovementFailureLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.zone, self.quest, self.goal, self.progress = 'World/Room', 42, 7, 'Go to Door'
         self.free, self.interaction = True, False
         self.client = SimpleNamespace(title='p1', process_id=1, questing_status=True,
+            is_loading=AsyncMock(return_value=False), in_battle=AsyncMock(return_value=False),
             zone_name=AsyncMock(side_effect=lambda: self.zone),
             quest_id=AsyncMock(side_effect=lambda: self.quest),
             goal_id=AsyncMock(side_effect=lambda: self.goal),
@@ -72,27 +73,33 @@ class MovementFailureLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(record['attempts'], 1)
                 self.assertAlmostEqual(record['remaining'], gap)
 
-    async def test_position_and_remaining_progress_refresh_old_record_during_cooldown(self):
+    async def test_position_improvement_updates_best_without_resetting_retry_budget(self):
         self.position = XYZ(self.target.x - 1826, 0, 0)
         await self.move()
         old = self.runner._quest_movement_waiting[id(self.client)]
         self.position = XYZ(self.target.x - 418, 0, 0)
         self.now = 1
         await self.move()
+        self.assertIs(self.runner._quest_movement_waiting[id(self.client)], old)
+        self.assertEqual(self.nav.await_count, 1)
+        self.now = 5
+        await self.move()
         new = self.runner._quest_movement_waiting[id(self.client)]
         self.assertIsNot(old, new)
-        self.assertEqual(new['attempts'], 1)
+        self.assertEqual(new['attempts'], 2)
         self.assertEqual(new['remaining'], 418)
+        self.assertEqual(new['best_remaining'], 418)
         self.assertEqual(self.nav.await_count, 2)
 
-    async def test_significant_navmap_progress_refreshes_retry_budget(self):
+    async def test_significant_navmap_progress_keeps_retry_budget(self):
         await self.move()
         self.now = 5
         async def improve(*args):
             self.position = XYZ(500, 0, 0)
         self.nav.side_effect = improve
         await self.move()
-        self.assertEqual(self.runner._quest_movement_waiting[id(self.client)]['attempts'], 1)
+        self.assertEqual(self.runner._quest_movement_waiting[id(self.client)]['attempts'], 2)
+        self.assertEqual(self.runner._quest_movement_waiting[id(self.client)]['best_remaining'], 1500)
 
     async def test_context_changes_release_suppression_without_touching_other_state(self):
         for event in ('quest', 'goal', 'zone', 'target', 'progress', 'group', 'quester'):
@@ -111,6 +118,7 @@ class MovementFailureLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_valid_x_preempts_retry_and_clears_failure(self):
         await self.move()
+        self.position = self.target
         self.interaction = True
         self.assertTrue(await self.move())
         self.assertEqual(self.nav.await_count, 1)
