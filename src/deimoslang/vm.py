@@ -24,7 +24,7 @@ from src.auto_pet import dancedance
 from src.dance_game_hook import attempt_activate_dance_hook
 from src.utils import is_visible_by_path, is_free, get_window_from_path, refill_potions, refill_potions_if_needed \
                     , logout_and_in, click_window_by_path, get_quest_name
-from src.command_parser import teleport_to_friend_from_list
+from src.command_parser import follow_entity, teleport_to_friend_from_list
 from src.config_combat import delegate_combat_configs, default_config
 from src.automation_ownership import automation_owner
 
@@ -1478,6 +1478,12 @@ class VM:
                                 tg.create_task(client.teleport(target_pos))
                         case _:
                             raise VMError(f"Unimplemented teleport kind: {instruction}")
+            case "entityfollow":
+                # follow_entity owns input for both legacy and expert commands.
+                async with asyncio.TaskGroup() as tg:
+                    for client in clients:
+                        name = await eval_arg(instruction.data[2][0], client)
+                        tg.create_task(follow_entity(client, name))
             case "goto":
                 args = instruction.data[2]
                 assert type(args) == list

@@ -1,5 +1,6 @@
 # Modified 2026-09-09: XuanShu branding and path compatibility; see NOTICE.md.
 import os
+import re
 import time
 from html import escape
 
@@ -792,7 +793,7 @@ def build_hotkeys_tab(ctx):
 
     # --- Right panel: Tool info ---
     info_widget = QWidget()
-    info_widget.setMinimumWidth(238)
+    info_widget.setMinimumWidth(258)
     info_layout = QVBoxLayout(info_widget)
     info_layout.setContentsMargins(4, 4, 4, 4)
 
@@ -852,9 +853,8 @@ def build_hotkeys_tab(ctx):
 
     quest_party_status = QLabel()
     quest_party_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    quest_party_status.setTextFormat(Qt.TextFormat.PlainText)
+    quest_party_status.setTextFormat(Qt.TextFormat.RichText)
     quest_party_status.setWordWrap(True)
-    quest_party_status.setMinimumHeight(58)
     quest_party_status.setFixedWidth(230)
     quest_party_status.setSizePolicy(
         QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred
@@ -877,8 +877,18 @@ def build_hotkeys_tab(ctx):
 
     quest_party_status.setStyleSheet(_quest_party_status_style())
     quest_party_status.setVisible(False)
+    quest_status_scroll = QScrollArea()
+    quest_status_scroll.setObjectName("QuestPartyStatusScroll")
+    quest_status_scroll.setFrameShape(QFrame.Shape.NoFrame)
+    quest_status_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    quest_status_scroll.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+    quest_status_scroll.setFixedWidth(250)
+    quest_status_scroll.setFixedHeight(58)
+    quest_status_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+    quest_status_scroll.setWidget(quest_party_status)
+    quest_status_scroll.hide()
     info_layout.addWidget(
-        quest_party_status, alignment=Qt.AlignmentFlag.AlignHCenter
+        quest_status_scroll, alignment=Qt.AlignmentFlag.AlignHCenter
     )
     ctx.widget_tags["QuestPartyRuntimeStatus"] = quest_party_status
 
@@ -887,11 +897,29 @@ def build_hotkeys_tab(ctx):
     def update_quest_status(tag, value):
         quest_status_parts[tag] = str(value or '')
         text = '\n'.join(part for part in quest_status_parts.values() if part)
-        quest_party_status.setText(text)
+        text = re.sub(r'(?m)^([^\n]*? · )([^\n]+?)( 主线 )',
+                      lambda match: match[1] + match[2].title() + match[3], text)
+        quest_party_status.setProperty('questStatusText', text)
+        groups = text.split('\n\n') if text else []
+        quest_party_status.setText(''.join(
+            f'<p align="center" style="margin-top:0; margin-bottom:{8 if i < len(groups)-1 else 0}px;">'
+            + '<br>'.join(escape(line) for line in group.split('\n')) + '</p>'
+            for i, group in enumerate(groups)
+        ))
         # Reserve the full wrapped height, including the styled frame/padding.
         # A minimum alone lets the surrounding fixed-height panel clip text.
+        quest_party_status.setMinimumHeight(0)
         quest_party_status.ensurePolished()
-        quest_party_status.setFixedHeight(max(58, quest_party_status.heightForWidth(230)))
+        needs_scroll = quest_party_status.heightForWidth(230) > 240
+        scrollbar_width = quest_status_scroll.verticalScrollBar().sizeHint().width() if needs_scroll else 0
+        # Mirror the scrollbar space so the visible frame stays under the logo.
+        quest_status_scroll.setViewportMargins(scrollbar_width, 0, 0, 0)
+        content_width = min(230, 250 - 2 * scrollbar_width)
+        quest_party_status.setFixedWidth(content_width)
+        content_height = max(1, quest_party_status.heightForWidth(content_width))
+        quest_party_status.setFixedHeight(content_height)
+        quest_status_scroll.setFixedHeight(min(240, content_height))
+        quest_status_scroll.setVisible(bool(text))
         quest_party_status.setVisible(bool(text))
         quest_party_status.updateGeometry()
 

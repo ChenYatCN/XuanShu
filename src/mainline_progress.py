@@ -38,36 +38,138 @@ def match_quest(rows, quest_id, code, title, names=None):
     return matches[0] if len(matches) == 1 else None
 
 
-async def log_mainline_progress(client):
+async def read_mainline_identity(client):
+    """Read the actual tracked identity; the game mainline flag is not an index match."""
     try:
         quest_id = await client.quest_id()
-        if not isinstance(quest_id, int) or quest_id <= 0:
-            return
-        if getattr(client, '_xuanshu_mainline_id', None) == quest_id:
-            return
+        if not isinstance(quest_id, int) or quest_id < 0:
+            return None
         manager = await client.quest_manager()
-        quest = (await manager.quest_data()).get(quest_id)
-        if quest is None:
-            return
-        if not await quest.mainline():
-            client._xuanshu_mainline_id = quest_id
-            return
-        code = await quest.name_lang_key()
-        title = await client.cache_handler.get_langcode_name(code) or code
+        owned = await manager.quest_data()
+        quest = owned.get(quest_id)
+        if quest is None and quest_id != 0:
+            return None
+        code = await quest.name_lang_key() if quest is not None else ''
+        title = (code if code == 'Quest Finder' else
+                 await client.cache_handler.get_langcode_name(code) or code) if code else ''
+        goal_id = await client.goal_id() if hasattr(client, 'goal_id') else None
         catalog = installed_catalog(client)
         names = await catalog.get() if catalog else None
         row = match_quest(quest_rows(), quest_id, code, title, names)
-        if row:
-            world = row['world']
-            count = re.search(r'\((\d+)\)', world)
-            total = int(count[1]) if count else max(r['number'] for r in quest_rows() if r['world'] == world)
-            world = world.split('(')[0].strip()
-            world = {'wizard city': '魔法城', 'celestia': '天国'}.get(world.casefold(), world)
-            client._xuanshu_mainline_progress = f'{client.title} · {world} 主线 {row["number"]}/{total}'
-            logger.info('{} 当前主线：{} 第 {}/{} 个 | {}', client.title, world, row['number'], total, title)
-        else:
-            logger.info('{} 当前主线：未匹配 | {} | Quest ID {}', client.title, title, quest_id)
-        client._xuanshu_mainline_id = quest_id
+        return dict(quest_id=quest_id, goal_id=goal_id, code=code, title=title,
+                    row=row, owned=frozenset(owned), names=names)
     except Exception as exc:
-        # Logging is optional; never prevent the quest worker from continuing.
         logger.trace('主线编号读取暂不可用：{}', exc)
+        return None
+
+
+def expected_mainline_rows(last):
+    """Recovery alone uses the remembered row and the next number in its table."""
+    rows = [last['row']]
+    rows.extend(r for r in quest_rows() if r['world'] == last['world']
+                and r['number'] == last['number'] + 1)
+    return rows
+
+
+def mainline_consistent(identity, last):
+    row = identity['row']
+    if row is None:
+        return False
+    if last is None or any((row['world'], row['number']) == (r['world'], r['number'])
+                           for r in expected_mainline_rows(last)):
+        return True
+    # Still owning the prior quest proves a different chain wasn't a normal
+    # continuation. A game's mainline flag cannot erase that recovery evidence.
+    if last['quest_id'] in identity['owned']:
+        return False
+    return not (row['world'] == last['world'] and row['number'] < last['number'])
+
+
+def record_mainline_success(client, identity):
+    row = identity['row']
+    client._xuanshu_mainline_last_success = dict(
+        world=row['world'], number=row['number'], title=identity['title'],
+        quest_id=identity['quest_id'], goal_id=identity['goal_id'], code=identity['code'], row=dict(row))
+
+
+def mainline_dungeon_status(client):
+    """Use recorded entry/exit evidence, including after the group session clears."""
+    from src.quest_party import DungeonSession, dungeon_session_for
+    current = dungeon_session_for(client)
+    settled = getattr(client, '_xuanshu_mainline_dungeon_exit_observation', None)
+    if (current is not None and id(client) in current.exited
+            and isinstance(settled, dict) and settled.get('settled_session') is current):
+        return None
+    if current is not None and (current.entry_evidence or current.confirmed):
+        client._xuanshu_mainline_dungeon_session = current
+    session = getattr(client, '_xuanshu_mainline_dungeon_session', None)
+    if not isinstance(session, DungeonSession) or client not in session.members:
+        return None
+    assigned = (session.quester, *getattr(session.quester, 'quest_party_hitters', ()))
+    if (set(map(id, assigned)) != set(map(id, session.members))
+            or any(not getattr(member, 'questing_status', False)
+                   or (callable(getattr(member, 'is_running', None)) and not member.is_running())
+                   for member in session.members)
+            or (session.owner is not None and any(
+                getattr(member, 'quest_party_status_session', None) is not session.owner
+                for member in session.members[1:]))):
+        client._xuanshu_mainline_dungeon_session = None
+        return None
+    member = id(client)
+    if (session.confirmed and member in session.exited and member in session.exit_evidence
+            and member not in session.potion_areas and not getattr(client, 'refilling_potions', False)):
+        return 'exited'
+    if current is session and (session.entry_evidence or session.confirmed):
+        return 'inside'
+    # An aborted pending entry or a changed assignment is not an actual exit.
+    client._xuanshu_mainline_dungeon_session = None
+    return None
+
+
+async def log_mainline_progress(client):
+    dungeon = mainline_dungeon_status(client)
+    identity = await read_mainline_identity(client)
+    if dungeon:
+        state = '地牢任务进行中' if dungeon == 'inside' else '地牢已退出，主线待确认'
+        client._xuanshu_mainline_progress = f'{client.title} · {state}'
+        diagnostic = (dungeon, identity['quest_id'] if identity else None)
+        if getattr(client, '_xuanshu_mainline_log_state', None) != diagnostic:
+            logger.info('{} {} | {}', client.title, state, identity['title'] if identity else '任务状态暂不可读')
+            client._xuanshu_mainline_log_state = diagnostic
+        if identity is not None:
+            client._xuanshu_mainline_id = identity['quest_id']
+        return  # Keep the separate external last-success record intact.
+    recovery = getattr(client, '_xuanshu_mainline_recovery', None)
+    navigating = isinstance(recovery, dict) and recovery.get('phase') == 'navigation'
+    if identity is None:
+        client._xuanshu_mainline_progress = f'{client.title} · 当前主线暂不可读'
+        return  # Never erase the separate last-success record.
+    last = getattr(client, '_xuanshu_mainline_last_success', None)
+    matched = mainline_consistent(identity, last)
+    row = identity['row']
+    if matched and recovery and last is not None:
+        matched = any((row['world'], row['number']) == (r['world'], r['number'])
+                      for r in expected_mainline_rows(last))
+    if matched and not recovery:
+        record_mainline_success(client, identity)
+    if navigating:
+        client._xuanshu_mainline_progress = f'{client.title} · 主线接取导航中，待确认'
+    elif matched:
+        world = row['world']
+        count = re.search(r'\((\d+)\)', world)
+        total = row.get('total') or (int(count[1]) if count else max(
+            r['number'] for r in quest_rows() if r['world'] == world))
+        world = world.split('(')[0].strip()
+        world = {'wizard city': '魔法城', 'celestia': '天国'}.get(world.casefold(), world)
+        client._xuanshu_mainline_progress = f'{client.title} · {world} 主线 {row["number"]}/{total}'
+    else:
+        client._xuanshu_mainline_progress = f'{client.title} · 当前主线未匹配'
+    diagnostic = (identity['quest_id'], identity['code'], matched, navigating)
+    if getattr(client, '_xuanshu_mainline_log_state', None) != diagnostic:
+        if matched and not navigating:
+            logger.info('{} 当前主线：{} 第 {}/{} 个 | {}', client.title, world, row['number'], total, identity['title'])
+        else:
+            logger.info('{} 当前主线：未匹配或待恢复确认 | {} | Quest ID {}', client.title,
+                        identity['title'], identity['quest_id'])
+        client._xuanshu_mainline_log_state = diagnostic
+    client._xuanshu_mainline_id = identity['quest_id']

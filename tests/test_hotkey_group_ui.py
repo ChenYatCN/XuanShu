@@ -4,7 +4,7 @@ import unittest
 from collections import defaultdict
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-from PyQt6.QtWidgets import QApplication, QComboBox, QCheckBox, QLabel, QPushButton, QTableWidget, QWidget
+from PyQt6.QtWidgets import QApplication, QComboBox, QCheckBox, QLabel, QPushButton, QScrollArea, QTableWidget, QWidget
 from PyQt6.QtCore import QPoint
 from PyQt6.QtGui import QIcon
 from src.gui.actions import ActionRegistry
@@ -51,9 +51,9 @@ class HotkeyGroupUITests(unittest.TestCase):
         self.assertTrue(label.wordWrap())
         self.assertEqual(label.width(), 230)
         self.assertGreaterEqual(label.height(), label.heightForWidth(label.width()))
-        self.assertIn('56/88', label.text())
+        self.assertIn('56/88', label.property('questStatusText'))
         update('QuestPartyRuntimeStatus', '')
-        self.assertEqual(label.text(), 'p1 · Novus 主线 56/88')
+        self.assertEqual(label.property('questStatusText'), 'p1 · Novus 主线 56/88')
         update('QuestMainlineProgress', '')
         self.assertFalse(label.isVisible())
 
@@ -83,11 +83,69 @@ class HotkeyGroupUITests(unittest.TestCase):
         self.assertTrue(self.ctx.tool_info_logo_label.isVisible())
         self.assertTrue(label.isVisible())
         self.assertGreaterEqual(label.height(), label.heightForWidth(label.width()))
-        self.assertTrue(label.parentWidget().rect().contains(label.geometry()))
+        self.assertTrue(self.tab.findChild(QScrollArea, "QuestPartyStatusScroll").parentWidget().rect().contains(
+            self.tab.findChild(QScrollArea, "QuestPartyStatusScroll").geometry()))
         self.api['update_client_states']({'toggle_questing': {'p3': False, 'p4': False}})
         self.app.processEvents()
         self.assertTrue(version.isVisible())
         self.assertTrue(links.isVisible())
+
+    def test_all_group_status_survives_selection_changes_and_scrolls_to_last_group(self):
+        self.tab.resize(680, 500)
+        self.tab.show()
+        self.api['set_available_clients']([f'p{i}' for i in range(1, 13)])
+        text = "\n\n".join(
+            f'p{i} · Polaris 主线 {i}/98\np{i+1} → p{i}｜正在好友传送，等待任务客户端完成区域同步'
+            for i in range(1, 12, 2))
+        self.api['update_client_states']({'toggle_questing': {f'p{i}': True for i in range(1, 13)}})
+        self.api['update_quest_status']('QuestPartyRuntimeStatus', text)
+        self.checks()['bot_target_all'].setChecked(False)
+        self.app.processEvents()
+        label = self.ctx.widget_tags['QuestPartyRuntimeStatus']
+        scroll = self.tab.findChild(QScrollArea, 'QuestPartyStatusScroll')
+        self.assertEqual(label.property('questStatusText'), text)
+        self.assertGreater(label.height(), scroll.viewport().height())
+        self.assertGreater(scroll.verticalScrollBar().maximum(), 0)
+        self.assertLessEqual(scroll.geometry().bottom(), scroll.parentWidget().height())
+        scroll.verticalScrollBar().setValue(scroll.verticalScrollBar().maximum())
+        self.app.processEvents()
+        self.assertLessEqual(label.geometry().bottom(), scroll.viewport().height())
+        self.assertIn('p12 → p11', label.property('questStatusText'))
+        self.assertLessEqual(label.width(), 230)
+        self.api['update_quest_status']('QuestPartyRuntimeStatus', '')
+        self.assertFalse(scroll.isVisible())
+
+    def test_short_status_shrinks_and_frame_stays_centered_under_logo(self):
+        self.tab.resize(700, 500)
+        self.tab.show()
+        update = self.api['update_quest_status']
+        update('QuestPartyRuntimeStatus', '\n\n'.join(
+            f'p{i} · LEMURIA 主线 {i}/101\np{i+1} → p{i}｜等待区域加载并重新归队' for i in range(1, 12, 2)))
+        self.app.processEvents()
+        label = self.ctx.widget_tags['QuestPartyRuntimeStatus']
+        logo = self.ctx.tool_info_logo_label
+        def center(widget):
+            return widget.mapTo(self.tab, QPoint(widget.width() // 2, 0)).x()
+        self.assertLessEqual(abs(center(label) - center(logo)), 1)
+        update('QuestPartyRuntimeStatus', 'p1 · mirage 主线 33/119')
+        self.app.processEvents()
+        self.assertLess(label.height(), 58)
+        self.assertLessEqual(abs(center(label) - center(logo)), 1)
+        self.assertEqual(label.property('questStatusText'), 'p1 · Mirage 主线 33/119')
+
+    def test_group_spacing_wrap_and_display_names_preserve_status_text(self):
+        self.tab.resize(700, 500)
+        self.tab.show()
+        self.api['update_quest_status']('QuestPartyRuntimeStatus',
+            'p1 · mirage 主线 33/119\np2 → p1｜任务端已退出，等待好友传送与区域加载完成后重新归队\n\n'
+            'p3 · LEMURIA 主线 17/101\np4 → p3｜等待战斗')
+        self.app.processEvents()
+        label = self.ctx.widget_tags['QuestPartyRuntimeStatus']
+        self.assertIn('Mirage', label.property('questStatusText'))
+        self.assertIn('Lemuria', label.property('questStatusText'))
+        self.assertIn('p4 → p3｜等待战斗', label.property('questStatusText'))
+        self.assertTrue(label.wordWrap())
+        self.assertGreaterEqual(label.height(), label.heightForWidth(label.width()))
 
     def test_reset_button_is_narrower_without_changing_hotkey_rows(self):
         self.tab.resize(680, 500)
@@ -184,11 +242,12 @@ class HotkeyGroupUITests(unittest.TestCase):
         self.api['set_available_clients'](['p1'])
         self.app.processEvents()
         status = self.ctx.widget_tags['QuestPartyRuntimeStatus']
-        info = status.parentWidget()
+        scroll = self.tab.findChild(QScrollArea, "QuestPartyStatusScroll")
+        info = scroll.parentWidget()
         before = info.geometry()
         self.api['set_available_clients']([f'p{i}' for i in range(1, 13)])
-        status.setText('p1 → p2｜正在好友传送，等待区域切换后继续自动任务')
-        status.show()
+        self.api['update_quest_status']('QuestPartyRuntimeStatus',
+            'p1 → p2｜正在好友传送，等待区域切换后继续自动任务')
         self.app.processEvents()
         self.assertEqual(info.geometry(), before)
         host = self.tab.findChild(QWidget, 'HotkeyClientTargets')
@@ -215,7 +274,7 @@ class HotkeyGroupUITests(unittest.TestCase):
         self.app.processEvents()
         self.assertEqual(selector.height(), 42)
         self.assertEqual(overview.y(), selector.y())
-        status.setText(
+        self.api['update_quest_status']('QuestPartyRuntimeStatus',
             'p12345678901234567890 → p2345678901234567890｜'
             '等待区域切换后重新检查任务客户端状态并继续自动任务'
         )
@@ -223,7 +282,7 @@ class HotkeyGroupUITests(unittest.TestCase):
         self.assertGreater(status.height(), 58)
         self.assertGreaterEqual(status.height(), status.heightForWidth(status.width()))
         self.assertLessEqual(status.geometry().right(), info.width())
-        self.assertLessEqual(status.geometry().bottom(), info.height())
+        self.assertLessEqual(scroll.geometry().bottom(), info.height())
 
     def test_status_badges_fold_and_overview_follow_live_clients(self):
         self.tab.resize(1000, 500)

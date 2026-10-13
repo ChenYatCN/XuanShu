@@ -13,8 +13,8 @@ from src.interaction_prompts import plain_text, split_quest_location, quest_has_
 
 _COUNT = re.compile(r"[（(]\s*(\d+)\s*(?:of|/|／)\s*(\d+)\s*[)）]\s*$", re.I)
 _ACTIONS = re.compile(
-    r"^(?:collect|gather|find|search(?:\s+for)?|pick(?:\s+up)?|take|recover|retrieve|catch|steal|break|destroy|get|use|open)\s+"
-    r"|^(?:收集|聚集|采集|採集|寻找|尋找|找到|搜寻|搜尋|搜索|拾取|捡起|撿起|拾起|获取|獲取|获得|獲得|取回|恢复|恢復|找回|检索|檢索|捕捉|捕获|捕獲|拿取|偷取|窃取|竊取|破坏|破壞|毁坏|毀壞|打破|得到|摧毁|摧毀|使用|打开|打開)\s*"
+    r"^(?:collect|gather|find|search(?:\s+for)?|pick(?:\s+up)?|take|recover|retrieve|catch|steal|break|destroy|get|use|open|free|release|rescue)\s+"
+    r"|^(?:收集|聚集|采集|採集|寻找|尋找|找到|搜寻|搜尋|搜索|拾取|捡起|撿起|拾起|获取|獲取|获得|獲得|取回|恢复|恢復|找回|检索|檢索|捕捉|捕获|捕獲|拿取|偷取|窃取|竊取|破坏|破壞|毁坏|毀壞|打破|得到|摧毁|摧毀|使用|打开|打開|自由|释放|釋放|解救|救援)\s*"
     r"|^(?:偷|取|抓)\s+",
     re.I,
 )

@@ -13,6 +13,7 @@ from src.paths import exit_pet_leveled_up_button_path
 from src.paths import exit_pet_leveled_up_button_path
 from src.paths import missing_area_path, missing_area_retry_path
 from src.paths import exit_zafaria_class_picture_button
+from src.paths import exit_minigame_sigil
 
 
 _MISSING_AREA_RETRY_INTERVAL = 3.0
@@ -137,6 +138,58 @@ async def close_class_picture_popup(client):
             return False
         await client.mouse_handler.click_window(button)
         logger.debug('Client {}: 已点击关闭 Zafaria 班级合照。', client.title)
+        return True
+
+
+async def close_minigame_picker_popup(client):
+    """Close only an idle arcade picker while the existing UI guard is running."""
+    async def idle():
+        # Foreground is the existing client signal for manual operation. Unknown
+        # foreground state is protected too; there is no manual-game intent flag.
+        if getattr(client, 'is_foreground', True):
+            return False
+        if any(getattr(client, flag, False) for flag in (
+                'refilling_potions', 'auto_pet_status', 'feeding_pet_status', 'dance_hook_status')):
+            return False
+        if await client.is_loading() or await client.in_battle():
+            return False
+        for name in ('MinigameInterface', 'PetGameTracks', 'PetGameSplash'):
+            panel = await get_window_from_path(client.root_window, ['WorldView', name])
+            if panel and await panel.is_visible():
+                return False
+        return True
+
+    async def close_button():
+        # _Shared-WorldData.wad GUI/KioskWindow.gui: instructionText and the
+        # Sorcery Stones/Potion Motion game1/game7 + pict1/pict7 buttons identify
+        # this picker. Arcanum's map also uses mainwindow, so its name is not enough.
+        panel = await get_window_from_path(client.root_window, exit_minigame_sigil[:-1])
+        if not panel or not await panel.is_visible():
+            return None
+        caption = await get_window_from_path(panel, ['instructionText'])
+        if (not caption or not await caption.is_visible()
+                or await caption.maybe_read_type_name() != 'ControlText'
+                or plain_text(await read_control_text(caption) or '').strip().casefold()
+                not in ('选择一个游戏', 'select a game to play')):
+            return None
+        for name in ('game1', 'pict1', 'game7', 'pict7', exit_minigame_sigil[-1]):
+            button = await get_window_from_path(panel, [name])
+            if (not button or not await button.is_visible()
+                    or await button.maybe_read_type_name() != 'ControlButton'):
+                return None
+        # exit uses GUI/CreateCharacter/Button_Exit2.dds in the verified GUI.
+        return button
+
+    if not await idle() or not await close_button():
+        return False
+    async with client.mouse_handler:
+        if not await idle():
+            return False
+        button = await close_button()
+        if button is None:
+            return False
+        await client.mouse_handler.click_window(button)
+        logger.debug('Client {}: 已关闭闲置小游戏选择窗口。', client.title)
         return True
 
 
@@ -311,6 +364,8 @@ async def _close_automation_popup_owned(client):
                 return True
     if await client.is_loading():
         return False
+    if await close_minigame_picker_popup(client):
+        return True
     if getattr(client, "questing_status", False) is not True:
         if await close_class_picture_popup(client):
             return True

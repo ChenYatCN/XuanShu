@@ -42,6 +42,7 @@ from src.paths import *
 from src.sprinty_client import SprintyClient
 from src.window_text import read_control_text
 from src.interaction_prompts import plain_text
+from src.quest_party import pause_dungeon_for_potions, finish_dungeon_potions
 
 # from src.teleport_math import calc_Distance
 
@@ -1000,35 +1001,44 @@ async def is_potion_needed(client: Client, minimum_mana: int = 16):
 async def auto_potions_force_buy(
     client: Client, mark: bool = False, minimum_mana: int = 16
 ):
-    # If we have any missing potions, get potions
-    if await client.stats.potion_charge() < await client.stats.potion_max():
-        original_zone = await client.zone_name()
-        # do not recall from potion buy if we were already in the commons - wait for zone change will fail
-        if original_zone == "WizardCity/WC_Hub":
-            recall = False
-        else:
-            recall = True
-            if not await ensure_teleport_mark(client):
-                logger.error(f"Client {client.title} - 药水补充失败：原地图标记未确认，取消出发。")
+    was_refilling = getattr(client, 'refilling_potions', False)
+    client.refilling_potions = True
+    recalled = False
+    try:
+        # If we have any missing potions, get potions
+        if await client.stats.potion_charge() < await client.stats.potion_max():
+            await pause_dungeon_for_potions(client)
+            original_zone = await client.zone_name()
+            # do not recall from potion buy if we were already in the commons - wait for zone change will fail
+            if original_zone == "WizardCity/WC_Hub":
+                recall = False
+            else:
+                recall = True
+                if not await ensure_teleport_mark(client):
+                    logger.error(f"Client {client.title} - 药水补充失败：原地图标记未确认，取消出发。")
+                    return False
+            if recall and await client.zone_name() != original_zone:
+                logger.error(f"Client {client.title} - 放置标记期间地图改变，取消补药。")
                 return False
-        if recall and await client.zone_name() != original_zone:
-            logger.error(f"Client {client.title} - 放置标记期间地图改变，取消补药。")
-            return False
-        # Navigate to ravenwood
-        await navigate_to_ravenwood(client)
-        # Navigate to commons
-        await navigate_to_commons_from_ravenwood(client)
-        # Navigate to hilda brewer
-        await navigate_to_potions(client)
-        # Buy potions
-        recalled = await buy_potions(client, recall=recall, original_zone=original_zone)
+            # Navigate to ravenwood
+            await navigate_to_ravenwood(client)
+            # Navigate to commons
+            await navigate_to_commons_from_ravenwood(client)
+            # Navigate to hilda brewer
+            await navigate_to_potions(client)
+            # Buy potions
+            recalled = await buy_potions(client, recall=recall, original_zone=original_zone)
 
-        if await is_potion_needed(client, minimum_mana):
-            await use_potion(client)
+            if await is_potion_needed(client, minimum_mana):
+                await use_potion(client)
 
-        return recalled
+            return recalled
 
-    return True
+        return True
+    finally:
+        client.refilling_potions = was_refilling
+        if not was_refilling:
+            await finish_dungeon_potions(client, recalled=recalled is True)
 
 
 async def is_control_grayed(button):
@@ -1366,32 +1376,42 @@ async def click_window_until_closed(client: Client, path):
 async def refill_potions(
     client: Client, mark: bool = False, recall: bool = True, original_zone=None
 ):
-    if await client.stats.reference_level() >= 6:
-        starting_zone = await client.zone_name()
-        if original_zone is None:
-            original_zone = starting_zone
+    was_refilling = getattr(client, 'refilling_potions', False)
+    client.refilling_potions = True  # Before any departure/mark await.
+    result = False
+    try:
+        await pause_dungeon_for_potions(client)
+        if await client.stats.reference_level() >= 6:
+            starting_zone = await client.zone_name()
+            if original_zone is None:
+                original_zone = starting_zone
 
-        if recall and original_zone != starting_zone:
-            logger.error(f"Client {client.title} - 原地图 {original_zone!r} 与出发地图 {starting_zone!r} 不符，取消补药。")
-            return False
-        if (recall or mark) and starting_zone != "WizardCity/WC_Hub":
-            if not await ensure_teleport_mark(client):
-                logger.error(f"Client {client.title} - 药水补充失败：原地图标记未确认，取消出发。")
+            if recall and original_zone != starting_zone:
+                logger.error(f"Client {client.title} - 原地图 {original_zone!r} 与出发地图 {starting_zone!r} 不符，取消补药。")
                 return False
+            if (recall or mark) and starting_zone != "WizardCity/WC_Hub":
+                if not await ensure_teleport_mark(client):
+                    logger.error(f"Client {client.title} - 药水补充失败：原地图标记未确认，取消出发。")
+                    return False
 
-        if recall and await client.zone_name() != original_zone:
-            logger.error(f"Client {client.title} - 放置标记期间地图改变，取消补药。")
-            return False
-        # Navigate to ravenwood
-        await navigate_to_ravenwood(client)
-        # Navigate to commons from ravenwood
-        await navigate_to_commons_from_ravenwood(client)
-        # Navigate to hilda brewer
-        await navigate_to_potions(client)
-        # Buy potions
-        return await buy_potions(client, recall, original_zone=original_zone)
+            if recall and await client.zone_name() != original_zone:
+                logger.error(f"Client {client.title} - 放置标记期间地图改变，取消补药。")
+                return False
+            # Navigate to ravenwood
+            await navigate_to_ravenwood(client)
+            # Navigate to commons from ravenwood
+            await navigate_to_commons_from_ravenwood(client)
+            # Navigate to hilda brewer
+            await navigate_to_potions(client)
+            # Buy potions
+            result = await buy_potions(client, recall, original_zone=original_zone)
+            return result
 
-    return False
+        return False
+    finally:
+        client.refilling_potions = was_refilling
+        if not was_refilling:
+            await finish_dungeon_potions(client, recalled=recall and result is True)
 
 
 async def refill_potions_if_needed(

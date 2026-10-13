@@ -90,14 +90,45 @@ class FullTaskPathTests(unittest.IsolatedAsyncioTestCase):
         stack.enter_context(patch('src.questing.get_quest_name', AsyncMock(side_effect=lambda _: self.objective)))
         self.movement = stack.enter_context(patch('src.questing.collision_tp', AsyncMock(side_effect=move)))
 
+    async def test_finder_navigation_uses_existing_move_and_x_flow(self):
+        from tests.test_mainline_recovery import ROWS
+        self.client._mainline_recovery_quester = True
+        self.client.refilling_potions = False
+        self.client.quest_recovery_owner = None
+        self.client.quest_id.return_value = 999
+        finder = SimpleNamespace(name_lang_key=AsyncMock(return_value='Quest Finder'))
+        self.client.quest_manager = AsyncMock(return_value=SimpleNamespace(
+            quest_data=AsyncMock(return_value={999: finder})))
+        self.client._xuanshu_mainline_last_success = dict(world='Mirage',number=5,
+            title='原主线',quest_id=42,goal_id=7,code='Quest_prev',row=ROWS[0])
+        self.client._xuanshu_mainline_recovery = dict(phase='navigation',finder_id=999,
+            elapsed=0,last_poll=None,confirmation=None,attempts=1)
+        with patch('src.mainline_progress.installed_catalog',return_value=None), \
+             patch('src.mainline_recovery.is_free',AsyncMock(return_value=True)), \
+             patch('src.mainline_recovery.is_visible_by_path',AsyncMock(return_value=False)):
+            await self.quester.auto_quest_solo()
+        self.assertIn(('move', self.target), self.actions)
+        self.assertIn(('key', Keycode.X), self.actions)
+        self.assertNotIn(('key', Keycode.Q), self.actions)
+        self.assertEqual(self.client._xuanshu_mainline_last_success['number'],5)
+
     async def test_consecutive_targets_move_then_x_without_new_state_qualification(self):
+        progress_read_positions = []
+        targets = []
+        def read_goal():
+            progress_read_positions.append(self.position)
+            return 7
+        self.client.goal_id.side_effect = read_goal
         for i in range(3):
             self.target = XYZ(1000 + i * 1200, 2000, 300)
+            targets.append(self.target)
             await self.quester.auto_quest_solo()
         self.assertEqual([action[0] for action in self.actions], ['move', 'key'] * 3)
         self.assertEqual([action[1] for action in self.actions if action[0] == 'key'], [Keycode.X] * 3)
         self.assertEqual(self.movement.await_count, 3)
-        self.client.goal_id.assert_not_awaited()
+        # Interaction progress is sampled after the original teleport. An
+        # unreadable progress snapshot still must not qualify/block that X.
+        self.assertEqual(progress_read_positions, targets)
         self.assertTrue(self.client.questing_status)
 
     async def test_rejected_ordinary_target_is_retried_each_iteration_without_failure_cache(self):
@@ -237,7 +268,7 @@ class CallerAndDependencyTests(unittest.IsolatedAsyncioTestCase):
                                               None, None, 'Mason Stone', 1)
         self.assertIsNotNone(match)
 
-    async def test_navmap_fallback_retries_full_path_and_walks_after_average_landing(self):
+    async def test_navmap_average_landing_without_geometry_does_not_walk_blindly(self):
         pos = XYZ(0, 0, 0)
         target = XYZ(1000, 0, 0)
         calls = []
@@ -251,6 +282,7 @@ class CallerAndDependencyTests(unittest.IsolatedAsyncioTestCase):
             zone_name=AsyncMock(return_value='World/Area'), teleport=AsyncMock(side_effect=teleport), goto=AsyncMock())
         vertices = [XYZ(100, 0, 0), XYZ(300, 0, 0), XYZ(500, 0, 0)]
         with (patch('src.teleport_math.is_free', AsyncMock(return_value=True)),
+              patch('src.teleport_math.is_visible_by_path', AsyncMock(return_value=False)),
               patch('src.teleport_math.asyncio.sleep', AsyncMock()),
               patch('src.teleport_math.load_wad', AsyncMock(return_value=SimpleNamespace(get_file=AsyncMock(return_value=b'nav')))),
               patch('src.teleport_math.parse_nav_data', return_value=(vertices, [(0, 1), (1, 0), (1, 2), (2, 1)])),
@@ -260,7 +292,8 @@ class CallerAndDependencyTests(unittest.IsolatedAsyncioTestCase):
                 await navmap_tp(client, target)
         self.assertEqual(len(calls), 6)
         self.assertEqual([p.x for p in calls], [1000, 650, 300] * 2)
-        self.assertEqual(client.goto.await_count, 2)
+        client.goto.assert_not_awaited()
+        self.assertEqual(pos.x, 300)  # Intermediate landing is not target arrival.
         spiral.assert_not_awaited()
 
 if __name__ == '__main__':

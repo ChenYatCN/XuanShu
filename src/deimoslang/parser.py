@@ -1243,6 +1243,12 @@ class Parser:
                     if nav_mode:
                         result.data.insert(1, TeleportKind.nav)
                 self.end_line()
+            case TokenKind.command_entityfollow:
+                result.kind = CommandKind.entityfollow
+                self.i += 1
+                arg = self.expect_consume_any([TokenKind.string, TokenKind.identifier])
+                result.data = [arg.value if arg.kind == TokenKind.string else arg.literal]
+                self.end_line()
             case TokenKind.command_tozone:
                 result.kind = CommandKind.tozone
                 self.i += 1

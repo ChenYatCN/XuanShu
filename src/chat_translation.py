@@ -203,6 +203,8 @@ class ChatTranslationMonitor:
         # Keep provenance, not a text-only blacklist: other players can send
         # identical English and must still receive a translation.
         self.outgoing_translations = deque(maxlen=128)
+        self.outgoing_originals = deque(maxlen=128)
+        self.outgoing_counter = 0
 
     def _translation_status(self, text):
         self.publish({'kind': 'translation_status', 'status': text})
@@ -219,9 +221,12 @@ class ChatTranslationMonitor:
         # workers just because settings changed or the window closed.
 
     def _publish_message(self, event):
+        event = self._associate_outgoing_original(event)
         self.message_counter += 1
         event = {**event, 'message_id': self.message_counter}
         self.publish(event)
+        if event.get('outgoing_id') is not None:
+            return  # Use the saved Chinese, never translate our English back.
         if (event.get('source') == 'chat_log' and event.get('sender_name') == '你'
                 and not event.get('sender_gid')):
             return  # Verified local echo stays original-only, however it was sent.
@@ -236,6 +241,60 @@ class ChatTranslationMonitor:
         self.translation_enqueued.append((self.translation_generation, received_at, event))
         if self.translation_task is None or self.translation_task.done():
             self.translation_task = asyncio.create_task(self._translate_pending())
+
+    def _associate_outgoing_original(self, event):
+        handle = event.get('handle')
+        receiver = (event.get('source'), handle)
+        gid = event.get('sender_gid')
+        message = ' '.join(event.get('message', '').split())  # Same whitespace form as parse_chat_log.
+        observation = event.get('observation_id')
+        now = time.monotonic()
+        records = []
+        for record in self.outgoing_originals:
+            client = record['client']
+            if self.translation_clients.get(client.window_handle) is not client:
+                continue  # A reused HWND is a different client.
+            if isinstance(gid, int) and gid > 0:
+                ours = record['gid'] is not None and gid == record['gid']
+            else:
+                ours = (event.get('source') == 'chat_log' and handle == client.window_handle
+                        and event.get('sender_name') == '你')
+            if ours:
+                records.append(record)
+
+        def paired(record):
+            record['receipts'][receiver] = observation
+            if record['channel'] is None:
+                record['channel'] = event.get('channel')
+            return {**event, 'title': record['client'].title,
+                    'source_message': record['original'], 'outgoing_id': record['id']}
+
+        # Recognize repeated delivery of the same observed log occurrence,
+        # without treating a later genuine identical send as a duplicate.
+        if observation is not None:
+            for record in records:
+                if (record['message'] == message
+                        and record['receipts'].get(receiver) == observation):
+                    return paired(record)
+        # A peer can poll a shared message after we have filled the next draft.
+        # Match its previously unseen copy before consuming that newer draft.
+        for record in records:
+            if (record['confirmed_at'] is not None and now - record['confirmed_at'] <= 2
+                    and receiver not in record['receipts']
+                    and record['message'] == message
+                    and (record['channel'] is None or event.get('channel') is None
+                         or record['channel'] == event.get('channel'))):
+                return paired(record)
+        for record in reversed(records):
+            if record['confirmed_at'] is not None:
+                continue
+            if record['message'] != message:
+                self.outgoing_originals.remove(record)
+                return event  # An edited draft must not inherit the old Chinese.
+            record['confirmed_at'] = now
+            record['channel'] = event.get('channel')
+            return paired(record)
+        return event
 
     def _is_translated_outgoing_echo(self, event):
         gid = event.get('sender_gid')
@@ -456,9 +515,21 @@ class ChatTranslationMonitor:
                     if not await _chat_readback(client, edit, text):
                         raise RuntimeError('填入后输入文本发生变化；未自动发送，请检查游戏草稿')
                     result['filled'] = True
+                    # Even a direct English fill supersedes an older draft.
+                    for previous in tuple(self.outgoing_originals):
+                        if previous['client'] is client and previous['confirmed_at'] is None:
+                            self.outgoing_originals.remove(previous)
                     if 'source_message' in result:
                         # The user may confirm this English draft in the game.
                         self.outgoing_translations.append((client, stage[1], text))
+                        # One editable draft per client; a new successful fill
+                        # supersedes any earlier unconfirmed association.
+                        self.outgoing_counter += 1
+                        self.outgoing_originals.append({
+                            'id': self.outgoing_counter, 'client': client, 'gid': stage[1],
+                            'original': result['source_message'], 'message': ' '.join(text.split()),
+                            'confirmed_at': None, 'channel': None, 'receipts': {},
+                        })
                     event('英文已填入游戏；未发送，请在游戏里确认频道和收件人后发送。', True)
         except asyncio.CancelledError:
             event('填入已取消；未自动发送，请检查游戏草稿', True)
@@ -538,6 +609,7 @@ class ChatTranslationMonitor:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self.recent_hello.clear()
+        self.outgoing_originals.clear()
 
     async def _listen_log(self, client):
         delta = ChatLogDelta()
@@ -570,7 +642,8 @@ class ChatTranslationMonitor:
                             self._publish_message({'kind': 'message', 'source': 'chat_log',
                                           'handle': client.window_handle, 'title': client.title,
                                           'channel': channel, 'sender_gid': gid,
-                                          'sender_name': sender, 'message': message})
+                                          'sender_name': sender, 'message': message,
+                                          'observation_id': self.observation_counter})
                         status('聊天记录：监听中（含附近 / 队伍）')
                     await asyncio.sleep(.5)
                 except asyncio.CancelledError:
@@ -623,7 +696,7 @@ class ChatTranslationMonitor:
                 last_counter = counter
                 self._publish_message({"kind": "message", "handle": handle,
                               "title": client.title, "sender_gid": sender_gid,
-                              "message": message})
+                              "message": message, 'observation_id': counter})
                 logger.info("聊天翻译：{} 收到来自 GID {} 的消息。", client.title, sender_gid)
 
                 if (not self.auto_reply or not sender_gid

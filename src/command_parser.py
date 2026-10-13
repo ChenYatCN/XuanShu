@@ -1,19 +1,24 @@
 import asyncio
+import math
 
 # from src.collision_math import plot_cube
 import re
 import traceback
 from asyncio import CancelledError
+from time import monotonic
 from typing import Coroutine, Dict, List, Tuple
 
 from loguru import logger
-from wizwalker import XYZ, Client, Keycode, Orient
+from wizwalker import XYZ, Client, Keycode, MemoryReadError, Orient
 from wizwalker.errors import HookNotActive
+from wizwalker.utils import calculate_perfect_yaw
 from wizwalker.extensions.wizsprinter.wiz_navigator import toZone
 from wizwalker.memory.memory_objects.camera_controller import CameraController
 
 from src.camera_utils import glide_to, orbit, point_to_xyz, rotating_glide_to
+from src.automation_ownership import automation_owner
 from src.gui_inputs import is_numeric, param_input
+from src.ibao_runtime import complete_before_cancel
 from src.sprinty_client import SprintyClient
 from src.tokenizer import tokenize
 from src.utils import (
@@ -132,6 +137,72 @@ async def wait_for_coro(
 #         raise Exception("Unterminated (")
 
 #     return result
+
+
+async def follow_entity(client: Client, name: str) -> None:
+    """Track one live entity in short steps until combat or a bounded failure."""
+    started = monotonic()
+    target = None
+    missing_since = started
+    try:
+        # Also bound waiting for ownership or a stalled memory read.
+        async with asyncio.timeout(30), automation_owner(client, "entityfollow"):
+            sprinty = SprintyClient(client)
+            anchor = await client.body.position()
+            moved_at = monotonic()
+            while monotonic() - started < 30:
+                if await client.in_battle():
+                    return
+                if await client.is_loading():
+                    logger.warning(f"{client.title} entityfollow: loading; stopped")
+                    return
+                try:
+                    if target is None:
+                        target = await sprinty.find_closest_by_vague_name(name)
+                        if target is not None:
+                            address = await target.read_base_address()
+                            entity_id = await target.global_id_full()
+                    if target is not None:
+                        # A removed object can still have readable old memory.
+                        addresses = [
+                            await entity.read_base_address()
+                            for entity in await client.get_base_entity_list()
+                        ]
+                        if address not in addresses or await target.global_id_full() != entity_id:
+                            target = None
+                        else:
+                            target_pos = await target.location()
+                            if not all(math.isfinite(v) for v in (target_pos.x, target_pos.y, target_pos.z)):
+                                raise ValueError("invalid entity position")
+                except (MemoryReadError, ValueError):
+                    target = None
+                if target is None:
+                    if monotonic() - missing_since >= 3:
+                        logger.warning(f"{client.title} entityfollow: target unavailable for 3s; stopped")
+                        return
+                    await asyncio.sleep(.1)
+                    continue
+                missing_since = monotonic()
+                position = await client.body.position()
+                if not all(math.isfinite(v) for v in (position.x, position.y, position.z)):
+                    raise ValueError("invalid player position")
+                if math.hypot(position.x - anchor.x, position.y - anchor.y) >= 5:
+                    anchor, moved_at = position, monotonic()
+                elif monotonic() - moved_at >= 3:
+                    logger.warning(f"{client.title} entityfollow: no movement for 3s; stopped")
+                    return
+                await client.body.write_yaw(calculate_perfect_yaw(position, target_pos))
+                if await client.in_battle():
+                    return
+                # No arrival-distance exit: even at the target, keep pulling.
+                # Drain this finite key press before acknowledging cancellation;
+                # older timed_send_key implementations lack cancellation cleanup.
+                await complete_before_cancel(asyncio.create_task(client.send_key(Keycode.W, .1)))
+            logger.warning(f"{client.title} entityfollow: 30s limit reached; stopped")
+    except TimeoutError:
+        logger.warning(f"{client.title} entityfollow: 30s limit reached; stopped")
+    except (HookNotActive, MemoryReadError, ValueError) as exc:
+        logger.warning(f"{client.title} entityfollow: client read failed; stopped: {exc}")
 
 
 async def parse_command(clients: List[Client], command_str: str):
@@ -513,6 +584,13 @@ async def parse_command(clients: List[Client], command_str: str):
                             for client in clients
                         ]
                     )
+
+                case "entityfollow":
+                    if len(split_command) != 3 or not split_command[2]:
+                        raise ValueError("entityfollow requires one entity name")
+                    async with asyncio.TaskGroup() as tg:
+                        for client in clients:
+                            tg.create_task(follow_entity(client, split_command[2]))
 
                 case "tozone" | "to_zone":
                     # Navigates to a specific zone, by vague name

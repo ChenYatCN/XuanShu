@@ -640,6 +640,11 @@ WORLD_RECORDS = {
 }
 
 TEXT_RECORDS = {
+    # Installed GUI.lang / Chinese overlay checked 2026-10-12.
+    "GUI_InstanceExit": [
+        "If you leave a Dungeon you will lose all your progress in the Dungeon and will have to start over at the beginning.<br>Are you sure you want to leave now?",
+        "如果你现在离开地下城，你在地下城的进度将会消失，你需要从头开始。<br>你确定你要现在离开吗？",
+    ],
     # Verified in installed Chat.lang (Root.wad and Locale_en-US-root.wad).
     "Chat_HeaderSay": ["Say:", "说:"],
     "GUI_00000002": [

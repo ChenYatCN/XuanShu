@@ -191,6 +191,8 @@ class ChatTranslationDialog(RoundedIbaoDialog):
         self.translation_status.setToolTip('点击标题栏接口图标配置 API；仅在软件内显示译文。')
         self.translation_status.setWordWrap(True)
         self._history = deque(maxlen=200)
+        self._seen_message_ids = deque(maxlen=512)
+        self._seen_outgoing_ids = deque(maxlen=128)
         self.messages = QPlainTextEdit()
         self.messages.setReadOnly(True)
         self.messages.setPlaceholderText('这里显示监听开启后的聊天消息。')
@@ -328,21 +330,33 @@ class ChatTranslationDialog(RoundedIbaoDialog):
                 self.send_text.setEnabled(True)
                 self._update_send_button()
         elif kind == "message":
+            message_id = event.get('message_id')
+            outgoing_id = event.get('outgoing_id')
+            if ((message_id is not None and message_id in self._seen_message_ids)
+                    or (outgoing_id is not None and outgoing_id in self._seen_outgoing_ids)):
+                return
+            if message_id is not None:
+                self._seen_message_ids.append(message_id)
+            if outgoing_id is not None:
+                self._seen_outgoing_ids.append(outgoing_id)
             sender = event.get("sender_gid", 0)
             message = event.get("message", "")
-            if event.get('source') == 'chat_log':
+            if outgoing_id is not None and 'source_message' in event:
+                original = f"[{title} · 我]\n原文：{event['source_message']}\n发送：{message}"
+            elif event.get('source') == 'chat_log':
                 original = (
                     f"[{title}][{event.get('channel', '聊天')}] "
                     f"[{event.get('sender_name', '?')}]: {message}"
                 )
             else:
                 original = f"[{title}] GID {sender}: {message}"
-            self._history.append({'message_id': event.get('message_id'), 'original': original})
+            self._history.append({'message_id': message_id, 'original': original,
+                                  'outgoing_id': outgoing_id})
             self._render_history()
         elif kind == 'translation':
             if event.get('message_id') is not None:
                 for row in self._history:
-                    if row['message_id'] == event['message_id']:
+                    if row['message_id'] == event['message_id'] and row.get('outgoing_id') is None:
                         row['translation'] = ' '.join(str(event.get('translation', '')).split())
                         self._render_history()
                         break

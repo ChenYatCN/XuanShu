@@ -85,6 +85,7 @@ class TokenKind(Enum):
     command_teleport = auto()
     command_friendtp = auto()
     command_entitytp = auto()
+    command_entityfollow = auto()
     command_plus_teleport = auto()
     command_minus_teleport = auto()
     command_tozone = auto()
@@ -486,6 +487,8 @@ class Tokenizer:
                                         put_simple(TokenKind.command_friendtp, full)
                                     case "entitytp" | "entityteleport":
                                         put_simple(TokenKind.command_entitytp, full)
+                                    case "entityfollow":
+                                        put_simple(TokenKind.command_entityfollow, full)
                                     case "tozone":
                                         put_simple(TokenKind.command_tozone, full)
                                     case "loadplaystyle":

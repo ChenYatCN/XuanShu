@@ -172,7 +172,8 @@ class Compiler:
 
             case CommandKind.sendkey | CommandKind.click | CommandKind.teleport \
                 | CommandKind.goto | CommandKind.usepotion | CommandKind.buypotions \
-                | CommandKind.relog | CommandKind.tozone | CommandKind.cursor:
+                | CommandKind.relog | CommandKind.tozone | CommandKind.cursor \
+                | CommandKind.entityfollow:
                 self.emit_deimos_call(com)
 
             case CommandKind.select_friend:

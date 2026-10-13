@@ -36,6 +36,7 @@ class CommandKind(Enum):
     toggle_combat = auto()
     restart_bot = auto()
     cursor = auto() 
+    entityfollow = auto()
 
 class TeleportKind(Enum):
     position = auto()
