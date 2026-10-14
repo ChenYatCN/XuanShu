@@ -19,6 +19,8 @@ import pyperclip
 import requests
 import wizlaunch
 from loguru import logger
+from src.logging_utils import (daily_format, detailed_format, log_blocked, log_recovered, log_exception,
+                               log_following, log_toggle)
 
 # import pypresence
 from pypresence import AioPresence
@@ -88,7 +90,7 @@ from src.sprinty_client import SprintyClient
 # from src.combat_new import Fighter
 from src.stat_viewer import total_stats
 from src.task_lifecycle import gather_owned
-from src.teleport_math import calc_Distance, navmap_tp
+from src.teleport_math import calc_Distance, navmap_tp, _movement_position
 from src.tokenizer import tokenize
 from src.utils import auto_potions  # , assign_pet_level
 from src.utils import (
@@ -636,7 +638,7 @@ async def navmap_teleport(
                              'Params=(leader=None,reenter=False) Timeout=None',
                              client.title, id(asyncio.current_task()), await client.quest_id(),
                              await client.goal_id(), await client.zone_name(), xyz,
-                             await client.body.position(), ownership.owner_label,
+                             await _movement_position(client), ownership.owner_label,
                              id(ownership._owner_task) if ownership.locked else None)
             except Exception as exc:
                 logger.debug('[任务TP对照] {} Source=manual 诊断读取失败：{}', client.title, exc)
@@ -1192,29 +1194,47 @@ async def main():
         active = snapshot.get("toggle_questing", {})
         live_ids = {id(c) for c in live_clients}
         groups = []
+        shown = set()
         for quester in current_quest_party(live_clients).questers:
             if not active.get(quester.title):
                 continue
+            shown.add(id(quester))
             lines = [getattr(quester, "_xuanshu_mainline_progress", "")
                      or f"{quester.title} · 主线进度待确认"]
+            reason = getattr(quester, '_quest_internal_block_reason', '')
+            if reason:
+                lines.append(f"{quester.title} · 等待恢复：{reason}（自动任务保持启用）")
             for hitter in getattr(quester, "quest_party_hitters", ()):
                 if id(hitter) not in live_ids or not active.get(hitter.title):
                     continue
                 status = getattr(hitter, "quest_party_runtime_status", None)
                 state = (status[2] if status and status[1] is quester else "")
+                reason = getattr(hitter, '_quest_internal_block_reason', '')
+                if reason:
+                    state = f"等待恢复：{reason}（自动任务保持启用）"
                 lines.append(f"{hitter.title} → {quester.title}｜"
                              f"{state or '等待跟随状态更新'}")
+                shown.add(id(hitter))
             groups.append("\n".join(lines))
+        for client in live_clients:
+            reason = getattr(client, '_quest_internal_block_reason', '')
+            if id(client) not in shown and active.get(client.title) and reason:
+                groups.append(f"{client.title} · 等待恢复：{reason}（自动任务保持启用）")
         return "\n\n".join(groups)
 
     def apply_questing_roles(active: bool, members=None):
         party = current_quest_party(members)
+        if active and not party.questers:
+            return party  # Missing roles defer startup; never revoke existing enable flags.
         participants = party.questers + party.hitters if party.questers else []
         participant_ids = {id(client) for client in participants}
         mainline_quester_ids = {id(client) for client in party.questers}
         for client in (walker.clients if members is None else members):
             clear_dungeon_session(client)
             client.questing_status = active and id(client) in participant_ids
+            if not active:
+                client._quest_internal_failure_wait = None
+                client._quest_internal_block_reason = ''
             client.mainline_finder_enabled = mainline_finder_enabled
             client._mainline_recovery_quester = active and id(client) in mainline_quester_ids
             if not client._mainline_recovery_quester:
@@ -1305,22 +1325,13 @@ async def main():
                     await asyncio.gather(task_to_stop, return_exceptions=True)
                 if questing_task is task_to_stop:
                     questing_task = None
+                from src.logging_utils import log_toggle
+                log_toggle(walker.clients, False, getattr(task_to_stop, '_logging_stop_source', '任务流程'))
 
             else:
                 party = apply_questing_roles(True)
                 if not party.questers:
-                    questing_status = False
-                    apply_questing_roles(False)
-                    logger.error(
-                        "任务编队未找到任何已注入的做任务客户端；自动任务未启动。"
-                    )
-                    gui_send_queue.put(
-                        xuanshu_gui.GUICommand(
-                            xuanshu_gui.GUICommandType.UpdateWindow,
-                            ("QuestingStatus", "Disabled"),
-                        )
-                    )
-                    return
+                    logger.debug("任务编队暂时没有可用任务端；保留启用请求，等待恢复。")
 
                 if paused_task_names is not None:
                     paused_task_names.discard("questing")
@@ -1351,7 +1362,7 @@ async def main():
                         )
                         or "无打手"
                     )
-                    logger.info(
+                    logger.debug(
                         "已加载任务编队：做任务="
                         + ", ".join(client.title for client in party.questers)
                         + f"；打手跟随={assignments}"
@@ -1365,6 +1376,7 @@ async def main():
                 questing_task = asyncio.create_task(
                     try_task_coro(questing_loop, walker.clients, True)
                 )
+                questing_task._logging_start_source = getattr(_log_quest_toggle, 'source', '任务流程')
 
     async def toggle_auto_pet_hotkey():
         global auto_pet_task
@@ -1601,9 +1613,11 @@ async def main():
                             )
                         except Exception as exc:
                             logger.debug("分组加速清理：{}", exc)
-            logger.info(
-                "快捷键 {} 已停止：{}", action, ", ".join(c.title for c in members)
-            )
+            if action == 'toggle_questing':
+                from src.logging_utils import log_toggle
+                log_toggle(members, False, getattr(asyncio.current_task(), '_logging_stop_source', '任务流程'))
+            else:
+                logger.info("快捷键 {} 已停止：{}", action, ", ".join(c.title for c in members))
             if action in status_tags:
                 remaining = any(
                     key[0] == action
@@ -1621,7 +1635,26 @@ async def main():
     hotkey_groups = HotkeyGroups(lambda: walker.clients, run_hotkey_group)
 
     def _log_quest_toggle(stage, trigger=None, clients=None):
-        logger.info(
+        if stage in ('toggle_begin', 'legacy_toggle_begin'):
+            source = {'hotkey': '快捷键', 'ui': '界面按钮', 'ui_callback': '界面按钮', 'ui_button': '界面按钮'}.get(
+                (trigger or {}).get('source'), (trigger or {}).get('source', '界面命令'))
+            for key, (_, task) in hotkey_groups.groups.items():
+                if key[0] == 'toggle_questing':
+                    task._logging_stop_source = source
+            if questing_task is not None:
+                questing_task._logging_stop_source = source
+            _log_quest_toggle.source = source
+        if stage == 'toggle_end':
+            for key, (_, task) in hotkey_groups.groups.items():
+                if key[0] == 'toggle_questing':
+                    if not hasattr(task, '_logging_start_source'):
+                        task._logging_start_source = getattr(_log_quest_toggle, 'source', '任务流程')
+                    if hasattr(task, '_logging_stop_source'):
+                        del task._logging_stop_source
+        if stage == 'legacy_toggle_end' and questing_task is not None:
+            if hasattr(questing_task, '_logging_stop_source'):
+                del questing_task._logging_stop_source
+        logger.debug(
             '[quest_toggle] {} trigger={} requested={} listener={} enabled={} '
             'legacy={} groups={} clients={}', stage,
             trigger or {'source': 'command_without_source'}, clients, id(listener),
@@ -1955,20 +1988,26 @@ async def main():
         if members is None and not questing_status:
             return
         roster = walker.clients if members is None else members
-        party = apply_questing_roles(True, members)
-        if not party.questers:
-            if members is not None:
-                logger.warning("快捷键分组内没有符合当前任务编队设置的做任务客户端。")
-                return
-            questing_status = False
-            apply_questing_roles(False)
-            logger.error("任务编队中没有可用的做任务客户端，自动任务已停止。")
-            gui_send_queue.put(
-                xuanshu_gui.GUICommand(
-                    xuanshu_gui.GUICommandType.UpdateWindow,
-                    ("QuestingStatus", "Disabled"),
-                )
-            )
+        while members is not None or questing_status:
+            party = apply_questing_roles(True, members)
+            if party.questers:
+                from src.logging_utils import log_toggle
+                if not getattr(asyncio.current_task(), '_logging_started', False):
+                    log_toggle(roster, True, getattr(asyncio.current_task(), '_logging_start_source', '任务流程'))
+                    asyncio.current_task()._logging_started = True
+                for client in roster:
+                    if getattr(client, '_quest_internal_block_reason', '') == '任务编队暂时没有可用任务端':
+                        from src.logging_utils import log_recovered
+                        log_recovered(client, '已确认任务编队可用')
+                        client._quest_internal_block_reason = ''
+                break
+            reason = '任务编队暂时没有可用任务端'
+            for client in roster:
+                from src.logging_utils import log_blocked
+                log_blocked(client, None, reason, delay=5)
+                client._quest_internal_block_reason = reason
+            await asyncio.sleep(5)
+        else:
             return
 
         status_session = object()
@@ -2048,7 +2087,8 @@ async def main():
             hitter: Client, quester: Client, is_probe_hitter: bool
         ):
             """Follow this group's quester; share targets only in a proven instance."""
-            logger.info(f"打手 {hitter.title} 开始跟随做任务客户端 {quester.title}。")
+            from src.logging_utils import log_blocked, log_recovered, log_exception, log_following
+            log_following(hitter, quester)
             loop = asyncio.get_running_loop()
             last_quester_zone = getattr(quester, "quest_party_observed_zone", None)
             quester_zone_stable_since = None
@@ -2413,6 +2453,8 @@ async def main():
                     if (dungeon_member_inside(hitter) and not probe_pending and not exit_handoff
                             and hitter_zone == quester_zone
                             and await hitter_is_in_quester_area()):
+                        log_recovered(hitter, '已确认同一跟随区域', channel='follow')
+                        session.follow_attempts.pop(id(hitter), None)
                         await hitter_reader.move_dungeon_member()
                         update_party_status(hitter, quester, "地牢内同步本组任务端目标")
                         continue
@@ -2438,6 +2480,8 @@ async def main():
                             else:
                                 record_dungeon_exit(hitter, hitter_zone, quester_zone, evidence='live-rejoin')
                     if same_live_area:
+                        if session:
+                            session.follow_attempts.pop(id(hitter), None)
                         if probe_pending:
                             await complete_zone_probe(False)
                         if returning:
@@ -2461,11 +2505,15 @@ async def main():
                             except ValueError:
                                 await asyncio.sleep(0.5)
                         else:
+                            log_recovered(hitter, '已确认归队距离', channel='follow')
                             update_party_status(hitter, quester, "已归队")
                         continue
 
                     if blocked_instance_zone == quester_zone:
                         if now < blocked_instance_retry_at:
+                            _logging_follow_wait = getattr(hitter, '_logging_blocks', {}).get('follow')
+                            if _logging_follow_wait is not None:
+                                log_blocked(hitter, None, _logging_follow_wait['reason'], channel='follow')
                             if exit_handoff:
                                 await exit_hitter_to_hub()
                             update_party_status(
@@ -2538,12 +2586,24 @@ async def main():
                         continue
 
                     if now < next_retry_at:
+                        _logging_follow_wait = getattr(hitter, '_logging_blocks', {}).get('follow')
+                        if _logging_follow_wait is not None:
+                            log_blocked(hitter, None, _logging_follow_wait['reason'], channel='follow')
                         if exit_handoff:
                             await exit_hitter_to_hub()
                         wait_seconds = max(1, int(next_retry_at - now + 0.99))
                         update_party_status(
                             hitter, quester, f"好友传送重试等待 {wait_seconds}s"
                         )
+                        continue
+
+                    bounded_dungeon_follow = bool(session and session.confirmed
+                        and dungeon_member_inside(quester) and dungeon_member_inside(hitter)
+                        and not returning and not exit_handoff)
+                    if bounded_dungeon_follow and session.follow_attempts.get(id(hitter), 0) >= 2:
+                        log_blocked(hitter, getattr(hitter, '_logging_follow_task', None),
+                            '地牢归队尝试 2 次仍未确认同实例，等待有效旧入口或实际归队', channel='follow')
+                        update_party_status(hitter, quester, "地牢归队尝试已达上限，等待有效旧入口或实际归队")
                         continue
 
                     logger.debug(
@@ -2554,6 +2614,7 @@ async def main():
                         hitter_zone_before_probe = hitter_zone
                         probe_context = (quester_zone, dungeon_session_for(quester),
                                          (await quester.quest_id(), await quester.goal_id()))
+                        hitter._logging_follow_task = (*probe_context[2], None, (quester.title, quester_zone))
 
                         async def attempt_probe():
                             # The outer deadline includes cleanup and BOTH mouse
@@ -2590,8 +2651,11 @@ async def main():
                             if getattr(quester, 'quest_party_probe_pending', False):
                                 await complete_zone_probe(False, probe_context)
 
+                        if bounded_dungeon_follow:
+                            session.follow_attempts[id(hitter)] = session.follow_attempts.get(id(hitter), 0) + 1
                         await asyncio.wait_for(attempt_probe(), timeout=30.0)
                         logger.debug(f"打手 {hitter.title} 好友探测完成，同实例归队已确认。")
+                        log_recovered(hitter, '已确认同实例归队', channel='follow')
                         failure_count = 0
                         next_retry_at = 0.0
                     except asyncio.CancelledError:
@@ -2610,6 +2674,8 @@ async def main():
                             f"打手 {hitter.title} 无法进入 {quester.title} 当前区域，"
                             f"将在任务客户端离开该区域后重试：{exc}"
                         )
+                        log_blocked(hitter, getattr(hitter, '_logging_follow_task', None),
+                            f'好友传送暂不可用：{type(exc).__name__}: {exc}', delay=60, channel='follow')
                     except Exception as exc:
                         if await is_friend_teleport_error(hitter):
                             await bounded_probe_cleanup()
@@ -2626,6 +2692,9 @@ async def main():
                                 f"打手 {hitter.title} 检测到无法进入的实例，"
                                 f"等待 {quester.title} 离开当前区域。"
                             )
+                            log_exception(hitter, '好友探测未确认归队', exc, level='DEBUG')
+                            log_blocked(hitter, getattr(hitter, '_logging_follow_task', None),
+                                '好友传送当前实例不可进入', delay=60, channel='follow')
                             continue
                         await bounded_probe_cleanup()
                         failure_count += 1
@@ -2640,6 +2709,9 @@ async def main():
                             f"打手 {hitter.title} 跟随 {quester.title} 暂未成功，"
                             f"{delay:.0f} 秒后重试：{type(exc).__name__}: {exc}"
                         )
+                        log_exception(hitter, '好友探测未确认归队', exc, level='DEBUG')
+                        log_blocked(hitter, getattr(hitter, '_logging_follow_task', None),
+                            f'好友探测未确认归队：{type(exc).__name__}: {exc}', delay=delay, channel='follow')
             finally:
                 remove_party_status(hitter)
 
@@ -2647,15 +2719,16 @@ async def main():
             hitter: Client, quester: Client, is_probe_hitter: bool
         ):
             """Keep the follower alive across transient memory/UI read failures."""
+            from src.logging_utils import log_blocked, log_exception
             while (members is not None or questing_status) and hitter.questing_status:
                 try:
                     await _follow_quester_session(hitter, quester, is_probe_hitter)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    logger.warning(
-                        f"打手 {hitter.title} 跟随状态读取失败，2 秒后恢复：{exc}"
-                    )
+                    log_exception(hitter, '跟随状态读取失败', exc, level='DEBUG')
+                    log_blocked(hitter, getattr(hitter, '_logging_follow_task', None),
+                        f'跟随状态读取失败：{type(exc).__name__}: {exc}', delay=2, channel='follow')
                     update_party_status(hitter, quester, "状态读取失败，准备恢复")
                     await asyncio.sleep(2.0)
 
@@ -2676,7 +2749,7 @@ async def main():
                         f"Client {client.title} - Handling assigned questing role."
                     )
                     questing = Quester(client, [client], None)
-                    await questing.auto_quest(ignore_pet_level_up, only_play_dance_game)
+                    leader_mode = False
                 elif (
                     questing_leader_pid is not None
                     and len(roster) > 1
@@ -2687,17 +2760,38 @@ async def main():
                             f"Client {client.title} - Handling questing for all clients."
                         )
                         questing = Quester(client, roster, questing_leader_pid)
-                        await questing.auto_quest_leader(
-                            questing_friend_tp,
-                            gear_switching_in_solo_zones,
-                            hitter_client,
-                            ignore_pet_level_up,
-                            only_play_dance_game,
-                        )
+                        leader_mode = True
+                    else:
+                        return  # The assigned legacy leader owns this shared worker.
                 else:
                     logger.debug(f"Client {client.title} - Handling questing.")
                     questing = Quester(client, roster, None)
-                    await questing.auto_quest(ignore_pet_level_up, only_play_dance_game)
+                    leader_mode = False
+                level_ready = False
+                while (client in walker.clients and client.questing_status
+                       and (members is not None or questing_status)):
+                    if not getattr(client, 'is_running', lambda: True)():
+                        return  # Actual process closure still permits normal cleanup.
+                    try:
+                        if await questing._wait_internal_quest_failure(client):
+                            continue
+                        if not level_ready:
+                            client.character_level = await client.stats.reference_level()
+                            level_ready = True
+                        if leader_mode:
+                            await questing.auto_quest_leader(
+                                questing_friend_tp, gear_switching_in_solo_zones,
+                                hitter_client, ignore_pet_level_up, only_play_dance_game)
+                        else:
+                            await questing.auto_quest(ignore_pet_level_up, only_play_dance_game)
+                    except (wizwalker.errors.MemoryReadError, wizwalker.errors.MemoryInvalidated,
+                            wizwalker.errors.ExceptionalTimeout) as exc:
+                        await questing._defer_internal_quest_failure(client,
+                            f'任务状态读取暂不可用：{type(exc).__name__}: {exc}', kind='read', delay=5)
+                        continue  # Reuse this coroutine and Quester; no worker restart.
+                    if client.questing_status:
+                        await questing._defer_internal_quest_failure(client,
+                            '本轮任务流程结束，等待重新确认实际状态', kind='read', delay=3)
             finally:
                 cancel_mainline_recovery(client)
                 if questing is not None and questing.current_leader_client is not client:
@@ -2706,16 +2800,16 @@ async def main():
         # Supervise each quest client separately.  A solo-zone probe can cancel
         # and recreate only the affected worker without stopping hitter follow.
         async def async_questing(client: Client):
-            client.character_level = await client.stats.reference_level()
+            from src.logging_utils import log_blocked, log_exception
             next_start_delay = 3.0
 
-            while True:
+            while client.questing_status and (members is not None or questing_status):
                 await asyncio.sleep(next_start_delay)
                 next_start_delay = 3.0
                 if client not in walker.clients or (
                     members is None and not questing_status
-                ):
-                    continue
+                ) or not client.questing_status:
+                    return
 
                 client.quest_party_quest_worker_restart_requested = False
                 worker = asyncio.create_task(run_questing_worker(client))
@@ -2750,9 +2844,9 @@ async def main():
                 ):
                     raise
                 except Exception as exc:
-                    logger.opt(exception=exc).error(
-                        f"Client {client.title} quest worker stopped unexpectedly; retrying."
-                    )
+                    log_exception(client, '任务工作流程异常停止，将按原流程重试', exc, level='DEBUG')
+                    log_blocked(client, (getattr(client, '_quest_interaction_retry', None) or {}).get('task'),
+                        f'任务工作流程异常停止：{type(exc).__name__}: {exc}', delay=2)
                     next_start_delay = 2.0
                 finally:
                     if getattr(client, "quest_party_quest_worker_task", None) is worker:
@@ -2822,6 +2916,8 @@ async def main():
 
                         if recovery_candidate and not await is_free(client):
                             recovery_candidate = False
+                        if getattr(client, '_quest_internal_block_reason', ''):
+                            recovery_candidate = False  # Existing worker owns its cooled retry.
 
                         # restart questing
                         if (
@@ -6420,15 +6516,9 @@ async def main():
                                         )
                                     )
                                 else:
-                                    questing_status = False
-                                    apply_questing_roles(False)
-                                    questing_task = None
-                                    gui_send_queue.put(
-                                        xuanshu_gui.GUICommand(
-                                            xuanshu_gui.GUICommandType.UpdateWindow,
-                                            ("QuestingStatus", "Disabled"),
-                                        )
-                                    )
+                                    logger.warning('编队更新后暂时没有可用任务端；保留启用并等待恢复。')
+                                    questing_task = asyncio.create_task(
+                                        try_task_coro(questing_loop, walker.clients, True))
 
             except queue.Empty:
                 pass
@@ -6962,13 +7052,13 @@ async def main():
                     should_exit = True
                 elif t == all_tasks.get("gui"):
                     # GUI task errors are always fatal
-                    logger.opt(exception=exc).error("GUI task crashed")
+                    log_exception('', '界面任务异常停止', exc, level='ERROR')
                     should_exit = True
                 else:
                     # Client-dependent task died (memory error, dead process, etc.)
                     # Non-fatal — the client is likely closed
                     task_name = next((k for k, v in all_tasks.items() if v is t), "?")
-                    logger.opt(exception=exc).warning(f"Task '{task_name}' ended")
+                    log_exception('', f"任务 {task_name} 异常结束", exc)
             if should_exit:
                 break
 
@@ -7062,11 +7152,14 @@ def run():
 
     log_dir = runtime_data_dir() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    logger.remove(0)
+    logger.add(sys.stderr, level='INFO', format=daily_format, backtrace=False, diagnose=False)
     current_log = logger.add(
         log_dir / f"{tool_name} - {generate_timestamp()}.log",
         encoding="utf-8",
         enqueue=True,
         backtrace=True,
+        format=detailed_format,
     )
 
     # Set up GUI queues before starting anything

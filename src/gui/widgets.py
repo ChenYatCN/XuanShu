@@ -1499,12 +1499,17 @@ class PyQtSink:
         else:
             body = clean_message
         truncated_message = level + " - " + body
+        if record is not None and 'time' in record:
+            from src.logging_utils import daily_text
+            truncated_message = daily_text(record)
 
         self.buffer.append((clean_message, truncated_message, level))
         if len(self.buffer) > self.max_lines:
             self.buffer.pop(0)
 
         try:
+            if level in ('DEBUG', 'TRACE') and not self.show_expanded_logs:
+                return  # Keep details in the existing buffer for expanded view.
             message_to_write = (
                 clean_message if self.show_expanded_logs else truncated_message
             )
@@ -1521,6 +1526,8 @@ class PyQtSink:
         try:
             text = ""
             for clean, trunc, level in self.buffer:
+                if level in ('DEBUG', 'TRACE') and not self.show_expanded_logs:
+                    continue
                 message_to_write = clean if self.show_expanded_logs else trunc
                 text += message_to_write
             QMetaObject.invokeMethod(

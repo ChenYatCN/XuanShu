@@ -5,6 +5,29 @@ from typing import *
 
 
 
+async def get_controlled_body(client: Client):
+    """Re-read the observed PlayAsPet body without changing the player hook."""
+    # Lightweight/custom clients without a camera API keep the existing body.
+    if getattr(client, "game_client", None) is None:
+        return client.body, None
+    camera = await client.game_client.elastic_camera_controller()
+    attached = await camera.attached_client_object() if camera else None
+    if attached is None:
+        raise ValueError("entityfollow control object unavailable")
+    body = client.body
+    if await attached.object_name() == "PetObject":
+        selected = await client.game_client.selected_camera_controller()
+        if selected is None or await selected.read_base_address() != await camera.read_base_address():
+            raise ValueError("entityfollow pet camera is not active")
+        body = await attached.actor_body()
+        if body is None:
+            raise ValueError("entityfollow pet body unavailable")
+    address = await body.read_base_address()
+    if not address:
+        raise ValueError("entityfollow body address unavailable")
+    return body, address
+
+
 class SprintyClient():
 	# FULL CREDIT TO SIROLAF FOR THIS CLASS
 	def __init__(self, client: Client):

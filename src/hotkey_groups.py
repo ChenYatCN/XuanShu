@@ -83,7 +83,8 @@ class HotkeyGroups:
         task = asyncio.create_task(self.run(action, members))
         self.groups[key] = (members, task)
         task.add_done_callback(lambda done: self._finished(key, done))
-        logger.info('快捷键 {} 已启动：{}', action, ', '.join(c.title for c in members))
+        logger.log('DEBUG' if action == 'toggle_questing' else 'INFO',
+                   '快捷键 {} 已启动：{}', action, ', '.join(c.title for c in members))
 
     async def stop_client(self, action, client):
         for key, (members, _) in list(self.groups.items()):

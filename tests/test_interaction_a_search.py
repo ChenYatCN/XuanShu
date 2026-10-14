@@ -53,6 +53,8 @@ class InteractionASearchTests(unittest.IsolatedAsyncioTestCase):
         self.stack.enter_context(patch('src.questing.is_potion_needed', AsyncMock(return_value=False)))
         self.stack.enter_context(patch('src.questing.close_npc_quest_menu', AsyncMock(return_value=False)))
         self.stack.enter_context(patch('src.questing.close_automation_popup', AsyncMock(return_value=False)))
+        self.stack.enter_context(patch.object(Quester, 'handle_pending_dungeon_confirmation',
+                                             AsyncMock(return_value=False)))
         self.stack.enter_context(patch('src.questing.is_spiral_door_open', AsyncMock(return_value=False)))
         self.stack.enter_context(patch('src.questing.is_free_leader_questing',
             AsyncMock(side_effect=lambda _: not self.dialogue)))

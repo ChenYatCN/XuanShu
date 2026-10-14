@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from time import monotonic
 
 from loguru import logger
+from src.logging_utils import log_exception
 from wizwalker import Keycode, Primitive
 from wizwalker.errors import MemoryReadError, MemoryInvalidated
 
@@ -91,8 +92,8 @@ async def ui_read(client, stage, path):
         yield
     except Exception as exc:
         exc.add_note(f'主线找回 UI 阶段={stage}，路径={list(path)}')
-        logger.opt(exception=True).warning('{} 主线找回 UI 读取失败：阶段={}，路径={}',
-                                           client.title, stage, list(path))
+        exc._xuanshu_log_stage = stage
+        log_exception(client, f'主线找回 UI 读取失败：阶段={stage}，路径={list(path)}', exc, level='DEBUG')
         raise
 
 
@@ -213,9 +214,9 @@ async def stable_page(client, zone, phase):
             previous = None  # No object/result from this scan can be used.
             failure = exc
             stage = getattr(exc, '__notes__', [phase])[-1]
-            logger.opt(exception=True).warning(
-                '{} 主线找回 {} 读取 {}/{} 失败，丢弃整次扫描：{}；{}',
-                client.title, phase, attempt, PAGE_READ_ATTEMPTS, stage, exc)
+            log_exception(client,
+                f'主线找回 {phase} 读取 {attempt}/{PAGE_READ_ATTEMPTS} 失败，丢弃整次扫描：{stage}',
+                exc, level='DEBUG')
         else:
             if current[0] == previous:
                 logger.debug('{} 主线找回 {} 页面完整且稳定：读取 {}/{}',
@@ -343,9 +344,8 @@ async def select_from_book(client, last):
                     signature, cards, left = await stable_page(client, zone, '翻页后扫描任务搜寻')
                 raise RuntimeError('寻找任务搜寻达到有限翻页上限')
         except Exception as exc:
-            logger.opt(exception=True).warning(
-                '{} 主线找回任务簿流程中止：阶段={}；原因={}；随后按原流程清理 Q。',
-                client.title, phase, exc)
+            exc._xuanshu_log_stage = getattr(exc, '_xuanshu_log_stage', phase)
+            log_exception(client, f'主线找回任务簿流程中止：阶段={phase}；按原流程清理 Q', exc, level='DEBUG')
             raise
         finally:
             try:
@@ -366,9 +366,15 @@ def expected_identity(last, identity):
     return None
 
 
-def failed(client, state, reason):
+def failed(client, state, reason, *, exc=None):
+    stage = getattr(exc, '_xuanshu_log_stage', state.get('phase', '未知阶段'))
     state.update(phase='cooldown', retry_at=monotonic() + 60, confirmation=None)
-    logger.warning('{} 主线找回未确认：{}；本恢复依据已尝试 {}/3 次，限制重试。', client.title, reason, state['attempts'])
+    message = f"主线找回未确认：阶段={stage}；尝试 {state['attempts']}/3 次；原因"
+    level = 'WARNING' if state['attempts'] >= 3 else 'DEBUG'
+    if exc is not None:
+        log_exception(client, message, exc, level=level)
+    else:
+        logger.bind(client=client.title).log(level, '{}：{}', message, reason)
 
 
 async def maybe_recover_mainline(client):
@@ -508,7 +514,7 @@ async def maybe_recover_mainline(client):
             raise
         return False  # Disabling recovery cancels only our child UI pass.
     except Exception as exc:
-        failed(client, state, str(exc))
+        failed(client, state, str(exc), exc=exc)
         return True
     finally:
         if client._xuanshu_mainline_book_task is task:

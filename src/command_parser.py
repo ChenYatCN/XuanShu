@@ -19,7 +19,7 @@ from src.camera_utils import glide_to, orbit, point_to_xyz, rotating_glide_to
 from src.automation_ownership import automation_owner
 from src.gui_inputs import is_numeric, param_input
 from src.ibao_runtime import complete_before_cancel
-from src.sprinty_client import SprintyClient
+from src.sprinty_client import SprintyClient, get_controlled_body as _entityfollow_body
 from src.tokenizer import tokenize
 from src.utils import (
     auto_potions_force_buy,
@@ -148,7 +148,8 @@ async def follow_entity(client: Client, name: str) -> None:
         # Also bound waiting for ownership or a stalled memory read.
         async with asyncio.timeout(30), automation_owner(client, "entityfollow"):
             sprinty = SprintyClient(client)
-            anchor = await client.body.position()
+            anchor = None
+            control_address = None
             moved_at = monotonic()
             while monotonic() - started < 30:
                 if await client.in_battle():
@@ -183,16 +184,29 @@ async def follow_entity(client: Client, name: str) -> None:
                     await asyncio.sleep(.1)
                     continue
                 missing_since = monotonic()
-                position = await client.body.position()
+                body, current_address = await _entityfollow_body(client)
+                position = await body.position()
                 if not all(math.isfinite(v) for v in (position.x, position.y, position.z)):
-                    raise ValueError("invalid player position")
-                if math.hypot(position.x - anchor.x, position.y - anchor.y) >= 5:
+                    raise ValueError("invalid controlled body position")
+                if current_address != control_address:
+                    control_address = current_address
+                    anchor, moved_at = position, monotonic()
+                elif math.hypot(position.x - anchor.x, position.y - anchor.y) >= 5:
                     anchor, moved_at = position, monotonic()
                 elif monotonic() - moved_at >= 3:
                     logger.warning(f"{client.title} entityfollow: no movement for 3s; stopped")
                     return
-                await client.body.write_yaw(calculate_perfect_yaw(position, target_pos))
-                if await client.in_battle():
+                # A mode switch during a memory read must not reuse its old body.
+                body, latest_address = await _entityfollow_body(client)
+                if latest_address != control_address:
+                    continue
+                await body.write_yaw(calculate_perfect_yaw(position, target_pos))
+                if await client.in_battle() or await client.is_loading():
+                    return
+                _, latest_address = await _entityfollow_body(client)
+                if latest_address != control_address:
+                    continue
+                if await client.in_battle() or await client.is_loading():
                     return
                 # No arrival-distance exit: even at the target, keep pulling.
                 # Drain this finite key press before acknowledging cancellation;

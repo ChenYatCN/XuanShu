@@ -115,7 +115,11 @@ class ExitDeadlockTests(transitions.PartyTransitionFixture, unittest.IsolatedAsy
             self.q.zone, self.q.area_id = 'Dungeon/Room2', 201
             self.q.goal_id.return_value = 8
             self.q.quest_position.position.return_value = XYZ(20000, 30000, 0)
-            self.assertFalse(await asyncio.wait_for(worker, 1))
+            # A peer crossing no longer interrupts a valid source action.
+            # Explicit cancellation must still drain before the next replay.
+            worker.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await worker
             self.assertTrue(drained.is_set())
             self.assertFalse(get_client_automation_ownership(self.h).locked)
             self.reader.teleport_to_quest_target.side_effect = self.land

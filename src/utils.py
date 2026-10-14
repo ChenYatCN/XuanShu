@@ -343,52 +343,101 @@ async def new_portals_cycle(client: Client, location: str):
         raise ValueError(
             "Cannot select a portal without a recognized quest destination"
         )
-    option_window = await client.root_window.get_windows_with_name("optionWindow")
-    assert len(option_window) == 1, str(option_window)
-    for child in await option_window[0].children():
-        if await child.name() == "pageCount":
-            pageCount = await child.maybe_text()
-            pageCount = pageCount[8:-9]
-            currentPage = pageCount.split("/", 1)[0]
-            maxPage = pageCount.split("/", 1)[1]
-            break
+    zone = await client.zone_name()
+    task = await client.quest_id(), await client.goal_id()
 
-    spiralGateName = location
+    async def current():
+        return (getattr(client, 'questing_status', True)
+                and not getattr(client, 'refilling_potions', False)
+                and not await client.is_loading() and not await client.in_battle()
+                and await client.zone_name() == zone
+                and (await client.quest_id(), await client.goal_id()) == task)
 
-    isChildFound = False
+    async def read_page():
+        # A refreshed menu invalidates its old children. Retry reads only,
+        # reacquiring from the dynamic root; never replay selection/teleport.
+        for attempt in range(3):
+            if not await current():
+                return None
+            try:
+                panels = [w for w in await client.root_window.get_windows_with_name('optionWindow')
+                          if await w.is_visible()]
+                if len(panels) == 1:
+                    page, options = None, []
+                    for child in await panels[0].children():
+                        name = await child.name()
+                        if name == 'pageCount':
+                            match = re.fullmatch(r'\s*(\d+)\s*/\s*(\d+)\s*',
+                                                 plain_text(await read_control_text(child)))
+                            if match:
+                                page = tuple(map(int, match.groups()))
+                        elif name in ('opt0', 'opt1', 'opt2', 'opt3') and await child.is_visible():
+                            options.append((child, await read_control_text(child)))
+                    if page and 1 <= page[0] <= page[1]:
+                        return page, options
+                reason = 'visible portal page is missing or incomplete'
+            except wizwalker.errors.MemoryReadError as exc:
+                reason = str(exc)
+            except RuntimeError as exc:
+                if not str(exc).startswith(('控件文本结构无效：', '控件文本指针无效：')):
+                    raise  # Unrelated programming errors are not UI refreshes.
+                reason = str(exc)
+            logger.debug(f"Client {client.title} - portal page read {attempt + 1}/3 failed: {reason}")
+            if attempt < 2:
+                await asyncio.sleep(.1)
+        return None
 
-    for _ in range(int(maxPage)):
-        for child in await option_window[0].children():
-            if await child.name() in ["opt0", "opt1", "opt2", "opt3"]:
-                name = await read_control_checkbox_text(child)
-                if resolve_portal_destination(name, [spiralGateName]) == spiralGateName:
-                    async with client.mouse_handler:
-                        await client.mouse_handler.click_window_with_name(
-                            await child.name()
-                        )
-                        await asyncio.sleep(0.4)
-                        await client.mouse_handler.click_window_with_name(
-                            "teleportButton"
-                        )
-                        await client.wait_for_zone_change()
+    async def read_failed():
+        # State changes end the old operation; only persistent read/search
+        # failure in this unchanged task is reported as failure to its caller.
+        return False if await current() else None
 
-                    isChildFound = True
-                    break
+    snapshot = await read_page()
+    if snapshot is None:
+        return await read_failed()
+    for _ in range(snapshot[0][1]):
+        if not await current():
+            return None
+        selected = next((child for child, text in snapshot[1]
+                         if resolve_portal_destination(text, [location]) == location), None)
+        if selected is not None:
+            async with client.mouse_handler:
+                snapshot = await read_page()
+                if snapshot is None:
+                    return await read_failed()
+                selected = next((child for child, text in snapshot[1]
+                                 if resolve_portal_destination(text, [location]) == location), None)
+                if selected is None or not await current():
+                    return await read_failed()
+                await client.mouse_handler.click_window(selected)
+                await asyncio.sleep(.4)
+                if not await current():
+                    return None
+                button = await get_spiral_teleport_button(client)
+                if not await current():
+                    return None
+                if button is None:
+                    return await read_failed()
+                await client.mouse_handler.click_window(button)
+                await client.wait_for_zone_change()
+            # The menu is destroyed after travel. Do not continue the outer
+            # page loop and dereference its old opt controls.
+            return await client.zone_name() != zone
 
-        # correct world was not found - check the next page
-        if not isChildFound:
-            previousPage = currentPage
-            loopCount = 0
-            while currentPage == previousPage and loopCount < 30:
-                loopCount += 1
-                async with client.mouse_handler:
-                    await client.mouse_handler.click_window_with_name("rightButton")
-                # ensure that wizwalker didn't misclick and that we actually changed pages
-                for child in await option_window[0].children():
-                    if await child.name() == "pageCount":
-                        pageCount = await child.maybe_text()
-                        pageCount = pageCount[8:-9]
-                        currentPage = pageCount.split("/", 1)[0]
+        previous = snapshot[0][0]
+        for _ in range(30):  # Preserve the existing finite page-change budget.
+            if not await current():
+                return None
+            async with client.mouse_handler:
+                await client.mouse_handler.click_window_with_name('rightButton')
+            snapshot = await read_page()
+            if snapshot is None:
+                return await read_failed()
+            if snapshot[0][0] != previous:
+                break
+        else:
+            return False
+    return False
 
 
 async def generate_tfc(client: Client):
@@ -896,8 +945,9 @@ async def buy_potions(client: Client, recall: bool = True, original_zone=None):
 
     except asyncio.CancelledError:
         raise
-    except Exception:
-        logger.exception(f"Client {client.title} - 购买药水失败")
+    except Exception as exc:
+        from src.logging_utils import log_exception
+        log_exception(client, '购买药水失败', exc)
         return False
 
     # Return only after the recall key has caused a confirmed loading/zone change.
@@ -2138,6 +2188,7 @@ async def wait_for_visible_by_path(
 async def try_task_coro(
     coro: Coroutine, clients: List[Client], deactive_mouseless: bool = False
 ):
+    from src.logging_utils import log_exception
     task_coro = coro
     max_retries = 10
     for attempt in range(max_retries + 1):
@@ -2154,16 +2205,17 @@ async def try_task_coro(
         except (
             wizwalker.errors.MemoryInvalidated,
             wizwalker.errors.ExceptionalTimeout,
-        ):
+        ) as exc:
+            log_exception(','.join(p.title for p in clients),
+                f'任务流程内存异常，尝试 {attempt + 1}/{max_retries + 1}', exc, level='DEBUG')
             if attempt < max_retries:
                 logger.debug(
                     f"Task {task_coro} encountered a memory error, retrying ({attempt + 1}/{max_retries})..."
                 )
                 await asyncio.sleep(1)
             else:
-                logger.error(
-                    f"Task {task_coro} exceeded max retries ({max_retries}), giving up."
-                )
+                log_exception(','.join(p.title for p in clients),
+                    f'任务流程重试 {max_retries} 次后最终停止', exc, level='ERROR')
 
 
 def index_with_str(input_str, desired_str: str) -> int:

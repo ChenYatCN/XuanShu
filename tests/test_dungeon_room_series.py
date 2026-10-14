@@ -84,7 +84,7 @@ class RoomSeriesSessionTests(fixtures.DungeonFixture, unittest.IsolatedAsyncioTe
                 target = self.q.quest_position.position.return_value
                 self.assertEqual((call.args[1].x, call.args[1].y, call.args[1].z),
                                  (target.x, target.y, target.z))
-                self.assertIs(call.kwargs.get('leader_client'), self.q)
+                self.assertIs(call.kwargs.get('leader_client'), self.h)
                 self.assertIs(party.dungeon_session_for(self.h), session)
                 self.assertEqual(session.exited, set())
 

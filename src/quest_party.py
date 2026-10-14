@@ -61,6 +61,7 @@ class DungeonSession:
     exit_evidence: dict = field(default_factory=dict)
     room_evidence: dict = field(default_factory=dict)
     transition: dict | None = None
+    follow_attempts: dict = field(default_factory=dict)
 
 
 def clear_dungeon_session(client):
@@ -121,7 +122,7 @@ async def observe_dungeon_session(client):
     if session is None:
         return None
     state = session.transition
-    if (state and id(client) in state['source_tokens']
+    if (state and time.monotonic() < state['deadline'] and id(client) in state['source_tokens']
             and id(client) not in session.potion_areas
             and not getattr(client, 'refilling_potions', False)
             and not await client.is_loading()):
@@ -341,6 +342,13 @@ async def remember_dungeon_transition(quester, target):
             if (await _party_area_token(member) != tokens[id(member)]
                     or (await member.quest_id(), await member.goal_id()) != tasks[id(member)]):
                 return False
+        state = session.transition
+        if (state and state['source_zone'] == zone and state['source_tasks'] == tasks
+                and state['source_tokens'] == tokens and time.monotonic() < state['deadline']
+                and all(abs(a - b) <= 1 for a, b in zip(
+                    (state['target'].x, state['target'].y, state['target'].z),
+                    (target.x, target.y, target.z)))):
+            return True  # Concurrent workers share the same release/recovery budget.
         session.transition = dict(source_zone=zone, target=copy(target),
             quester_task=tasks[id(quester)], source_tasks=tasks, source_tokens=tokens,
             deadline=time.monotonic() + 30.0, attempts={}, next_attempt_at={}, arrivals={})

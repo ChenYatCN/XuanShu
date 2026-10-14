@@ -150,7 +150,7 @@ class DungeonTests(DungeonFixture, unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await Quester(self.h, [self.h], None).move_dungeon_member())
         self.assertEqual(move.await_count, 1)
         self.assertIs(move.await_args.args[0], self.h)
-        self.assertIs(move.await_args.kwargs['leader_client'], self.q)
+        self.assertIs(move.await_args.kwargs['leader_client'], self.h)
         actual, expected = move.await_args.args[1], self.q.quest_position.position.return_value
         self.assertEqual((actual.x, actual.y, actual.z), (expected.x, expected.y, expected.z))
         self.q.body.position.assert_not_awaited()

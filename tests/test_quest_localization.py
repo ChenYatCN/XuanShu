@@ -39,7 +39,9 @@ class QuestLocalizationTests(unittest.IsolatedAsyncioTestCase):
 class OpenSpiralDialogTests(unittest.IsolatedAsyncioTestCase):
     async def test_solo_handles_open_dialog_before_quest_movement_or_party_probe(self):
         client = AsyncMock()
+        client._quest_dialogue_update_pending = False
         quester = Quester(client, [client], None)
+        quester._npc_dialogue_visible = AsyncMock(return_value=False)
         quester.handle_pending_dungeon_confirmation = AsyncMock(return_value=False)
         quester._quest_party_probe_blocks_movement = AsyncMock()
         quester.new_world_doors = AsyncMock(return_value=False)

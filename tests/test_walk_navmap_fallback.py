@@ -128,8 +128,9 @@ class WalkNavmapFallbackTests(unittest.IsolatedAsyncioTestCase):
         endpoint = XYZ(self.target.x - 150, self.target.y, self.target.z)
         self.path = [(self.safe.x, self.safe.y, self.safe.z), (endpoint.x, endpoint.y, endpoint.z)]
         await movement.collision_tp(self.client, self.target)
-        from wizwalker.constants import WIZARD_SPEED
-        self.assertLessEqual(movement.calc_Distance(self.position, endpoint), WIZARD_SPEED * .05)
+        from src.collision_math import GRID_SPACING
+        self.assertLess(movement.calc_Distance(self.position, self.target), 150)
+        self.assertLessEqual(movement.calc_Distance(self.position, endpoint), GRID_SPACING)
         self.assertEqual([e for e in self.events if e[0] == 'tp'], [('tp', self.target), ('tp', self.safe)])
         self.assertNotIn(('walk', (self.target.x, self.target.y)), self.events)
 
@@ -153,6 +154,7 @@ class WalkNavmapFallbackTests(unittest.IsolatedAsyncioTestCase):
                 self.events.clear()
                 self.messages.clear()
                 self.client._quest_tp_rejected = None
+                self.client._quest_tp_landing = None
                 self.position = XYZ(1000.157, -16635.018, -1176.275)
                 self.quest_target = self.target
                 self.zone = 'Polaris/PL_Z04_UrvilleStation'
@@ -267,7 +269,7 @@ class WalkNavmapFallbackTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_interaction_prompt_stops_walk_for_existing_handler(self):
         self.avoid = []
-        self.position = self.safe
+        self.position = XYZ(self.target.x - 100, self.target.y, self.target.z)
         from src.paths import npc_range_path
         with patch('src.teleport_math.is_visible_by_path', AsyncMock(side_effect=lambda _, path: path == npc_range_path)):
             self.assertFalse(await movement._walk_remaining_to_target(self.client, self.target, object(), self.zone, 55))

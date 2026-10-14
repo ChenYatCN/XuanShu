@@ -54,8 +54,24 @@ class EntityFollowTests(unittest.IsolatedAsyncioTestCase):
         self.target = Entity(1, [XYZ(100, 0, 0), XYZ(10, 100, 0)])
         self.entities = [self.target]
         self.on_step = lambda: None
+        self.pet_mode = False
+        self.pet_position = XYZ(1000, 1000, 0)
+        self.pet_yaws = []
+        self.pet_address = 200
+        self.pet_available = self.camera_selected = True
+        self.pet_body = SimpleNamespace(
+            position=self.read_pet_position, write_yaw=self.write_pet_yaw,
+            read_base_address=self.read_pet_address,
+        )
+        self.pet_object = SimpleNamespace(object_name=self.object_name, actor_body=self.actor_body)
+        self.camera = SimpleNamespace(
+            read_base_address=self.camera_address, attached_client_object=self.attached_object,
+        )
         self.client = SimpleNamespace(
-            title='p1', body=SimpleNamespace(position=self.read_position, write_yaw=self.write_yaw),
+            title='p1', body=SimpleNamespace(position=self.read_position, write_yaw=self.write_yaw,
+                                            read_base_address=self.player_address),
+            game_client=SimpleNamespace(elastic_camera_controller=self.elastic_camera,
+                                        selected_camera_controller=self.selected_camera),
             in_battle=self.in_battle, is_loading=self.is_loading,
             get_base_entity_list=self.entity_list, send_key=self.send_key,
         )
@@ -65,6 +81,36 @@ class EntityFollowTests(unittest.IsolatedAsyncioTestCase):
 
     async def read_position(self):
         return self.position
+
+    async def player_address(self):
+        return 100
+
+    async def read_pet_address(self):
+        return self.pet_address
+
+    async def read_pet_position(self):
+        return self.pet_position
+
+    async def write_pet_yaw(self, yaw):
+        self.pet_yaws.append(yaw)
+
+    async def object_name(self):
+        return 'PetObject' if self.pet_mode else 'Player Object'
+
+    async def actor_body(self):
+        return self.pet_body if self.pet_available else None
+
+    async def attached_object(self):
+        return self.pet_object
+
+    async def elastic_camera(self):
+        return self.camera
+
+    async def selected_camera(self):
+        return self.camera if self.camera_selected else None
+
+    async def camera_address(self):
+        return 300
 
     async def write_yaw(self, yaw):
         self.yaws.append(yaw)
@@ -89,7 +135,10 @@ class EntityFollowTests(unittest.IsolatedAsyncioTestCase):
         self.steps.append(duration)
         self.now += duration
         if self.moving:
-            self.position = XYZ(self.position.x + 10, self.position.y, 0)
+            if self.pet_mode:
+                self.pet_position = XYZ(self.pet_position.x + 10, self.pet_position.y, 0)
+            else:
+                self.position = XYZ(self.position.x + 10, self.position.y, 0)
         self.on_step()
         await REAL_SLEEP(0)
 
@@ -244,6 +293,105 @@ class EntityFollowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stmt.command.data, ['Undead Parasaur'])
         with self.assertRaises(Exception):
             Parser(Tokenizer().tokenize('p1 entityfollow\n')).parse()
+
+    async def test_pet_reaims_using_pet_position_and_keeps_target_until_battle(self):
+        self.pet_mode = True
+        self.on_step = lambda: setattr(self, 'battle', len(self.steps) == 2)
+        await self.run_command()
+        self.assertFalse(self.yaws)
+        self.assertEqual(len(self.pet_yaws), 2)
+        self.assertNotAlmostEqual(self.pet_yaws[0], self.pet_yaws[1])
+        expected = commands.calculate_perfect_yaw(XYZ(1000, 1000, 0), XYZ(100, 0, 0))
+        self.assertAlmostEqual(self.pet_yaws[0], expected)
+        self.assertEqual(self.lookups, [TARGET_NAME])
+
+    async def test_pet_movement_does_not_use_stationary_player_for_stall(self):
+        self.pet_mode = True
+        self.fake_clock()
+        self.on_step = lambda: setattr(self, 'battle', self.now >= 4)
+        await self.run_command()
+        self.assertTrue(self.battle)
+        self.assertGreaterEqual(self.now, 4)
+        self.assertEqual((self.position.x, self.position.y, self.position.z), (0, 0, 0))
+        self.assertFalse(self.yaws)
+
+    async def test_mode_switches_refresh_body_without_reselecting_target(self):
+        def switch():
+            if len(self.steps) == 1:
+                self.pet_mode = True
+            elif len(self.steps) == 2:
+                self.pet_mode = False
+            else:
+                self.battle = True
+        self.on_step = switch
+        await self.run_command()
+        self.assertEqual(len(self.pet_yaws), 1)
+        self.assertEqual(len(self.yaws), 2)
+        self.assertEqual(self.lookups, [TARGET_NAME])
+
+    async def test_pet_mode_changes_after_yaw_do_not_walk_with_stale_body(self):
+        self.pet_mode = True
+        async def write(yaw):
+            self.pet_yaws.append(yaw)
+            self.pet_mode = False
+        self.pet_body.write_yaw = write
+        self.on_step = lambda: setattr(self, 'battle', True)
+        await self.run_command()
+        self.assertEqual(len(self.yaws), 1)
+        self.assertEqual(len(self.steps), 1)
+
+    async def test_pet_missing_body_or_inactive_camera_does_not_fall_back_to_player(self):
+        self.pet_mode = True
+        for attr in ('pet_available', 'camera_selected'):
+            with self.subTest(attr=attr):
+                setattr(self, attr, False)
+                await self.run_command()
+                setattr(self, attr, True)
+        self.assertFalse(self.steps)
+        self.assertFalse(self.yaws)
+
+    async def test_pet_stuck_is_bounded(self):
+        self.pet_mode = True
+        self.fake_clock()
+        self.moving = False
+        await self.run_command()
+        self.assertLessEqual(self.now, 4)
+        self.assertTrue(self.pet_yaws)
+        self.assertEqual(self.lookups, [TARGET_NAME])
+
+    async def test_pet_target_disappearance_stops_after_bounded_relookup(self):
+        self.pet_mode = True
+        self.fake_clock()
+        def disappear():
+            self.target = None
+            self.entities = []
+        self.on_step = disappear
+        await self.run_command()
+        self.assertEqual(len(self.steps), 1)
+        self.assertLessEqual(self.now, 4)
+        self.assertGreater(len(self.lookups), 1)
+        self.assertFalse(get_client_automation_ownership(self.client).locked)
+
+    async def test_pet_body_replacement_resets_stall_timer(self):
+        self.pet_mode = True
+        self.fake_clock()
+        self.moving = False
+        def replace():
+            if self.now >= 2.5 and self.pet_address == 200:
+                self.pet_address = 201
+        self.on_step = replace
+        await self.run_command()
+        self.assertGreaterEqual(self.now, 5.5)
+        self.assertLessEqual(self.now, 6)
+        self.assertEqual(self.lookups, [TARGET_NAME])
+
+    async def test_pet_battle_or_loading_does_not_send_movement(self):
+        self.pet_mode = True
+        await self.test_battle_or_loading_does_not_send_movement()
+
+    async def test_pet_cancel_drains_key_and_releases_owner(self):
+        self.pet_mode = True
+        await self.test_cancel_drains_actual_timed_key_and_releases_owner()
 
 
 if __name__ == '__main__':

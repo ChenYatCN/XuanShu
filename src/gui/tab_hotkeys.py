@@ -68,7 +68,7 @@ def build_hotkeys_tab(ctx):
                 trigger = dict(trigger or {'source': 'ui_callback', 'event': 'callback'})
                 trigger['gui_dispatch_ns'] = time.monotonic_ns()
                 trigger['selected_clients'] = selected_clients()
-                logger.info('[quest_toggle] gui_dispatch trigger={}', trigger)
+                logger.debug('[quest_toggle] gui_dispatch trigger={}', trigger)
             send_queue.put(GUICommand(GUICommandType.ToggleHotkeyGroup,
                 {'action': aid, 'clients': selected_clients()}, trigger=trigger))
         return invoke

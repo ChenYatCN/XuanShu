@@ -17,6 +17,52 @@ REAL_WAIT_FOR = asyncio.wait_for
 class PartyProbeTests(fixtures.DungeonFixture, unittest.IsolatedAsyncioTestCase):
     follow_until = fixtures.FollowerTests.follow_until
 
+    async def test_confirmed_dungeon_friend_failures_stop_after_two_attempts(self):
+        session = await self.enter()
+        self.q.zone, self.q.area_id = 'Dungeon/Room2', 201
+        self.ready_probe(present=False)
+        self.proof.return_value = False
+        friend = AsyncMock(side_effect=RuntimeError('friend teleport unavailable'))
+        done = asyncio.Event()
+        def status(_h, _q, text):
+            if '已达上限' in text:
+                done.set()
+        with patch.object(Quester, 'get_truncated_quest_objectives', AsyncMock(return_value='Use switch')):
+            await self.follow_until(done, primary=True, when_status=status,
+                extra=self.probe_namespace(asyncio=self.clock_api(done=done, stop_after=100),
+                    teleport_to_friend_from_list=friend))
+        self.assertEqual(friend.await_count, 2)
+        self.assertEqual(session.follow_attempts[id(self.h)], 2)
+        self.assertTrue(self.q.quest_party_probe_pending)
+
+    async def test_dungeon_follow_limit_survives_follower_restart(self):
+        session = await self.enter()
+        session.follow_attempts[id(self.h)] = 2
+        self.q.zone, self.q.area_id = 'Dungeon/Room2', 201
+        self.ready_probe(present=False)
+        self.proof.return_value = False
+        done = asyncio.Event()
+        def status(_h, _q, text):
+            if '已达上限' in text:
+                done.set()
+        await self.follow_until(done, primary=True, when_status=status,
+            extra=self.probe_namespace(asyncio=self.clock_api(done=done, stop_after=20)))
+        self.friend.assert_not_awaited()
+        self.assertEqual(session.follow_attempts[id(self.h)], 2)
+
+    async def test_proven_local_reunion_clears_dungeon_follow_budget(self):
+        session = await self.enter()
+        session.follow_attempts[id(self.h)] = 2
+        self.ready_probe()
+        done = asyncio.Event()
+        async def local(*_args, **_kwargs):
+            done.set()
+            return False
+        with patch.object(Quester, 'move_dungeon_member', AsyncMock(side_effect=local)):
+            await self.follow_until(done, primary=True, extra=self.probe_namespace())
+        self.assertNotIn(id(self.h), session.follow_attempts)
+        self.friend.assert_not_awaited()
+
     def ready_probe(self, *, present=True):
         self.q.quest_party_observed_zone = self.q.zone
         self.q.quest_party_quest_worker_zone = 'Dungeon/PreviousRoom'

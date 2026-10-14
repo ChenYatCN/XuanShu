@@ -576,7 +576,8 @@ def manage_gui(
 
     # ==================== Console Sink ====================
     global console_sink
-    console_sink = logger.add(console_psg, colorize=True)
+    from src.logging_utils import detailed_format
+    console_sink = logger.add(console_psg, colorize=True, format=detailed_format)
 
     # ==================== License Popup ====================
     license_dialog = show_license_popup(ctx, theme_dict)

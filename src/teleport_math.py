@@ -1,14 +1,72 @@
 import asyncio
-from wizwalker import XYZ, Orient, Client, Keycode
+from wizwalker import XYZ, Orient, Client, Keycode, MemoryReadError
 from wizwalker.file_readers.wad import Wad
 import math
 import struct
 from io import BytesIO
 from typing import Tuple, Union
 from loguru import logger
-from src.utils import is_free, is_visible_by_path
-from src.paths import dialog_text_path, npc_range_path
+from src.logging_utils import log_blocked, log_exception
+from src.utils import is_free, is_visible_by_path, get_popup_title, get_window_from_path
+from src.paths import (dialog_text_path, npc_range_path, popup_msgtext_path,
+                       advance_dialog_path, decline_quest_path, cancel_multiple_quest_menu_path,
+                       team_up_button_path)
+from src.interaction_prompts import plain_text
 from copy import copy
+from wizwalker.errors import HookNotActive
+from src.sprinty_client import get_controlled_body
+
+
+_CONTROL_UNSET = object()
+
+
+def _invalidate_movement_control(client, control):
+    previous = getattr(client, '_quest_movement_control', None)
+    client._quest_movement_control = control
+    if previous != control:
+        for attr in ('_quest_tp_rejected', '_quest_tp_landing',
+                     '_quest_internal_failure_wait', '_quest_door_approach'):
+            setattr(client, attr, None)
+        first = getattr(client, '_quest_target_first_move', None)
+        if isinstance(first, dict):
+            first['pending'] = True
+
+
+async def _movement_body(client):
+    """Reuse entityfollow's live body; retire only state from another control mode."""
+    try:
+        body, address = await get_controlled_body(client)
+        control = None
+        if body is not client.body:
+            parent = await body.parent_client_object()
+            if parent is None:
+                raise ValueError('controlled pet parent unavailable')
+            control = (address, await parent.read_base_address(), await parent.global_id_full())
+    except (HookNotActive, MemoryReadError, ValueError):
+        _invalidate_movement_control(client, ('unavailable',))
+        raise
+    _invalidate_movement_control(client, control)
+    return body, control
+
+
+async def _movement_position(client):
+    body, control = await _movement_body(client)
+    pos = await body.position()
+    if control is not None and not all(math.isfinite(v) for v in (pos.x, pos.y, pos.z)):
+        raise ValueError('controlled pet position is not finite')
+    # Do not cross a PlayAsPet switch or reuse a body replaced during a read.
+    _, latest = await _movement_body(client)
+    if latest != control:
+        raise ValueError('controlled body changed during position read')
+    return pos
+
+
+async def _movement_control_changed(client, control):
+    try:
+        _, current = await _movement_body(client)
+        return current != control
+    except (HookNotActive, MemoryReadError, ValueError):
+        return True
 
 type_format_dict = {
 "char": "<c",
@@ -259,36 +317,238 @@ async def _movement_task_snapshot(client):
         return None
 
 
-async def _movement_stop_reason(client, target, zone, task_before, task_client=None):
+def _same_movement_task(first, second):
+    return (first is not None and second is not None and first[:2] == second[:2]
+            and first[3] == second[3] and calc_Distance(first[2], second[2]) <= 1.0)
+
+
+async def _movement_interaction_signature(client, prompt=None, *, read_popup=None, read_title=None,
+                                          visible=None):
+    """Read the existing title/action identity twice at most; never invent one."""
+    for attempt in range(2):
+        try:
+            if not await (visible or is_visible_by_path)(client, npc_range_path):
+                return None
+            title = plain_text(await (read_title or get_popup_title)(client) or '').strip()
+            if prompt is not None:
+                action = prompt
+            elif read_popup is not None:
+                action = await read_popup(client)
+            else:
+                window = await get_window_from_path(client.root_window, popup_msgtext_path)
+                action = await window.maybe_text() if window is not None else ''
+            action = plain_text(action or '').strip()
+            if title and action and await (visible or is_visible_by_path)(client, npc_range_path):
+                return title, action
+        except Exception:
+            pass  # Unreadable is not a changed identity.
+        if attempt == 0:
+            await asyncio.sleep(.1)
+    return None
+
+
+async def _movement_interaction_handoff(client, target, task, *, signature=_CONTROL_UNSET,
+                                        range_visible=None, entry_visible=None):
+    """Restore the reference ordinary prompt range, separately from TP failure."""
+    try:
+        _, control = await _movement_body(client)
+    except (HookNotActive, MemoryReadError, ValueError):
+        return False
+    first_move = getattr(client, '_quest_target_first_move', None)
+    if (isinstance(first_move, dict) and first_move.get('pending')
+            and (task is None or _same_movement_task(first_move['task'], task))
+            and calc_Distance(first_move['target'], target) <= 1):
+        landing = getattr(client, '_quest_tp_landing', None)
+        if (not first_move.get('active') or not isinstance(landing, dict)
+                or not landing.get('confirmed')
+                or _movement_failure_for_target(client, target, task,
+                    await client.zone_name(), record=landing) is None):
+            return False  # An old nearby prompt cannot preempt the first TP.
+    if range_visible is None:
+        range_visible = await is_visible_by_path(client, npc_range_path)
+    if not range_visible:
+        return False
+    try:
+        pos = await _movement_position(client)
+    except (HookNotActive, MemoryReadError, ValueError):
+        return False
+    gap = calc_Distance(pos, target)
+    had_record = any(isinstance(getattr(client, attr, None), dict)
+                     for attr in ('_quest_tp_rejected', '_quest_tp_landing'))
+    movement_failed = await _movement_failure_blocks_interaction(
+        client, target, task, pos=pos, signature=signature)
+    if await _movement_control_changed(client, control):
+        return False
+    if not movement_failed and had_record:
+        try:
+            # A release may await a stable position or reread a replaced popup.
+            pos = await _movement_position(client)
+        except (HookNotActive, MemoryReadError, ValueError):
+            return False
+        if (not getattr(client, 'questing_status', True) or await client.is_loading() or await client.in_battle()
+                or not await is_visible_by_path(client, npc_range_path)):
+            return False
+        gap = calc_Distance(pos, target)
+    # 69786e5's ordinary branch: visible prompt and 3D distance strictly <750.
+    # Failed/old X identities do not prove or disprove the current target.
+    # The independently matched TP failure must still prevent an origin popup
+    # from cancelling movement or granting a subsequent X.
+    ready = not movement_failed and gap < 750
+    reason = ('failed-task-movement' if movement_failed else 'target-interaction-handoff' if ready
+              else 'ordinary-interaction-out-of-range')
+    identity = None if signature is _CONTROL_UNSET else signature
+    details = (reason, task, tuple(target), identity)
+    if getattr(client, '_quest_interaction_move_log', None) != details:
+        logger.debug(f"[quest_interaction] {client.title}: reason={reason} task={task} "
+                     f"target={target} distance={gap:.1f} identity={identity}")
+        client._quest_interaction_move_log = details
+    return ready
+
+
+def _movement_failure_for_target(client, target, task, zone, *, record=None):
+    """Match the existing record with the same tolerance as movement snapshots."""
+    failure = record if record is not None else getattr(client, '_quest_tp_rejected', None)
+    if not isinstance(failure, dict):
+        return None
+    if failure.get('control') != getattr(client, '_quest_movement_control', None):
+        return None
+    saved_zone, saved_task, saved_target = failure['key']
+    if saved_zone != zone or calc_Distance(XYZ(*saved_target), target) > 1:
+        return None
+    if task is not None and (saved_task is None or saved_task[:2] != task[:2]
+            or saved_task[3] != task[3] or calc_Distance(XYZ(*saved_task[2]), task[2]) > 1):
+        return None
+    return failure
+
+
+async def _movement_failure_blocks_interaction(client, target, task, *, pos=None,
+                                               signature=_CONTROL_UNSET):
+    """Protect pending landings and a confirmed rejection at the original popup."""
+    try:
+        _, control = await _movement_body(client)
+        if pos is None and any(isinstance(getattr(client, attr, None), dict)
+                               for attr in ('_quest_tp_rejected', '_quest_tp_landing')):
+            pos = await _movement_position(client)
+        if await _movement_control_changed(client, control):
+            return True
+    except (HookNotActive, MemoryReadError, ValueError):
+        return True
+    zone = await client.zone_name()
+    failure = _movement_failure_for_target(client, target, task, zone)
+    landing = getattr(client, '_quest_tp_landing', None)
+    if failure is None and isinstance(landing, dict) and landing.get('confirmed'):
+        landing = _movement_failure_for_target(client, target, task, zone, record=landing)
+        if landing is not None:
+            pos = await _movement_position(client) if pos is None else pos
+            if calc_Distance(landing['origin'], target) > 5 and _sent_back(pos, landing['origin']):
+                landing.update(rejected=True, ready=False, confirmed=False,
+                               anchor=copy(pos), walks=0, announced=False)
+                client._quest_tp_rejected = failure = landing
+    if failure is None:
+        return False
+    failure.pop('interaction_issue', None)
+    if failure.get('pending'):
+        return True  # A local coordinate frame is not a completed landing check.
+    if failure.get('attempted') is False:
+        return False  # A walk failure or pre-input deferral is not a bounced TP.
+    if failure.get('rejected', True) is False:
+        return not failure.get('confirmed', False)
+    if failure.get('origin_guard_released'):
+        return False
+    async def context_changed():
+        if any(getattr(client, flag, False) for flag in (
+                'refilling_potions', 'quest_recovery_owner', 'quest_party_safe_return_active',
+                'post_combat_movement_active', 'feeding_pet_status', 'entity_detect_combat_status')):
+            return True
+        saved_task = failure['key'][1]
+        expected = (saved_task[0], saved_task[1], XYZ(*saved_task[2]), saved_task[3]) if saved_task else None
+        return bool(await _movement_stop_reason(client, target, zone, expected,
+            failure.get('task_client'), interaction=False, control=control))
+    pos = await _movement_position(client) if pos is None else pos
+    origin = failure.get('origin', failure['anchor'])
+    if not _sent_back(pos, origin):
+        # External movement or an approach can release only after a stable new
+        # position. It need not reach Quest XYZ or move toward it.
+        await asyncio.sleep(1.0)
+        try:
+            current = await _movement_position(client)
+            if await context_changed():
+                return True
+            if not _sent_back(current, origin) and calc_Distance(current, pos) <= _TP_ORIGIN_SIGMA:
+                failure['origin_guard_released'] = True
+                return False
+            pos = current
+        except (HookNotActive, MemoryReadError, ValueError):
+            failure['interaction_issue'] = '原处交互位置暂时不可读'
+            return True
+        if not _sent_back(pos, origin):
+            return True  # Still moving: no stable handoff yet.
+    baseline = failure.get('origin_signature')
+    if baseline is None:
+        # No pre-TP identity (including legacy records): one finite recovery,
+        # then the ordinary handler decides. Never adopt the post-bounce popup.
+        if not failure.get('origin_identity_recovered'):
+            failure['origin_identity_waited'] = True
+            failure['interaction_issue'] = 'TP前无可读交互身份，有限冷却后按普通交互重新评估'
+            logger.debug(f"[quest_interaction] {client.title}: {failure['interaction_issue']}")
+            return True
+        failure['origin_guard_released'] = True
+        return False
+    if signature is _CONTROL_UNSET:
+        signature = await _movement_interaction_signature(client)
+    if await context_changed():
+        return True
+    if signature is None:
+        failure['interaction_issue'] = '原处交互标题或动作暂时不可读'
+        logger.debug(f"[quest_interaction] {client.title}: {failure['interaction_issue']}; origin={origin}")
+        return True
+    if signature != baseline:
+        failure['origin_guard_released'] = True
+        return False
+    return True  # Same zone, original position, title AND action after rejection.
+
+
+async def _movement_stop_reason(client, target, zone, task_before, task_client=None, *, interaction=True,
+                                control=_CONTROL_UNSET):
     """Stop movement, without claiming that proximity or an interaction advanced a quest."""
     try:
+        if control is not _CONTROL_UNSET and await _movement_control_changed(client, control):
+            return "controlled object changed or unavailable"
         source = task_client or client
+        if not getattr(client, 'questing_status', True):
+            return "quest movement stopped"
         if task_before is not None:
             current = await _movement_task_snapshot(source)
-            if (current is None or current[:2] != task_before[:2]
-                    or current[3] != task_before[3]
-                    or calc_Distance(current[2], task_before[2]) > 1.0):
+            if not _same_movement_task(task_before, current):
+                logger.debug(f"[quest_interaction] {client.title}: reason=task-target-changed-or-unreadable "
+                             f"task={current} previous={task_before} target={target}")
                 return "task target changed or unreadable"
         if await client.zone_name() != zone:
             return "zone changed"
-        if not await is_free(client) or await is_visible_by_path(client, dialog_text_path):
+        if (not await is_free(client) or getattr(client, '_quest_dialogue_update_pending', False)
+                or await is_visible_by_path(client, dialog_text_path)
+                or await is_visible_by_path(client, advance_dialog_path)
+                or await is_visible_by_path(client, decline_quest_path)
+                or await is_visible_by_path(client, cancel_multiple_quest_menu_path)):
             return "loading, battle or dialogue"
-        if (await is_visible_by_path(client, npc_range_path)
-                and calc_Distance(await client.body.position(), target) < 750):
-            return "interaction visible; returning to existing handler"
+        if interaction and await _movement_interaction_handoff(client, target, task_before):
+            return (await _movement_stop_reason(client, target, zone, task_before, task_client,
+                interaction=False, control=control)
+                or "target interaction ready; returning to existing handler")
     except Exception:
         return "movement state unreadable"
     return None
 
 
-async def navmap_tp(client: Client, xyz: XYZ = None, leader_client: Client = None):
+async def navmap_tp(client: Client, xyz: XYZ = None, leader_client: Client = None, *, validation_state=None, stop=None):
     # TODO: What is leader_client meant to be for?
     if not await is_free(client):
         return
 
     logger.debug(f"[navmap_tp] {client.title}: using navmap teleport (direct -> nav data -> spiral)")
     starting_zone = await client.zone_name() # for loading the correct wad and to walk to target as a last resort
-    starting_xyz = await client.body.position()
+    starting_xyz = await _movement_position(client)
+    control = getattr(client, '_quest_movement_control', None)
     target_xyz = xyz if xyz is not None else await client.quest_position.position()
     task_before = await _movement_task_snapshot(leader_client or client)
 
@@ -297,7 +557,12 @@ async def navmap_tp(client: Client, xyz: XYZ = None, leader_client: Client = Non
         return calc_Distance(a, b) <= sigma
 
     async def stopped():
-        return await _movement_stop_reason(client, target_xyz, starting_zone, task_before, leader_client)
+        if stop is not None:
+            reason = await stop()
+            if reason:
+                return reason
+        return await _movement_stop_reason(client, target_xyz, starting_zone, task_before, leader_client,
+                                           control=control)
 
     async def walk_from_landing():
         if await stopped():
@@ -320,12 +585,18 @@ async def navmap_tp(client: Client, xyz: XYZ = None, leader_client: Client = Non
     async def try_landing(dest):
         if await stopped():
             return True
-        origin = await client.body.position()
-        await client.teleport(dest)
-        landed = await _arrived(client, dest, origin, starting_zone)
+        origin = await _movement_position(client)
+        landed = await _teleport_once_verified(client, dest, origin, starting_zone,
+                                               stop=stopped, validation_state=validation_state)
         if await stopped():
             return True
-        pos = await client.body.position()
+        pos = await _movement_position(client)
+        if await stopped():
+            return True
+        # Automatic recovery must first reach the existing ordinary 3D X range.
+        # Manual TP (no validation state) retains its original approach behavior.
+        if validation_state is not None and calc_Distance(pos, target_xyz) >= 750:
+            return False
         if math.hypot(pos.x - target_xyz.x, pos.y - target_xyz.y) <= 60 and landed:
             return True  # Physical arrival only; never a quest-progress signal.
         if landed or not _sent_back(pos, origin):
@@ -459,7 +730,8 @@ def _sent_back(pos: XYZ, origin: XYZ) -> bool:
 
 
 async def _arrived(client: Client, dest: XYZ, origin: XYZ = None, zone_before: str = None,
-                   settle: float = 1.0, tol: float = 60.0) -> bool:
+                   settle: float = 1.0, tol: float = 60.0, *, validation_state=None,
+                   control=_CONTROL_UNSET) -> bool:
     """True if, after letting the server settle, the teleport to ``dest`` actually took.
 
     Two independent signals, because either one alone has a blind spot:
@@ -475,20 +747,47 @@ async def _arrived(client: Client, dest: XYZ, origin: XYZ = None, zone_before: s
 
     Also like navmap_tp: a zone change or a client that is no longer free ends the check
     as done — we can't verify or usefully retry through a loading screen or a battle, and
-    retreating would only fight whatever moved us. Unreadable position -> assume success
-    rather than thrash on a transient read error.
+    retreating would only fight whatever moved us. Such interruptions leave the
+    pending task landing unconfirmed; unreadable memory cannot confirm arrival.
     """
+    def finish(accepted):
+        if validation_state is not None:
+            validation_state['rejected'] = validation_state.get('rejected', False) or not accepted
+            validation_state['confirmed'] = accepted
+            validation_state.pop('pending', None)
+            if accepted and validation_state.get('control') == getattr(client, '_quest_movement_control', None):
+                # Keep the same validator record through the later X handoff;
+                # returning to its origin must revoke that provisional permit.
+                client._quest_tp_landing = validation_state
+        return accepted
+
+    try:
+        if control is _CONTROL_UNSET:
+            if validation_state is not None and 'control' in validation_state:
+                control = validation_state['control']
+            else:
+                _, control = await _movement_body(client)
+        if validation_state is not None and validation_state.get('control', control) != control:
+            return finish(False)
+    except (HookNotActive, MemoryReadError, ValueError):
+        return finish(False)
     await asyncio.sleep(settle)
     try:
         if zone_before is not None and await client.zone_name() != zone_before:
             logger.debug(f"[collision_tp] {client.title}: zone changed during teleport; done")
-            return True
+            return control is None
         if not await is_free(client):
             logger.debug(f"[collision_tp] {client.title}: no longer free during teleport; done")
-            return True
-        pos = await client.body.position()
-    except Exception:
-        return True
+            return control is None
+        if await _movement_control_changed(client, control):
+            return finish(False)
+        pos = await _movement_position(client)
+        if await _movement_control_changed(client, control):
+            return finish(False)
+    except (HookNotActive, MemoryReadError, ValueError) as exc:
+        log_exception(client, '落点状态读取失败', exc, level='DEBUG')
+        log_blocked(client, None, f'落点无法读取，尚未确认到达：{type(exc).__name__}: {exc}')
+        return finish(False)
     if origin is not None and not _sent_back(dest, origin):
         # dest is somewhere we'd have to move to reach, so staying put means rejection
         if _sent_back(pos, origin):
@@ -496,23 +795,51 @@ async def _arrived(client: Client, dest: XYZ, origin: XYZ = None, zone_before: s
                 f"[collision_tp] {client.title}: never left the starting position; "
                 f"teleport to {dest} was rejected"
             )
-            return False
-    return math.hypot(pos.x - dest.x, pos.y - dest.y) <= tol
+            return finish(False)
+    return finish(math.hypot(pos.x - dest.x, pos.y - dest.y) <= tol)
 
 
 async def _teleport_once_verified(client: Client, dest: XYZ, anchor: XYZ,
-                                  zone_before: str = None, stop=None) -> bool:
+                                  zone_before: str = None, stop=None, *, validation_state=None) -> bool:
     """One teleport to ``dest``, confirmed by ``_arrived``. No retreating."""
     if not await is_free(client):
         return False
     if stop is not None and await stop():
         return False
-    await client.teleport(dest)
-    return await _arrived(client, dest, anchor, zone_before)
+    def blocked_before_input():
+        if validation_state is not None:
+            validation_state['input_blocked'] = True
+        return False
+    try:
+        body, control = await _movement_body(client)
+        if control is not None:
+            # The existing Hook targets ClientHook, not PlayerHook. Verify that
+            # it is still the observed pet before using the unchanged TP API.
+            hook_body = await client.client_object.actor_body()
+            if hook_body is None or await hook_body.read_base_address() != control[0]:
+                return blocked_before_input()
+            if await _movement_control_changed(client, control) or not await is_free(client):
+                return blocked_before_input()
+    except (HookNotActive, MemoryReadError, ValueError):
+        return blocked_before_input()
+    if validation_state is not None:
+        if validation_state.get('control', control) != control:
+            return blocked_before_input()
+        validation_state.pop('input_blocked', None)
+        validation_state['control'] = control
+        validation_state['pending'] = copy(dest), copy(anchor), zone_before
+        validation_state['attempted'] = True
+    if control is None:
+        await client.teleport(dest)
+    else:
+        from src.ibao_runtime import complete_before_cancel
+        await complete_before_cancel(asyncio.create_task(client.teleport(dest)))
+    return await _arrived(client, dest, anchor, zone_before, validation_state=validation_state,
+                          control=control)
 
 
 async def _retreat_toward(client: Client, dest: XYZ, anchor: XYZ,
-                          zone_before: str = None, stop=None) -> bool:
+                          zone_before: str = None, stop=None, *, validation_state=None) -> bool:
     """Back off from a bounced ``dest`` toward ``anchor`` in increasing steps until a
     landing sticks. Each retreat is verified, so one that clips a modeled wall just rolls
     to the next. True once a teleport sticks, False if every step bounced."""
@@ -530,8 +857,8 @@ async def _retreat_toward(client: Client, dest: XYZ, anchor: XYZ,
             f"[collision_tp] {client.title}: destination bounced; retreating {back:.0f}u "
             f"toward start -> {point}"
         )
-        await client.teleport(point)
-        if await _arrived(client, point, anchor, zone_before):
+        if await _teleport_once_verified(client, point, anchor, zone_before,
+                                        validation_state=validation_state):
             return True
     return False
 
@@ -579,6 +906,7 @@ async def _walk_remaining_to_target(client: Client, target_xyz: XYZ, world, zone
         from shapely.geometry import LineString, Point
         from shapely.ops import unary_union
 
+        _, control = await _movement_body(client)
         if task_before is None:
             task_before = await _movement_task_snapshot(task_client or client)
         if task_before is None:
@@ -586,14 +914,15 @@ async def _walk_remaining_to_target(client: Client, target_xyz: XYZ, world, zone
             return False
 
         async def stopped():
-            reason = await _movement_stop_reason(client, target_xyz, zone_name, task_before, task_client)
+            reason = await _movement_stop_reason(client, target_xyz, zone_name, task_before, task_client,
+                                                 control=control)
             if reason:
                 logger.debug(f"[collision_tp] {client.title}: final walk stopped: {reason}")
             return reason
 
         if await stopped():
             return False
-        pos = await client.body.position()
+        pos = await _movement_position(client)
         gap = math.hypot(pos.x - target_xyz.x, pos.y - target_xyz.y)
         if gap <= _WALK_GAP_MIN:
             return True
@@ -617,11 +946,12 @@ async def _walk_remaining_to_target(client: Client, target_xyz: XYZ, world, zone
             refine = grid.walk_z(*tq) is not None and (blockers is None
                      or not blockers.intersects(Point(target_xyz.x, target_xyz.y)))
             path = grid.find_walk_path(pos, target_xyz)
-            if path is None and not refine:
-                # The nearest snapped node can be in a disconnected pocket. Try
-                # a bounded set of nearby nodes through the same A* implementation.
+            if not refine:
+                # Ring traversal chooses the first clear node, not the closest
+                # reachable approach. It can even send us away from the target.
+                # Rank a bounded local set and retain only a closer reachable end.
                 candidates = []
-                for ring in range(1, 5):
+                for ring in range(5):
                     for q, r in _hex_ring(*tq, ring):
                         z = grid.walk_z(q, r)
                         if z is not None:
@@ -629,9 +959,12 @@ async def _walk_remaining_to_target(client: Client, target_xyz: XYZ, world, zone
                             candidates.append(XYZ(x, y, z))
                 candidates.sort(key=lambda p: calc_Distance(p, target_xyz))
                 for candidate in candidates[:12]:
-                    path = grid.find_walk_path(pos, candidate, max_nodes=4000)
-                    if path:
+                    if path and calc_Distance(candidate, target_xyz) >= calc_Distance(XYZ(*path[-1]), target_xyz):
                         break
+                    candidate_path = grid.find_walk_path(pos, candidate, max_nodes=4000)
+                    if candidate_path:
+                        path = candidate_path
+                        break  # Candidates are ordered by actual distance, not ring order.
             if refine and path:
                 refine = straight_path_walkable(world, zone_name, XYZ(*path[-1]), target_xyz,
                                                 static_shapes=shapes, player_radius=0)
@@ -640,6 +973,25 @@ async def _walk_remaining_to_target(client: Client, target_xyz: XYZ, world, zone
             points = [XYZ(*p) for p in path]
             if refine and calc_Distance(points[-1], target_xyz) > 1e-6:
                 points.append(target_xyz)
+            elif not refine:
+                # The coarse node can sit just outside X range. Refine at most
+                # one grid spacing toward the goal, preserving all clearance and
+                # floor checks; never walk into a rejected solid to reach its XY.
+                endpoint = points[-1]
+                distance = math.hypot(target_xyz.x - endpoint.x, target_xyz.y - endpoint.y)
+                if distance > 3:
+                    low, high = 0.0, min(1.0, GRID_SPACING / distance)
+                    for _ in range(8):
+                        fraction = (low + high) / 2
+                        candidate = XYZ(endpoint.x + (target_xyz.x - endpoint.x) * fraction,
+                                        endpoint.y + (target_xyz.y - endpoint.y) * fraction, endpoint.z)
+                        if clear_edge(endpoint, candidate):
+                            low = fraction
+                        else:
+                            high = fraction
+                    if low * distance > 3:
+                        points.append(XYZ(endpoint.x + (target_xyz.x - endpoint.x) * low,
+                                          endpoint.y + (target_xyz.y - endpoint.y) * low, endpoint.z))
             # Start from the actual landing, not a snapped node behind it.
             # Keep every corner that cannot be replaced by a verified straight edge.
             walk, anchor, first = [], pos, 0
@@ -681,13 +1033,13 @@ async def _walk_remaining_to_target(client: Client, target_xyz: XYZ, world, zone
         async with asyncio.timeout(30):
             for index, waypoint in enumerate(walk):
                 wx, wy = waypoint.x, waypoint.y
-                edge_start = await client.body.position()
+                edge_start = await _movement_position(client)
                 following = walk[index + 1] if index + 1 < len(walk) else None
                 final_target = refine and following is None
                 for _ in range(200):
                     if await stopped():
                         return False
-                    pos = await client.body.position()
+                    pos = await _movement_position(client)
                     distance = math.hypot(wx - pos.x, wy - pos.y)
                     if distance <= 3:
                         break
@@ -711,25 +1063,33 @@ async def _walk_remaining_to_target(client: Client, target_xyz: XYZ, world, zone
                     if await stopped():
                         return False
                     fraction = min(1.0, step_distance / distance)
+                    if control is not None:
+                        hook_body = await client.client_object.actor_body()
+                        if hook_body is None or await hook_body.read_base_address() != control[0]:
+                            return False
+                        if await stopped():
+                            return False
                     await complete_before_cancel(asyncio.create_task(client.goto(
                         pos.x + (wx - pos.x) * fraction, pos.y + (wy - pos.y) * fraction)))
                     if await stopped():
                         return False
-                    after = await client.body.position()
+                    after = await _movement_position(client)
                     if math.hypot(after.x - pos.x, after.y - pos.y) < 1:
                         # One stale position frame must not cause another turn or
                         # another goto. Wait one existing input tick, then recheck.
                         await asyncio.sleep(input_tick)
                         if await stopped():
                             return False
-                        after = await client.body.position()
+                        after = await _movement_position(client)
                         if math.hypot(after.x - pos.x, after.y - pos.y) < 1:
                             logger.debug(f"[collision_tp] {client.title}: no measured walking movement; stopped")
                             return False
                 else:
                     logger.debug(f"[collision_tp] {client.title}: finite walk steps exhausted; stopped")
                     return False
-        pos = await client.body.position()
+        pos = await _movement_position(client)
+        if await stopped():
+            return False
         if not refine:
             logger.debug(f"[collision_tp] {client.title}: approach endpoint within node tolerance; quest progress unconfirmed")
         return refine and math.hypot(pos.x - target_xyz.x, pos.y - target_xyz.y) <= _WALK_GAP_MIN
@@ -781,64 +1141,153 @@ async def prewarm_zone(client: Client, zone_name: str = None) -> None:
 async def collision_tp(client: Client, xyz: XYZ = None, leader_client: Client = None):
     """Teleport to a collision-solved point and verify the server accepted the landing.
 
-    Unsolved geometry may use navmap TP. A rejected landing or incomplete approach
-    instead uses a finite on-foot recovery; repeated calls for the same task do not
-    replay known failed teleports. Debug logs report exactly which path ran.
+    Unsolved geometry and distant rejected landings reuse finite navmap TP.
+    Only nearby actual positions enter on-foot recovery; repeated calls for the
+    same failed task do not replay the exhausted landing search.
     """
     if not await is_free(client):
-        return
+        return 'blocked'
 
     target_xyz = xyz if xyz is not None else await client.quest_position.position()
-    starting_xyz = await client.body.position()
+    try:
+        starting_xyz = await _movement_position(client)
+    except (HookNotActive, MemoryReadError, ValueError) as exc:
+        log_exception(client, '受控位置读取失败', exc, level='DEBUG')
+        log_blocked(client, None, f'受控位置不可用：{type(exc).__name__}: {exc}')
+        return 'failed'
+    control = getattr(client, '_quest_movement_control', None)
     starting_zone = await client.zone_name()
     logger.debug(
         f"[collision_tp] {client.title}: target {target_xyz} in '{starting_zone}' "
         f"(from {'arg' if xyz is not None else 'quest_position'}); "
         f"start {starting_xyz} ({calc_Distance(starting_xyz, target_xyz):.0f}u away)"
     )
-    if calc_Distance(starting_xyz, target_xyz) <= 5.0:
-        return  # already there
-
     quest_before = await _movement_task_snapshot(leader_client or client)
     task_key = None if quest_before is None else (
         quest_before[0], quest_before[1], tuple(quest_before[2]), quest_before[3])
     key = (starting_zone, task_key, tuple(target_xyz))
-    failure = getattr(client, '_quest_tp_rejected', None)
-    if not isinstance(failure, dict) or failure.get('key') != key:
-        failure = None
+    landing = getattr(client, '_quest_tp_landing', None)
+    if (isinstance(landing, dict) and landing.get('confirmed')
+            and _movement_failure_for_target(client, target_xyz, quest_before,
+                starting_zone, record=landing) is not None
+            and calc_Distance(landing['origin'], target_xyz) > 5
+            and _sent_back(starting_xyz, landing['origin'])):
+        # Materialize a late bounce before choosing the next attempt's record.
+        await _movement_failure_blocks_interaction(client, target_xyz, quest_before, pos=starting_xyz)
+    failure = _movement_failure_for_target(client, target_xyz, quest_before, starting_zone)
+    if failure is None:
         client._quest_tp_rejected = None
 
+    async def result(reason=None):
+        if await _movement_control_changed(client, control):
+            return 'blocked'
+        current = await _movement_task_snapshot(leader_client or client)
+        if current is None:
+            return 'blocked'
+        if (await client.zone_name() != starting_zone
+                or quest_before is not None and not _same_movement_task(quest_before, current)):
+            return 'changed'
+        if reason and reason != 'target interaction ready; returning to existing handler':
+            return 'blocked'
+        if await _movement_interaction_handoff(client, target_xyz, quest_before):
+            return 'ready'
+        if (calc_Distance(await _movement_position(client), target_xyz) <= _WALK_GAP_MIN
+                and not await _movement_failure_blocks_interaction(client, target_xyz, current)):
+            return 'ready'
+        if failure is not None and failure['walks'] >= 3:
+            return 'exhausted'
+        return 'failed'
+
+    if failure is not None and failure.get('pending'):
+        # Cancellation retains the attempted landing, never its provisional X
+        # permission. Reuse the same validator before any proximity shortcut.
+        dest, origin, zone = failure['pending']
+        await _arrived(client, dest, origin, zone, validation_state=failure)
+        if failure.get('pending'):
+            return await result(await _movement_stop_reason(client, target_xyz, starting_zone,
+                quest_before, leader_client, interaction=False))
+        if failure.get('rejected') is False:
+            client._quest_tp_rejected = None
+            failure = None
+        starting_xyz = await _movement_position(client)
+
+    if await _movement_control_changed(client, control):
+        return 'blocked'
+    if calc_Distance(await _movement_position(client), target_xyz) <= 5.0 and failure is None:
+        if await _movement_control_changed(client, control):
+            return 'blocked'
+        client._quest_tp_rejected = None
+        return 'ready'  # Already at this actual target; no movement required.
+
     async def stopped():
-        reason = await _movement_stop_reason(client, target_xyz, starting_zone, quest_before, leader_client)
+        reason = await _movement_stop_reason(client, target_xyz, starting_zone, quest_before, leader_client,
+                                             control=control)
         if reason:
             logger.debug(f"[collision_tp] {client.title}: ending old movement: {reason}")
         return reason
 
-    def remember_failure():
-        nonlocal failure
+    async def remember_failure(*, unverified=False):
+        nonlocal failure, starting_xyz
         if failure is None:
-            failure = dict(key=key, walks=0, anchor=copy(starting_xyz), announced=False)
+            starting_xyz = copy(await _movement_position(client))
+            origin_signature = await _movement_interaction_signature(client)
+            failure = dict(key=key, walks=0, anchor=copy(starting_xyz),
+                           origin=copy(starting_xyz), ready=False, announced=False,
+                           rejected=not unverified, control=control,
+                           origin_signature=origin_signature, attempted=False,
+                           task_client=leader_client or client)
             client._quest_tp_rejected = failure
 
-    if await stopped():
-        return
+    reason = await stopped()
+    if reason:
+        return await result(reason)
     if failure is not None:
         # Real external movement permits a fresh approach, but does not make a
         # previously rejected TP safe. Our own recovery updates the anchor below.
         if calc_Distance(starting_xyz, failure['anchor']) > _WALK_GAP_MIN:
-            failure.update(walks=0, announced=False, anchor=copy(starting_xyz))
-        if failure['walks'] >= 3:
+            failure.update(walks=0, announced=False, anchor=copy(starting_xyz),
+                           ready=False)
+            reason = await stopped()
+            if reason:
+                return await result(reason)
+        if failure['walks'] >= 3 and (failure.get('navmap_attempted')
+                or calc_Distance(starting_xyz, target_xyz) < 750):
             if not failure['announced']:
                 logger.debug(f"[collision_tp] {client.title}: repeated failed TP suppressed; "
-                             "3 approach attempts exhausted; waiting for task/zone or position change")
+                             "3 approach attempts exhausted; returning finite movement failure")
                 failure['announced'] = True
-            return
+            return await result()
+
+    async def navmap_fallback():
+        await remember_failure(unverified=True)
+        if failure.get('navmap_attempted'):
+            return await result(await stopped())
+        reason = await stopped()
+        if reason:
+            return await result(reason)
+        failure['navmap_attempted'] = True
+        try:
+            await navmap_tp(client, target_xyz, leader_client, validation_state=failure, stop=stopped)
+        except Exception as e:
+            logger.debug(f"[collision_tp] {client.title}: navmap fallback failed ({e!r}); returning to caller")
+        if not await stopped():
+            pos = await _movement_position(client)
+            if math.hypot(pos.x - target_xyz.x, pos.y - target_xyz.y) > _WALK_GAP_MIN:
+                await remember_failure()
+                failure['rejected'] = True
+                failure['anchor'] = copy(pos)
+        return await result(await stopped())
 
     async def approach(*, rejected=False):
-        if await stopped():
-            return
+        nonlocal failure
+        reason = await stopped()
+        if reason:
+            return await result(reason)
+        # Use the existing <750u ordinary interaction range, not a new walk budget.
+        if calc_Distance(await _movement_position(client), target_xyz) >= 750:
+            return await navmap_fallback()
         if rejected or failure is not None:
-            remember_failure()
+            await remember_failure()
             failure['walks'] += 1
         avoid = None
         if rejected or failure is not None:
@@ -850,15 +1299,27 @@ async def collision_tp(client: Client, xyz: XYZ = None, leader_client: Client = 
                 avoid = await asyncio.to_thread(blockers)
             except Exception as exc:
                 logger.debug(f"[collision_tp] {client.title}: rejected-solid data unavailable ({exc!r}); stopped")
-                return
+                return await result()
         closed = await _walk_remaining_to_target(
             client, target_xyz, world, starting_zone, player_radius, avoid=avoid,
             task_before=quest_before, task_client=leader_client)
         if not closed:
-            remember_failure()
+            await remember_failure()
             failure['walks'] = max(1, failure['walks'])
         if failure is not None:
-            failure['anchor'] = copy(await client.body.position())
+            pos = await _movement_position(client)
+            failure['anchor'] = copy(pos)
+        # Arrival/interaction availability is separate from actual quest progress.
+        if closed:
+            if (await client.zone_name() == starting_zone
+                    and _same_movement_task(quest_before, await _movement_task_snapshot(leader_client or client))
+                    and not await _movement_failure_blocks_interaction(client, target_xyz, quest_before)):
+                if getattr(client, '_quest_tp_rejected', None) is failure:
+                    client._quest_tp_rejected = None
+                failure = None
+            return await result(await stopped())
+        reason = await stopped()
+        return await result(reason)
 
     safe_xyz = None
     world_ready = False
@@ -894,15 +1355,16 @@ async def collision_tp(client: Client, xyz: XYZ = None, leader_client: Client = 
         logger.debug(f"[collision_tp] {client.title}: collision solve errored ({e!r}); using navmap TP")
         safe_xyz = None
 
-    if await stopped():
-        return
+    reason = await stopped()
+    if reason:
+        return await result(reason)
     if failure is not None:
         if world_ready:
-            await approach(rejected=True)
+            return await approach(rejected=True)
         else:
             failure['walks'] += 1
             logger.debug(f"[collision_tp] {client.title}: failed TP suppressed; approach geometry unavailable")
-        return
+        return await result()
 
     if safe_xyz is not None:
         moved = ((safe_xyz.x - target_xyz.x) ** 2 + (safe_xyz.y - target_xyz.y) ** 2) ** 0.5
@@ -910,13 +1372,20 @@ async def collision_tp(client: Client, xyz: XYZ = None, leader_client: Client = 
             f"[collision_tp] {client.title}: collision TP ({reason}, r={player_radius:.0f}) -> "
             f"{safe_xyz} (moved {moved:.0f}u from target)"
         )
-        if await _teleport_once_verified(client, safe_xyz, starting_xyz, zone_name, stop=stopped):
-            await approach()
-            return
+        await remember_failure(unverified=True)
+        if await _teleport_once_verified(client, safe_xyz, starting_xyz, zone_name, stop=stopped,
+                                       validation_state=failure):
+            if not failure.get('pending') and failure.get('rejected') is False:
+                client._quest_tp_rejected = None
+                failure = None
+            return await approach()
 
-        remember_failure()
-        if await stopped():
-            return
+        if failure.get('input_blocked'):
+            return 'blocked' if await _movement_control_changed(client, control) else 'failed'
+        await remember_failure()
+        reason = await stopped()
+        if reason:
+            return await result(reason)
 
         # The game refused a point the geometry called clear, so something solid is there
         # that the solve excused: ``ground_z_at`` ignores a volume whose vertical band contains
@@ -932,42 +1401,35 @@ async def collision_tp(client: Client, xyz: XYZ = None, leader_client: Client = 
             strict_xyz, strict_reason = await asyncio.to_thread(_solve, True)
         except Exception as e:
             logger.debug(f"[collision_tp] {client.title}: strict re-solve errored ({e!r})")
-        if await stopped():
-            return
+        reason = await stopped()
+        if reason:
+            return await result(reason)
         if strict_xyz is not None and calc_Distance(strict_xyz, safe_xyz) > 5.0:
             moved = ((strict_xyz.x - target_xyz.x) ** 2 + (strict_xyz.y - target_xyz.y) ** 2) ** 0.5
             logger.debug(
                 f"[collision_tp] {client.title}: rejected -> strict re-solve ({strict_reason}) "
                 f"-> {strict_xyz} (moved {moved:.0f}u from target)"
             )
-            if await _teleport_once_verified(client, strict_xyz, starting_xyz, zone_name, stop=stopped):
-                await approach(rejected=True)
-                return
+            if await _teleport_once_verified(client, strict_xyz, starting_xyz, zone_name, stop=stopped,
+                                           validation_state=failure):
+                return await approach(rejected=True)
 
         # Still bounced: an unmodeled warp volume rather than a mis-excused wall. Back off
         # along the approach line before giving up on the geometry entirely.
-        if await _retreat_toward(client, safe_xyz, starting_xyz, zone_name, stop=stopped):
-            await approach(rejected=True)
-            return
+        if await _retreat_toward(client, safe_xyz, starting_xyz, zone_name, stop=stopped,
+                                validation_state=failure):
+            return await approach(rejected=True)
         logger.debug(
             f"[collision_tp] {client.title}: collision point never landed (unmodeled collider "
             f"or rejected teleport); trying an approach from the actual position"
         )
-        await approach(rejected=True)
-        return
+        return await approach(rejected=True)
 
     else:
         logger.debug(f"[collision_tp] {client.title}: no collision solution ({reason}); falling back to navmap TP")
     if quest_before is not None and not await stopped():
-        try:
-            await navmap_tp(client, target_xyz, leader_client)
-        except Exception as e:
-            logger.debug(f"[collision_tp] {client.title}: navmap fallback failed ({e!r}); returning to caller")
-        if not await stopped():
-            pos = await client.body.position()
-            if math.hypot(pos.x - target_xyz.x, pos.y - target_xyz.y) > _WALK_GAP_MIN:
-                remember_failure()
-                failure['anchor'] = copy(pos)
+        return await navmap_fallback()
+    return await result(await stopped())
 
 
 

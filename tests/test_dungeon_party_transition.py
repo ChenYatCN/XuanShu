@@ -62,7 +62,7 @@ class PartyTransitionFixture(DungeonFixture):
         target = quester.quest_position.position.return_value
         self.assertEqual((call.args[1].x, call.args[1].y, call.args[1].z),
                          (target.x, target.y, target.z))
-        self.assertIs(call.kwargs.get('leader_client'), quester)
+        self.assertIs(call.kwargs.get('leader_client'), hitter)
 
 
 class SharedGoalTests(PartyTransitionFixture, unittest.IsolatedAsyncioTestCase):

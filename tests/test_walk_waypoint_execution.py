@@ -153,11 +153,13 @@ class WaypointExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.path = [(0,0,0),(200,0,0),(400,0,0)]
         self.assertFalse(await self.walk())
         self.assertEqual(self.quest, 1)
-        self.assertGreater(math.hypot(self.position.x-self.target.x,self.position.y-self.target.y),
-                           movement._WALK_GAP_MIN)
+        gap = math.hypot(self.position.x-self.target.x,self.position.y-self.target.y)
+        self.assertGreater(gap, 1)  # A bounded final edge is still not the target or quest completion.
+        self.assertGreater(self.position.x, 400)
+        self.assertLessEqual(self.position.x, 400 + GRID_SPACING)
 
     async def test_mid_walk_state_change_stops_before_second_call(self):
-        for reason in ('quest','goal','target','zone','loading','battle','dialogue','interaction'):
+        for reason in ('quest','goal','target','zone','loading','battle','dialogue'):
             with self.subTest(reason=reason):
                 self.position = XYZ(0,0,0)
                 self.calls.clear()
@@ -171,6 +173,13 @@ class WaypointExecutionTests(unittest.IsolatedAsyncioTestCase):
                 self.on_step = change
                 self.assertFalse(await self.walk())
                 self.assertEqual(len(self.calls), 1)
+
+    async def test_prompt_during_walk_yields_in_reference_ordinary_range(self):
+        self.on_step = lambda: setattr(self, 'interaction', True)
+        self.assertFalse(await self.walk())  # Handoff is not quest completion.
+        self.assertEqual(len(self.calls), 1)
+        self.assertLess(math.hypot(self.position.x-self.target.x,
+                                  self.position.y-self.target.y), 750)
 
     async def test_runtime_speed_controls_bounded_step_without_final_radius_change(self):
         self.speed_bonus = 100

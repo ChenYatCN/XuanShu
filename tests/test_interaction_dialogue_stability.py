@@ -61,7 +61,7 @@ class FailedObjectTests(Fixture):
         self.assertFalse(await self.search())
         self.assertEqual(self.keys.count(Keycode.X), 0)
 
-    async def test_same_failed_object_can_be_tried_in_a_later_search_round(self):
+    async def test_same_failed_object_is_not_retried_in_a_later_unchanged_search_round(self):
         self.identity()
         def turn():
             self.title = 'Other NPC' if self.keys.count(Keycode.A) % 2 else 'Failed NPC'
@@ -70,7 +70,7 @@ class FailedObjectTests(Fixture):
         self.assertEqual(self.keys.count(Keycode.X), 1)
         self.clock += 5.1
         self.assertFalse(await self.search())
-        self.assertEqual(self.keys.count(Keycode.X), 2)
+        self.assertEqual(self.keys.count(Keycode.X), 1)
 
     async def test_read_failure_or_disappearing_window_keeps_turning_without_x(self):
         for cause in ('read', 'window'):

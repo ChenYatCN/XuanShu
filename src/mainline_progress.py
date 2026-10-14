@@ -169,7 +169,7 @@ async def log_mainline_progress(client):
         if matched and not navigating:
             logger.info('{} 当前主线：{} 第 {}/{} 个 | {}', client.title, world, row['number'], total, identity['title'])
         else:
-            logger.info('{} 当前主线：未匹配或待恢复确认 | {} | Quest ID {}', client.title,
-                        identity['title'], identity['quest_id'])
+            logger.info('{} 当前主线：未匹配或待恢复确认 | {}', client.title, identity['title'])
+            logger.debug('{} 主线诊断 Quest ID {}，状态={}', client.title, identity['quest_id'], diagnostic)
         client._xuanshu_mainline_log_state = diagnostic
     client._xuanshu_mainline_id = identity['quest_id']
