@@ -7152,8 +7152,9 @@ def run():
 
     log_dir = runtime_data_dir() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    logger.remove(0)
-    logger.add(sys.stderr, level='INFO', format=daily_format, backtrace=False, diagnose=False)
+    logger.remove()
+    if sys.stderr is not None:
+        logger.add(sys.stderr, level='INFO', format=daily_format, backtrace=False, diagnose=False)
     current_log = logger.add(
         log_dir / f"{tool_name} - {generate_timestamp()}.log",
         encoding="utf-8",
