@@ -80,6 +80,7 @@ from src.quest_party import (
     dungeon_member_inside, dungeon_quester_away_for_potions, resume_dungeon_member,
     record_dungeon_exit,
     quest_party_members_ready, capture_dungeon_return, dungeon_return_is_current,
+    dungeon_entry_waiting,
 )
 from src.questing import Quester
 from src.script_popups import close_automation_popup, run_with_script_popups
@@ -90,15 +91,15 @@ from src.sprinty_client import SprintyClient
 # from src.combat_new import Fighter
 from src.stat_viewer import total_stats
 from src.task_lifecycle import gather_owned
-from src.teleport_math import calc_Distance, navmap_tp, _movement_position
+from src.teleport_math import calc_Distance, navmap_tp, _movement_position, _movement_control_changed
 from src.tokenizer import tokenize
 from src.utils import auto_potions  # , assign_pet_level
 from src.utils import (
-    FriendBusyOrInstanceClosed,
+    FriendBusyOrInstanceClosed, FriendLookupError,
     auto_potions_force_buy,
     change_equipment_set,
     click_window_by_path,
-    clients_share_live_area,
+    clients_share_live_area, _party_area_token,
     close_endorsement_window,
     close_npc_quest_menu,
     collect_wisps_with_limit,
@@ -128,6 +129,7 @@ from wizwalker.memory.memory_objects.camera_controller import (
     ElasticCameraController,
 )
 from wizwalker.memory.memory_objects.window import Window
+from wizwalker.memory import WindowFlags
 from wizwalker.utils import get_all_wizard_handles, get_foreground_window
 
 cMessageBox = ctypes.windll.user32.MessageBoxW
@@ -642,7 +644,7 @@ async def navmap_teleport(
                              id(ownership._owner_task) if ownership.locked else None)
             except Exception as exc:
                 logger.debug('[任务TP对照] {} Source=manual 诊断读取失败：{}', client.title, exc)
-            await navmap_tp(client, xyz)
+            await navmap_tp(client, xyz, require_questing=False)
         except Exception as exc:
             if not isolate_errors:
                 raise
@@ -1971,7 +1973,7 @@ async def main():
                             await asyncio.sleep(0.5)
                         else:
                             await client.send_key(key=Keycode.SPACEBAR)
-                            await asyncio.sleep(0.5)
+                            await asyncio.sleep(0.8)
                         continue
                 await asyncio.sleep(0.05)
 
@@ -2067,21 +2069,22 @@ async def main():
             return False
 
         async def prepare_quester_name(client: Client):
-            if client.wizard_name:
-                return
-            quester = Quester(client, [client], None)
-            try:
-                await quester.open_character_screen(client)
-                await set_wizard_name_from_character_screen(client)
-            except Exception as exc:
-                logger.warning(
-                    f"暂时无法读取 {client.title} 的角色名，跨区域打手跟随会自动重试：{exc}"
-                )
-            finally:
+            async with automation_owner(client, 'friend-name'):
+                if client.wizard_name:
+                    return
+                quester = Quester(client, [client], None)
                 try:
-                    await asyncio.wait_for(quester.close_character_screen(client), timeout=2.0)
-                except Exception:
-                    pass
+                    await quester.open_character_screen(client)
+                    await set_wizard_name_from_character_screen(client)
+                except Exception as exc:
+                    logger.warning(
+                        f"暂时无法读取 {client.title} 的角色名，跨区域打手跟随会自动重试：{exc}"
+                    )
+                finally:
+                    try:
+                        await asyncio.wait_for(quester.close_character_screen(client), timeout=2.0)
+                    except Exception:
+                        pass
 
         async def _follow_quester_session(
             hitter: Client, quester: Client, is_probe_hitter: bool
@@ -2103,16 +2106,63 @@ async def main():
             quest_reader = Quester(quester, [quester], None)
             hitter_reader = Quester(hitter, [hitter], None)
             assigned_probe_hitter = is_probe_hitter
+            probe_state = getattr(hitter, '_quest_follower_probe', None)
+            if not isinstance(probe_state, dict) or probe_state.get('quester') is not quester:
+                probe_state = dict(quester=quester, zone=last_quester_zone, session=None,
+                                   source_zone=None, pending=True)
+                hitter._quest_follower_probe = probe_state
+            session = None
+            arrival_details = {}
+            quester_zone, hitter_zone = None, None
+
+            def log_probe(decision, reason, *, pending_transition=False, owner_client=None):
+                owner = get_client_automation_ownership(owner_client or hitter).owner_label
+                diagnostic = getattr(owner_client or hitter, '_friend_lookup_diagnostic', {})
+                count = diagnostic.get('candidate_count')
+                key = (decision, reason, quester_zone, hitter_zone, id(session), pending_transition, owner)
+                if getattr(hitter, '_quest_follower_probe_log', None) == key:
+                    return
+                hitter._quest_follower_probe_log = key
+                logger.debug(f"[quest_follower_probe] follower={hitter.title} quester={quester.title} "
+                    f"source_zone={probe_state.get('source_zone')} quester_zone={quester_zone} "
+                    f"follower_zone={hitter_zone} session={id(session) if session else None} "
+                    f"pending_transition={pending_transition} probe_owner={owner} "
+                    f"decision={decision} reason={reason} "
+                    f"quester_name_available={bool(getattr(quester, 'wizard_name', None))} "
+                    f"friend_match_method={diagnostic.get('match_method', 'unavailable')} "
+                    f"friend_candidate_count={count if count is not None else 'unavailable'} "
+                    f"arrival_evidence={arrival_details.get('evidence', 'unavailable')} "
+                    f"distance_to_quester={arrival_details.get('distance', 'unavailable')} "
+                    f"same_zone={arrival_details.get('same_zone', 'unavailable')} "
+                    f"same_instance={arrival_details.get('same_instance', 'unavailable')}")
 
             async def complete_zone_probe(solo_zone: bool, context=None):
                 expected_zone, expected_session, expected_task = context or (
                     last_quester_zone, dungeon_session_for(quester),
                     (await quester.quest_id(), await quester.goal_id()))
-                if not is_probe_hitter and (solo_zone or expected_session is None):
-                    return False
                 if (solo_zone and expected_session and expected_session.confirmed
                         and id(quester) not in expected_session.exited):
                     return False  # A busy friend response cannot end a recorded dungeon.
+
+                if not solo_zone:
+                    # Personal arrival is independent of the whole-party release.
+                    if (not hitter.questing_status or not quester.questing_status
+                            or await hitter.is_loading() or await quester.is_loading()
+                            or await hitter.zone_name() != expected_zone
+                            or await quester.zone_name() != expected_zone
+                            or dungeon_session_for(quester) is not expected_session
+                            or (await quester.quest_id(), await quester.goal_id()) != expected_task
+                            or not await follower_arrival_confirmed(hitter, quester)):
+                        return False
+                    was_pending = probe_state['pending']
+                    probe_state.update(pending=False, failures=0, retry_at=0.0)
+                    if was_pending:
+                        log_probe('complete', 'own-live-area-confirmed')
+
+                # Keep the existing authority for group release/equipment; each
+                # secondary can still finish its personal arrival above.
+                if not is_probe_hitter and (solo_zone or expected_session is None):
+                    return False
 
                 async def probe_is_current():
                     return (quester.questing_status and hitter.questing_status
@@ -2170,6 +2220,44 @@ async def main():
                     restart_quest_worker_after_probe(quester)
                 return True
 
+            async def follower_arrival_confirmed(first, second):
+                """A live instance proof plus actual proximity, never zone alone."""
+                arrival_details.clear()
+                async def safe():
+                    for member in (first, second):
+                        owner = get_client_automation_ownership(member)
+                        if (not member.questing_status or await member.is_loading()
+                                or await member.in_battle()
+                                or getattr(member, 'entity_detect_combat_status', False)
+                                or owner.locked and owner._owner_task is not asyncio.current_task()
+                                or await is_visible_by_path(member, ['MessageBoxModalWindow'])):
+                            return False
+                    return True
+                try:
+                    if not await safe():
+                        return False
+                    zones = (await first.zone_name(), await second.zone_name())
+                    arrival_details['same_zone'] = bool(zones[0] and zones[0] == zones[1])
+                    if not arrival_details['same_zone']:
+                        return False
+                    tokens = (await _party_area_token(first), await _party_area_token(second))
+                    same_instance = await clients_share_live_area(first, second)
+                    arrival_details['same_instance'] = same_instance
+                    if not same_instance:
+                        return False
+                    gap = calc_Distance(await first.body.position(), await second.body.position())
+                    arrival_details['distance'] = gap
+                    if not 0 <= gap <= 900:  # Reuse the existing follow-distance threshold.
+                        return False
+                    if (not await safe() or tokens != (
+                            await _party_area_token(first), await _party_area_token(second))):
+                        return False
+                    arrival_details['evidence'] = 'live-instance-and-proximity'
+                    return True
+                except (ValueError, AttributeError, wizwalker.WizWalkerMemoryError) as exc:
+                    logger.debug(f'跟随归队证据暂不可读：{first.title}->{second.title}：{exc}')
+                    return False
+
             async def hitter_is_in_quester_area() -> bool:
                 """Confirm both clients are in the same live area/instance."""
                 try:
@@ -2181,50 +2269,136 @@ async def main():
                     )
                 return False
 
-            async def friend_ui_is_open(client: Client) -> bool:
+            async def friend_window_visible(client: Client, path):
                 try:
-                    for name in ("NewFriendsListWindow", "wndCharacter"):
-                        windows = await client.root_window.get_windows_with_name(name)
-                        for window in windows:
-                            if await window.is_visible():
-                                return True
-                except Exception:
-                    return False
+                    window = await get_window_from_path(client.root_window, path)
+                    if not window or not await window.is_visible():
+                        return False
+                    return all([await parent.is_visible() for parent in await window.get_parents()])
+                except Exception as exc:
+                    raise RuntimeError(f"{path[-1]} 可见状态读取失败：{exc}") from exc
+
+            async def friend_ui_is_open(client: Client) -> bool:
+                for name in ("wndCharacter", "NewFriendsListWindow"):
+                    if await friend_window_visible(client, ["WorldView", "windowHUD", name]):
+                        return True
                 return False
 
-            async def close_stale_friend_ui(client: Client):
-                """Close friend-list remnants without opening a closed list."""
-                for _ in range(3):
-                    if not await friend_ui_is_open(client):
-                        return
-                    await client.send_key(Keycode.ESC, 0.1)
-                    await asyncio.sleep(0.2)
+            async def close_stale_friend_ui(client: Client, reference=None):
+                """Close existing panels in order, confirming each before continuing."""
+                current_window = "wndCharacter"
+                expected = None
+                reference = reference or quester
+
+                async def check_context():
+                    current = []
+                    for member in (client, reference):
+                        try:
+                            unsafe = (not member.questing_status or await member.is_loading()
+                                      or await member.in_battle())
+                            context = None if unsafe else (
+                                await member.zone_name(), await member.quest_id(),
+                                await member.goal_id(), dungeon_session_for(member))
+                        except Exception as exc:
+                            raise RuntimeError(f"{current_window} 清理上下文读取失败：{exc}") from exc
+                        if unsafe:
+                            raise RuntimeError(f"{current_window} 清理停止：任务停止、加载或战斗中")
+                        if any(getattr(member, flag, False) for flag in (
+                            'quest_recovery_owner', 'refilling_potions', 'quest_party_entry_active',
+                            'quest_party_safe_return_active', 'post_combat_movement_active',
+                            'quest_party_battle_rescue_active', 'feeding_pet_status',
+                            'entity_detect_combat_status')):
+                            raise RuntimeError(f"{current_window} 清理停止：{member.title} 已有协调操作")
+                        current.append(context)
+                    if expected is not None and any(
+                        old[:3] != new[:3] or old[3] is not new[3]
+                        for old, new in zip(expected, current)
+                    ):
+                        raise RuntimeError(f"{current_window} 清理停止：任务/区域上下文已改变")
+                    return current
+
+                try:
+                    # The deadline includes reads, ownership waits and mouse cleanup.
+                    async with asyncio.timeout(5.0):
+                        if not await friend_ui_is_open(client):
+                            return
+                        expected = await check_context()
+                        async with automation_owner(client, 'friend-ui-cleanup'):
+                            await check_context()
+                            async with probe_mouse(client):
+                                for name, close_name in (
+                                    ("wndCharacter", "btnCharacterClose"),
+                                    ("NewFriendsListWindow", "btnClose"),
+                                ):
+                                    current_window = name
+                                    path = ["WorldView", "windowHUD", name]
+                                    for _ in range(3):
+                                        if not await friend_window_visible(client, path):
+                                            break
+                                        await check_context()
+                                        try:
+                                            button = await get_window_from_path(
+                                                client.root_window, [*path, close_name])
+                                            visible = bool(button and await button.is_visible())
+                                            disabled = bool(button and (
+                                                WindowFlags.disabled in await button.flags()
+                                                or await button.is_control_grayed()))
+                                        except Exception as exc:
+                                            raise RuntimeError(f"{name} 关闭按钮状态读取失败：{exc}") from exc
+                                        if not button:
+                                            raise RuntimeError(f"{name} 关闭按钮不存在：{close_name}")
+                                        if not visible:
+                                            raise RuntimeError(f"{name} 关闭按钮不可见：{close_name}")
+                                        if disabled:
+                                            raise RuntimeError(f"{name} 关闭按钮置灰/禁用：{close_name}")
+                                        await check_context()
+                                        if not await friend_window_visible(client, path):
+                                            break
+                                        ownership = get_client_automation_ownership(client)
+                                        if ownership._owner_task is not asyncio.current_task():
+                                            raise RuntimeError(f"{name} 清理停止：未持有输入操作权")
+                                        await client.mouse_handler.click_window(button)
+                                        await asyncio.sleep(0.2)
+                                        if not await friend_window_visible(client, path):
+                                            break
+                                    else:
+                                        raise RuntimeError(f"{name} 点击关闭 3 次后仍可见")
+                except asyncio.TimeoutError as exc:
+                    raise RuntimeError(f"{current_window} 好友窗口清理超时（5s）") from exc
+                except asyncio.CancelledError:
+                    raise
+                except RuntimeError:
+                    raise
+                except Exception as exc:
+                    raise RuntimeError(f"{current_window} 好友窗口清理状态读取/操作失败：{exc}") from exc
 
             from contextlib import asynccontextmanager
 
             @asynccontextmanager
-            async def probe_mouse():
+            async def probe_mouse(client=None):
                 # Bound cleanup separately: cancellation during the click
                 # must not leave the probe waiting forever in __aexit__.
-                await asyncio.wait_for(hitter.mouse_handler.__aenter__(), timeout=5.0)
+                client = client or hitter
+                await asyncio.wait_for(client.mouse_handler.__aenter__(), timeout=5.0)
                 try:
                     yield
                 finally:
                     exception = sys.exc_info()
                     try:
                         await asyncio.wait_for(
-                            hitter.mouse_handler.__aexit__(*exception), timeout=5.0)
+                            client.mouse_handler.__aexit__(*exception), timeout=5.0)
                     except asyncio.TimeoutError:
                         if isinstance(exception[1], asyncio.CancelledError):
                             raise exception[1].with_traceback(exception[2])
                         raise
 
-            async def bounded_probe_cleanup():
+            async def bounded_probe_cleanup(client=None, reference=None):
+                client = client or hitter
                 async def cleanup():
-                    if await is_friend_teleport_error(hitter):
-                        async with probe_mouse():
-                            await click_window_by_path(hitter, friend_is_busy_and_dungeon_reset_path)
-                    await close_stale_friend_ui(hitter)
+                    if not await client.is_loading() and await is_friend_teleport_error(client):
+                        async with probe_mouse(client):
+                            await click_window_by_path(client, friend_is_busy_and_dungeon_reset_path)
+                    await close_stale_friend_ui(client, reference)
                 try:
                     await asyncio.wait_for(cleanup(), timeout=5.0)
                 except asyncio.CancelledError:
@@ -2235,47 +2409,11 @@ async def main():
             async def teleport_to_quester_from_friend_list(
                 client: Client, wizard_name, friend_icon
             ):
-                # Some versions expose only the first name in friend-list
-                # markup, while the character screen exposes the full name.
-                aliases = []
-                if wizard_name:
-                    aliases.append(wizard_name)
-                    first_name = wizard_name.split(maxsplit=1)[0]
-                    if first_name and first_name != wizard_name:
-                        aliases.append(first_name)
-
-                last_error = None
-                for alias in aliases:
-                    try:
-                        await teleport_to_friend_from_list(client, name=alias)
-                        if alias != wizard_name:
-                            logger.debug(
-                                f"打手 {client.title} 使用好友列表首名 {alias} "
-                                f"匹配任务客户端 {wizard_name}。"
-                            )
-                        return
-                    except ValueError as exc:
-                        last_error = exc
-
-                if friend_icon is not None:
-                    icon_list, icon_index = friend_icon
-                    try:
-                        await teleport_to_friend_from_list(
-                            client,
-                            icon_list=icon_list,
-                            icon_index=icon_index,
-                        )
-                        logger.debug(
-                            f"打手 {client.title} 名称匹配失败，已使用任务端好友图标 "
-                            f"{icon_list}:{icon_index} 作为保底。"
-                        )
-                        return
-                    except ValueError as exc:
-                        last_error = exc
-
-                if last_error is not None:
-                    raise last_error
-                raise ValueError("任务端没有可用的好友名称或好友图标")
+                # Full-name failure cannot authorize another person with the
+                # same first name or cosmetic icon. Keep one request pipeline.
+                if not wizard_name or not wizard_name.strip():
+                    raise FriendLookupError('quester-name-unavailable')
+                await teleport_to_friend_from_list(client, name=wizard_name, strict_identity=True)
 
             async def refill_hitter_if_needed():
                 if use_potions and await is_free(hitter):
@@ -2322,9 +2460,10 @@ async def main():
             try:
                 while (
                     members is not None or questing_status
-                ) and hitter.questing_status:
+                ) and hitter.questing_status and quester.questing_status:
                     await asyncio.sleep(0.5)
                     if hitter not in walker.clients or quester not in walker.clients:
+                        log_probe('skip', 'member-unavailable')
                         clear_dungeon_session(hitter)
                         return
                     session = await observe_dungeon_session(hitter)
@@ -2335,6 +2474,12 @@ async def main():
                             record_dungeon_exit(hitter, dungeon_exit_from_zone, after, evidence='hub-return')
                         dungeon_exit_from_zone = None
                     session = dungeon_session_for(hitter)
+                    if probe_state.get('session') is not session:
+                        probe_state.update(session=session, pending=True)
+                    if await dungeon_entry_waiting(hitter):
+                        log_probe('skip', 'entry-wait-active', pending_transition=True)
+                        update_party_status(hitter, quester, "等待本组入场或加载稳定，不重放旧入口")
+                        continue
                     if session and session.confirmed:
                         remaining = [c for c in session.members[1:] if id(c) not in session.exited]
                         available = [c for c in remaining
@@ -2346,23 +2491,32 @@ async def main():
                         is_probe_hitter = assigned_probe_hitter
                     if (session and session.confirmed
                             and getattr(hitter, 'quest_recovery_owner', None)):
+                        log_probe('skip', 'own-recovery-active')
                         update_party_status(hitter, quester, "等待已有恢复流程完成")
                         continue
                     if getattr(hitter, 'refilling_potions', False):
+                        log_probe('skip', 'own-potion-refill')
                         update_party_status(hitter, quester, "正在补充药水")
+                        continue
+                    if getattr(quester, 'quest_party_entry_active', False):
+                        log_probe('skip', 'quester-entry-active')
+                        update_party_status(hitter, quester, "等待本组地牢入口恢复")
                         continue
                     if any(getattr(c, 'quest_party_safe_return_active', False)
                            or getattr(c, 'post_combat_movement_active', False)
                            for c in (hitter, quester)):
+                        log_probe('skip', 'position-coordinator-active')
                         update_party_status(hitter, quester, "等待战后位置处理")
                         continue
                     if (session and session.confirmed and id(hitter) in session.exited
                             and id(quester) not in session.exited):
+                        log_probe('skip', 'own-dungeon-exit-already-confirmed')
                         update_party_status(hitter, quester, "已退出地牢，等待其他成员")
                         continue
                     if not await hitter.is_loading() and await close_automation_popup(
                         hitter
                     ):
+                        log_probe('skip', 'own-popup-dismissed')
                         update_party_status(hitter, quester, "正在关闭评价窗口")
                         continue
                     if (
@@ -2371,12 +2525,18 @@ async def main():
                             hitter, [hitter], None
                         ).handle_pending_dungeon_confirmation()
                     ):
+                        log_probe('skip', 'own-visible-transition-modal', pending_transition=True)
                         update_party_status(hitter, quester, "正在确认地牢切换")
                         failure_count = 0
                         next_retry_at = 0.0
                         continue
+                    if await is_visible_by_path(hitter, ['MessageBoxModalWindow']):
+                        log_probe('skip', 'own-visible-transition-modal', pending_transition=True)
+                        update_party_status(hitter, quester, "等待当前确认窗口完成")
+                        continue
                     if (await dungeon_quester_away_for_potions(quester)
                             or (session and session.confirmed and getattr(quester, 'quest_recovery_owner', None))):
+                        log_probe('skip', 'quester-away-for-recovery')
                         # Preserve last_quester_zone/observed_zone while the quester
                         # is away. Never send a follower or a solo probe to a shop.
                         if (not await hitter.is_loading() and not await hitter.in_battle()
@@ -2387,12 +2547,15 @@ async def main():
                         update_party_status(hitter, quester, "任务端补药或恢复暂离，等待原实例归队")
                         continue
                     if await quester.is_loading():
+                        log_probe('skip', 'quester-loading')
                         quester_zone_stable_since = None
                         objective_stable_since = None
                         update_party_status(hitter, quester, "等待切换世界")
                         continue
 
                     quester_zone = await quester.zone_name()
+                    if probe_state.get('zone') != quester_zone:
+                        probe_state.update(zone=quester_zone, source_zone=None, pending=True)
                     now = loop.time()
                     if quester_zone != last_quester_zone:
                         if last_quester_zone is not None:
@@ -2421,34 +2584,47 @@ async def main():
                         or hitter.entity_detect_combat_status
                         or getattr(hitter, "quest_party_battle_rescue_active", False)
                     ):
+                        log_probe('skip', 'own-loading-or-battle')
                         update_party_status(hitter, quester, "等待战斗或加载")
                         continue
 
                     if await refill_hitter_if_needed():
+                        log_probe('skip', 'own-potion-cycle')
                         failure_count = 0
                         next_retry_at = 0.0
                         continue
 
                     hitter_zone = await hitter.zone_name()
+                    if probe_state.get('source_zone') is None:
+                        probe_state['source_zone'] = hitter_zone
+                    entry_source = session.transition if session else None
+                    entry_reverse = bool(entry_source and entry_source.get('entry_sent')
+                        and quester_zone == entry_source['source_zone']
+                        and hitter_zone != entry_source['source_zone'])
+                    if (entry_reverse and (
+                            (await quester.quest_id(), await quester.goal_id()) != entry_source['source_tasks'].get(id(quester))
+                            or await _party_area_token(quester) != entry_source['source_tokens'].get(id(quester)))):
+                        log_probe('skip', 'old-entry-context-changed')
+                        update_party_status(hitter, quester, "旧入口上下文已变化，停止旧漏进恢复")
+                        continue
+                    if (entry_reverse and entry_source.get('arrivals', {}).get(id(hitter))
+                            != await _party_area_token(hitter)):
+                        log_probe('skip', 'own-entry-instance-not-proven')
+                        update_party_status(hitter, quester, "等待已入场成员的实例证据，不将其拉回旧入口")
+                        continue
                     if (session and hitter_zone != quester_zone
                             and await hitter_reader.recover_dungeon_transition()):
+                        log_probe('skip', 'own-source-transition-recovery')
                         update_party_status(hitter, quester, "正在恢复旧区入口切换")
                         continue
                     exit_handoff = bool(session and session.confirmed
                                         and id(quester) in session.exited
                                         and dungeon_member_inside(hitter))
                     if exit_handoff and await hitter_reader.move_dungeon_member(require_local_goal=True):
+                        log_probe('skip', 'own-dungeon-goal-active')
                         update_party_status(hitter, quester, "任务端已退出，继续自身有效地牢任务")
                         continue
-                    probe_pending = bool(
-                        is_probe_hitter
-                        and getattr(quester, "quest_party_probe_pending", False)
-                    )
-                    if not is_probe_hitter and getattr(
-                        quester, "quest_party_probe_pending", False
-                    ) and not (session and (session.confirmed or session.entry_evidence)):
-                        update_party_status(hitter, quester, "等待单人区域探测")
-                        continue
+                    probe_pending = bool(probe_state['pending'])
 
                     if (dungeon_member_inside(hitter) and not probe_pending and not exit_handoff
                             and hitter_zone == quester_zone
@@ -2456,6 +2632,7 @@ async def main():
                         log_recovered(hitter, '已确认同一跟随区域', channel='follow')
                         session.follow_attempts.pop(id(hitter), None)
                         await hitter_reader.move_dungeon_member()
+                        log_probe('skip', 'own-verified-dungeon-follow')
                         update_party_status(hitter, quester, "地牢内同步本组任务端目标")
                         continue
 
@@ -2482,8 +2659,9 @@ async def main():
                     if same_live_area:
                         if session:
                             session.follow_attempts.pop(id(hitter), None)
-                        if probe_pending:
+                        if probe_pending or getattr(quester, 'quest_party_probe_pending', False):
                             await complete_zone_probe(False)
+                        log_probe('skip', 'already-in-own-verified-area')
                         if returning:
                             resume_dungeon_member(hitter)
                         blocked_instance_zone = None
@@ -2494,6 +2672,7 @@ async def main():
                             await hitter_reader.move_dungeon_member()
                             continue
                         if not await is_free(hitter):
+                            log_probe('skip', 'own-input-not-free')
                             update_party_status(hitter, quester, "等待战斗")
                             continue
                         hitter_pos = await hitter.body.position()
@@ -2501,7 +2680,8 @@ async def main():
                         if calc_Distance(hitter_pos, quester_pos) > 900:
                             update_party_status(hitter, quester, "正在跟随")
                             try:
-                                await hitter.teleport(quester_pos)
+                                if not getattr(quester, 'quest_party_entry_active', False):
+                                    await hitter.teleport(quester_pos)
                             except ValueError:
                                 await asyncio.sleep(0.5)
                         else:
@@ -2511,6 +2691,7 @@ async def main():
 
                     if blocked_instance_zone == quester_zone:
                         if now < blocked_instance_retry_at:
+                            log_probe('skip', 'own-instance-backoff')
                             _logging_follow_wait = getattr(hitter, '_logging_blocks', {}).get('follow')
                             if _logging_follow_wait is not None:
                                 log_blocked(hitter, None, _logging_follow_wait['reason'], channel='follow')
@@ -2525,6 +2706,7 @@ async def main():
                         blocked_instance_zone = None
 
                     if await is_visible_by_path(quester, spiral_door_teleport_path):
+                        log_probe('skip', 'quester-world-selection')
                         update_party_status(hitter, quester, "等待世界选择完成")
                         continue
 
@@ -2553,6 +2735,7 @@ async def main():
                         or not (objective_ready or fallback_ready)
                         or not await is_free(quester)
                     ):
+                        log_probe('skip', 'zone-or-objective-not-stable')
                         update_party_status(
                             hitter,
                             quester,
@@ -2564,28 +2747,40 @@ async def main():
                         )
                         continue
 
+                    request_client, reference = (quester, hitter) if entry_reverse else (hitter, quester)
+                    reference_zone = hitter_zone if entry_reverse else quester_zone
+                    if (get_client_automation_ownership(request_client).locked
+                            or any(getattr(c, flag, False) for c in (request_client, reference)
+                                for flag in ('quest_recovery_owner', 'refilling_potions', 'quest_party_entry_active',
+                                             'quest_party_safe_return_active', 'post_combat_movement_active',
+                                             'feeding_pet_status'))):
+                        log_probe('skip', 'input-owner-conflict', owner_client=request_client)
+                        update_party_status(hitter, quester, "等待好友归队输入所有权")
+                        continue
                     friend_icon = resolve_quester_friend_icon(
-                        quester, quest_friend_icons
+                        reference, quest_friend_icons
                     )
                     if (
-                        not quester.wizard_name
-                        and friend_icon is None
-                        and await is_free(quester)
+                        not reference.wizard_name
+                        and await is_free(reference)
                     ):
                         try:
-                            await asyncio.wait_for(prepare_quester_name(quester), timeout=5.0)
+                            await asyncio.wait_for(prepare_quester_name(reference), timeout=5.0)
                         except asyncio.TimeoutError:
+                            log_probe('skip', 'friend-name-unreadable', owner_client=request_client)
                             update_party_status(hitter, quester, "任务端姓名读取超时，等待下次探测")
                             continue
                     if (
-                        not quester.wizard_name and friend_icon is None
-                    ) or not await is_free(hitter):
+                        not reference.wizard_name
+                    ) or not await is_free(request_client):
+                        log_probe('skip', 'quester-name-unavailable' if not reference.wizard_name else 'friend-input-unavailable', owner_client=request_client)
                         if exit_handoff:
                             await exit_hitter_to_hub()
                         update_party_status(hitter, quester, "等待好友传送可用")
                         continue
 
                     if now < next_retry_at:
+                        log_probe('skip', 'own-retry-backoff', owner_client=request_client)
                         _logging_follow_wait = getattr(hitter, '_logging_blocks', {}).get('follow')
                         if _logging_follow_wait is not None:
                             log_blocked(hitter, None, _logging_follow_wait['reason'], channel='follow')
@@ -2597,13 +2792,15 @@ async def main():
                         )
                         continue
 
-                    bounded_dungeon_follow = bool(session and session.confirmed
-                        and dungeon_member_inside(quester) and dungeon_member_inside(hitter)
+                    bounded_dungeon_follow = bool(session
+                        and ((session.confirmed and dungeon_member_inside(quester) and dungeon_member_inside(hitter))
+                             or (not session.confirmed and session.entry_evidence))
                         and not returning and not exit_handoff)
-                    if bounded_dungeon_follow and session.follow_attempts.get(id(hitter), 0) >= 2:
+                    if bounded_dungeon_follow and session.follow_attempts.get(id(request_client), 0) >= 2:
+                        log_probe('skip', 'own-dungeon-attempt-limit', owner_client=request_client)
                         log_blocked(hitter, getattr(hitter, '_logging_follow_task', None),
-                            '地牢归队尝试 2 次仍未确认同实例，等待有效旧入口或实际归队', channel='follow')
-                        update_party_status(hitter, quester, "地牢归队尝试已达上限，等待有效旧入口或实际归队")
+                            '地牢归队尝试 2 次仍未确认同实例，等待实际归队', channel='follow')
+                        update_party_status(hitter, quester, "地牢归队尝试已达上限，等待实际归队")
                         continue
 
                     logger.debug(
@@ -2612,48 +2809,82 @@ async def main():
                     update_party_status(hitter, quester, "正在好友传送")
                     try:
                         hitter_zone_before_probe = hitter_zone
-                        probe_context = (quester_zone, dungeon_session_for(quester),
-                                         (await quester.quest_id(), await quester.goal_id()))
-                        hitter._logging_follow_task = (*probe_context[2], None, (quester.title, quester_zone))
+                        probe_context = (reference_zone, dungeon_session_for(reference),
+                                         (await reference.quest_id(), await reference.goal_id()))
+                        reference_token = await _party_area_token(reference)
+                        request_task = (await request_client.quest_id(), await request_client.goal_id())
+                        request_client._logging_follow_task = (*request_task, None, (reference.title, reference_zone))
+
+                        async def reference_current():
+                            return (request_client.questing_status and reference.questing_status
+                                and dungeon_session_for(reference) is probe_context[1]
+                                and dungeon_session_for(request_client) is probe_context[1]
+                                and not await reference.is_loading() and not await reference.in_battle()
+                                and await reference.zone_name() == probe_context[0]
+                                and (await reference.quest_id(), await reference.goal_id()) == probe_context[2]
+                                and await _party_area_token(reference) == reference_token)
 
                         async def attempt_probe():
-                            # The outer deadline includes cleanup and BOTH mouse
-                            # context boundaries, not just the friend-list click.
-                            await close_stale_friend_ui(hitter)
-                            async with probe_mouse():
-                                await asyncio.wait_for(
-                                    teleport_to_quester_from_friend_list(
-                                        hitter, quester.wizard_name, friend_icon), timeout=15.0)
-                            same_zone_probe = bool((probe_pending or returning)
-                                                   and hitter_zone_before_probe == quester_zone)
-                            await asyncio.sleep(6.0 if same_zone_probe else 1.0)
-                            arrival_deadline = loop.time() + 15.0
-                            while loop.time() < arrival_deadline:
-                                if await is_friend_teleport_error(hitter):
-                                    raise FriendBusyOrInstanceClosed()
-                                if (dungeon_session_for(quester) is not probe_context[1]
-                                        or await quester.is_loading()
-                                        or await quester.zone_name() != probe_context[0]
-                                        or (await quester.quest_id(), await quester.goal_id()) != probe_context[2]):
-                                    raise RuntimeError("任务端状态已改变，停止旧探测")
-                                if (not await hitter.is_loading()
-                                        and await hitter.zone_name() == quester_zone
-                                        and await hitter_is_in_quester_area()):
-                                    break
-                                await asyncio.sleep(0.25)
-                            else:
-                                raise RuntimeError("好友探测未确认加载结束及同实例归队")
-                            if returning:
-                                resume_dungeon_member(hitter)
-                            if exit_handoff:
-                                record_dungeon_exit(hitter, hitter_zone_before_probe,
-                                                    await hitter.zone_name(), evidence='live-rejoin')
-                            if getattr(quester, 'quest_party_probe_pending', False):
-                                await complete_zone_probe(False, probe_context)
+                            # Both directions reuse this one request/arrival pipeline.
+                            async with automation_owner(request_client, 'friend-follow'):
+                                log_probe('start', 'own-probe-required', owner_client=request_client)
+                                if not await reference_current() or await dungeon_entry_waiting(request_client):
+                                    raise RuntimeError("入场参照已变化，停止旧好友归队")
+                                if await follower_arrival_confirmed(request_client, reference):
+                                    return True
+                                if (entry_reverse and await request_client.zone_name() != entry_source['source_zone']):
+                                    raise RuntimeError("漏进成员已离开来源区域，停止旧归队输入")
+                                await close_stale_friend_ui(request_client, reference)
+                                async with probe_mouse(request_client):
+                                    if (not await reference_current() or await request_client.is_loading()
+                                            or await request_client.in_battle()
+                                            or (await request_client.quest_id(), await request_client.goal_id()) != request_task
+                                            or entry_reverse and (
+                                                (await request_client.quest_id(), await request_client.goal_id()) != entry_source['source_tasks'].get(id(request_client))
+                                                or await _party_area_token(request_client) != entry_source['source_tokens'].get(id(request_client)))):
+                                        raise RuntimeError("好友归队输入前上下文已变化")
+                                    if bounded_dungeon_follow:
+                                        used = session.follow_attempts.get(id(request_client), 0)
+                                        if used >= 2:
+                                            raise RuntimeError("地牢归队预算已耗尽")
+                                        session.follow_attempts[id(request_client)] = used + 1
+                                    logger.debug(f"[dungeon_entry] direction={request_client.title}->{reference.title} "
+                                                 f"phase=friend-request reverse={entry_reverse}")
+                                    await asyncio.wait_for(teleport_to_quester_from_friend_list(
+                                        request_client, reference.wizard_name, friend_icon), timeout=15.0)
+                                same_zone_probe = bool(not entry_reverse and (probe_pending or returning)
+                                                       and hitter_zone_before_probe == reference_zone)
+                                await asyncio.sleep(6.0 if same_zone_probe else 1.0)
+                                arrival_deadline = loop.time() + 15.0
+                                while loop.time() < arrival_deadline:
+                                    if await is_friend_teleport_error(request_client):
+                                        raise FriendBusyOrInstanceClosed()
+                                    if not await reference_current():
+                                        raise RuntimeError("入场参照已改变，停止旧探测")
+                                    if await follower_arrival_confirmed(request_client, reference):
+                                        break
+                                    await asyncio.sleep(0.25)
+                                else:
+                                    raise RuntimeError("好友探测未确认加载结束及同实例归队")
+                                await observe_dungeon_session(quester)
+                                if returning:
+                                    resume_dungeon_member(hitter)
+                                if exit_handoff:
+                                    record_dungeon_exit(hitter, hitter_zone_before_probe,
+                                                        await hitter.zone_name(), evidence='live-rejoin')
+                                if getattr(quester, 'quest_party_probe_pending', False):
+                                    context = ((await quester.zone_name(), dungeon_session_for(quester),
+                                        (await quester.quest_id(), await quester.goal_id()))
+                                        if entry_reverse else probe_context)
+                                    await complete_zone_probe(False, context)
+                                if session:
+                                    session.follow_attempts.pop(id(request_client), None)
+                                probe_state.update(pending=False, failures=0, retry_at=0.0)
+                                log_probe('complete', 'friend-arrival-confirmed', owner_client=request_client)
+                                return True
 
-                        if bounded_dungeon_follow:
-                            session.follow_attempts[id(hitter)] = session.follow_attempts.get(id(hitter), 0) + 1
-                        await asyncio.wait_for(attempt_probe(), timeout=30.0)
+                        if not await asyncio.wait_for(attempt_probe(), timeout=30.0):
+                            raise RuntimeError("好友探测未确认实际归队")
                         logger.debug(f"打手 {hitter.title} 好友探测完成，同实例归队已确认。")
                         log_recovered(hitter, '已确认同实例归队', channel='follow')
                         failure_count = 0
@@ -2662,10 +2893,12 @@ async def main():
                         logger.debug(f"打手 {hitter.title} 好友探测已取消。")
                         raise
                     except FriendBusyOrInstanceClosed as exc:
-                        await bounded_probe_cleanup()
+                        await bounded_probe_cleanup(request_client, reference)
                         blocked_instance_zone = quester_zone
                         blocked_instance_retry_at = loop.time() + 60.0
-                        solo_confirmed = await complete_zone_probe(True, probe_context)
+                        probe_state['retry_at'] = blocked_instance_retry_at
+                        log_probe('retry', 'own-friend-instance-unavailable', owner_client=request_client)
+                        solo_confirmed = False if entry_reverse else await complete_zone_probe(True, probe_context)
                         if exit_handoff:
                             await exit_hitter_to_hub()
                         update_party_status(hitter, quester, "单人区域，任务端独立执行" if solo_confirmed
@@ -2677,11 +2910,13 @@ async def main():
                         log_blocked(hitter, getattr(hitter, '_logging_follow_task', None),
                             f'好友传送暂不可用：{type(exc).__name__}: {exc}', delay=60, channel='follow')
                     except Exception as exc:
-                        if await is_friend_teleport_error(hitter):
-                            await bounded_probe_cleanup()
+                        if not isinstance(exc, FriendLookupError) and await is_friend_teleport_error(request_client):
+                            await bounded_probe_cleanup(request_client, reference)
                             blocked_instance_zone = quester_zone
                             blocked_instance_retry_at = loop.time() + 60.0
-                            solo_confirmed = await complete_zone_probe(True, probe_context)
+                            probe_state['retry_at'] = blocked_instance_retry_at
+                            log_probe('retry', 'own-friend-instance-unavailable', owner_client=request_client)
+                            solo_confirmed = False if entry_reverse else await complete_zone_probe(True, probe_context)
                             if exit_handoff:
                                 await exit_hitter_to_hub()
                             update_party_status(
@@ -2696,10 +2931,12 @@ async def main():
                             log_blocked(hitter, getattr(hitter, '_logging_follow_task', None),
                                 '好友传送当前实例不可进入', delay=60, channel='follow')
                             continue
-                        await bounded_probe_cleanup()
+                        await bounded_probe_cleanup(request_client, reference)
                         failure_count += 1
                         delay = friend_follow_retry_delay(failure_count)
                         next_retry_at = loop.time() + delay
+                        probe_state.update(failures=failure_count, retry_at=next_retry_at)
+                        log_probe('retry', getattr(exc, 'reason', 'own-friend-request-failed'), owner_client=request_client)
                         if exit_handoff:
                             await exit_hitter_to_hub()
                         update_party_status(
@@ -2720,7 +2957,7 @@ async def main():
         ):
             """Keep the follower alive across transient memory/UI read failures."""
             from src.logging_utils import log_blocked, log_exception
-            while (members is not None or questing_status) and hitter.questing_status:
+            while (members is not None or questing_status) and hitter.questing_status and quester.questing_status:
                 try:
                     await _follow_quester_session(hitter, quester, is_probe_hitter)
                 except asyncio.CancelledError:
@@ -3074,138 +3311,305 @@ async def main():
                     return group
             return [client]
 
-        async def rescue_missing_party_hitters(quester: Client):
-            """Retry battle entry for assigned hitters that missed the circle."""
-            if (
-                not quest_party_enabled
-                or quester.in_solo_zone
-                or getattr(quester, "quest_party_probe_pending", False)
-            ):
-                quester.quest_party_battle_started_at = None
+        def party_battle_pair_mode(reference, member, party):
+            """Keep role assignments; only a shared confirmed dungeon permits reverse entry."""
+            quester = next((q for q in party.questers if q is reference), None)
+            if quester is None:
+                quester = next((q for h, q in party.hitter_assignments if h is reference), None)
+            if quester is None or reference is member:
+                return None
+            hitters = [h for h, q in party.hitter_assignments if q is quester]
+            if not any(member is c for c in (quester, *hitters)):
+                return None
+            session = dungeon_session_for(quester)
+            if (session and session.quester is quester and dungeon_member_inside(quester)
+                    and dungeon_session_for(reference) is session
+                    and dungeon_session_for(member) is session
+                    and dungeon_member_inside(reference) and dungeon_member_inside(member)):
+                return 'dungeon'
+            return 'forward' if reference is quester and any(member is h for h in hitters) else None
+
+        def battle_rescue_diagnostic(quester, hitter, party, reason, **details):
+            """One record per changed reason, then at most once every 30 seconds."""
+            cache = getattr(quester, '_battle_rescue_diagnostics', None)
+            if not isinstance(cache, dict):
+                cache = quester._battle_rescue_diagnostics = {}
+            member = getattr(hitter, 'process_id', None)
+            group = [c.title for c in combat_group_for(quester)]
+            roles = [c.title for c in party.questers]
+            assigned = [h.title for h, q in party.hitter_assignments if q is quester]
+            signature = (reason, tuple(group), tuple(roles), tuple(assigned),
+                         details.get('anchor'), details.get('direction'), details.get('duel'))
+            now = asyncio.get_running_loop().time()
+            previous = cache.get(member)
+            if previous and previous[0] == signature and now - previous[1] < 30:
                 return
+            cache[member] = (signature, now)
+            logger.info(f"[battle_rescue] quester={quester.title} hitter={getattr(hitter, 'title', '-')} "
+                        f"reason={reason} group={group} questers={roles} assigned={assigned} "
+                        f"cached_hitters={[h.title for h in getattr(quester, 'quest_party_hitters', ())]} "
+                        f"solo={getattr(quester, 'in_solo_zone', False)} "
+                        f"probe_pending={getattr(quester, 'quest_party_probe_pending', False)} "
+                        f"hitter_solo={getattr(hitter, 'in_solo_zone', False)} "
+                        f"rescue_active={(getattr(quester, 'quest_party_battle_rescue_active', False), getattr(hitter, 'quest_party_battle_rescue_active', False))} "
+                        f"invulnerable_timer={getattr(hitter, 'invincible_combat_timer', False)} "
+                        f"questing={(getattr(quester, 'questing_status', False), getattr(hitter, 'questing_status', None))} "
+                        f"state={details}")
 
-            if not await quester.in_battle():
-                quester.quest_party_battle_started_at = None
-                return
-
-            loop = asyncio.get_running_loop()
-            if quester.quest_party_battle_started_at is None:
-                quester.quest_party_battle_started_at = loop.time()
-                return
-
-            # Give the normal duel-circle join path a short chance first.
-            if loop.time() - quester.quest_party_battle_started_at < 3.0:
-                return
-
-            party = current_quest_party(getattr(quester, "hotkey_quest_clients", None))
-            assigned_hitters = [
-                hitter
-                for hitter, assigned_quester in party.hitter_assignments
-                if assigned_quester is quester
-            ]
-            quester_zone = await quester.zone_name()
-            for hitter in assigned_hitters:
-                if (
-                    hitter not in walker.clients
-                    or await hitter.in_battle()
-                    or await hitter.is_loading()
-                    or getattr(hitter, "quest_party_battle_rescue_active", False)
-                    or loop.time()
-                    - getattr(hitter, "quest_party_battle_rescue_at", 0.0)
-                    < 7.0
-                    or await hitter.zone_name() != quester_zone
-                ):
-                    continue
-
-                hitter.quest_party_battle_rescue_active = True
-                hitter.quest_party_battle_rescue_at = loop.time()
-                saved_original_position = False
-                recovery_join_started = False
-                try:
-                    logger.info(
-                        f"打手 {hitter.title} 未进入 {quester.title} 的战斗，"
-                        "正在执行入战恢复。"
-                    )
-                    original_position = await hitter.body.position()
-                    if hitter.process_id not in original_client_locations:
-                        original_client_locations[hitter.process_id] = original_position
-                        await capture_dungeon_return(hitter)
-                        saved_original_position = True
-                    await hitter.teleport(XYZ(0.0, 0.0, -3000.0))
-                    await hitter.send_key(key=Keycode.A, seconds=0.25)
-                    await hitter.send_key(key=Keycode.D, seconds=0.25)
-
-                    if await quester.in_battle() and not await hitter.in_battle():
-                        hitter.entity_detect_combat_status = True
-                        hitter.just_entered_combat = time.time()
-                        hitter.client_being_helped = quester
-                        recovery_join_started = True
-                        if hitter not in quester.helper_clients:
-                            quester.helper_clients.append(hitter)
-
-                    # Always leave the recovery coordinate again, even if the
-                    # battle happened to end during the A/D movement.
-                    if not await hitter.in_battle():
-                        await hitter.teleport(await quester.body.position())
-
-                    if recovery_join_started:
-                        entry_deadline = loop.time() + 3.0
-                        while (
-                            loop.time() < entry_deadline
-                            and await quester.in_battle()
-                            and not await hitter.in_battle()
-                        ):
-                            await asyncio.sleep(0.25)
-
+        async def rescue_missing_party_hitters(quester: Client, party=None):
+            """One quester coordinates both directions inside its confirmed dungeon."""
+            if party is None:
+                party = current_quest_party(combat_group_for(quester))
+            assigned_hitters = [h for h, q in party.hitter_assignments if q is quester]
+            diagnostic_members = assigned_hitters or [h for h in getattr(quester, 'quest_party_hitters', ())
+                if getattr(quester, 'hotkey_quest_clients', None) is None
+                or h in quester.hotkey_quest_clients]
+            def report(reason, hitter=None, **details):
+                battle_rescue_diagnostic(quester, hitter, party, reason, **details)
+            if not quest_party_enabled or quester not in party.questers or not assigned_hitters:
+                reason = ('party-disabled' if not quest_party_enabled else
+                          'not-scoped-quester' if quester not in party.questers else 'no-assigned-hitters')
+                if await quester.in_battle():
+                    for hitter in diagnostic_members:
                         if not await hitter.in_battle():
-                            hitter.just_entered_combat = None
-                            hitter.entity_detect_combat_status = False
-                            hitter.client_being_helped = None
-                            if hitter in quester.helper_clients:
-                                quester.helper_clients.remove(hitter)
-                            if saved_original_position:
-                                original_client_locations.pop(hitter.process_id, None)
-                            logger.warning(
-                                f"打手 {hitter.title} 本次入战恢复未进入战斗，"
-                                "稍后将再次尝试。"
-                            )
-                    elif saved_original_position:
-                        original_client_locations.pop(hitter.process_id, None)
-                except asyncio.CancelledError:
-                    hitter.just_entered_combat = None
-                    hitter.entity_detect_combat_status = False
-                    hitter.client_being_helped = None
-                    if hitter in quester.helper_clients:
-                        quester.helper_clients.remove(hitter)
+                            report(reason, hitter)
+                return
+            current_task = asyncio.current_task()
+            owner = getattr(quester, '_quest_party_battle_rescue_owner', None)
+            if owner is not None and owner is not current_task and not owner.done():
+                report('group-rescue-active')
+                return
+            quester._quest_party_battle_rescue_owner = current_task
+            try:
+                members = (quester, *assigned_hitters)
+                fighting = [c for c in members if await c.in_battle()]
+                if not fighting:
+                    quester.quest_party_battle_started_at = None
+                    quester._quest_party_battle_rescue_state = None
+                    quester._battle_rescue_diagnostics = {}
+                    return
+                anchor = quester if any(c is quester for c in fighting) else next(
+                    (c for c in fighting if party_battle_pair_mode(c, quester, party) == 'dungeon'), None)
+                if anchor is None:
+                    report('outside-direction-kept', quester, anchor=fighting[0].title,
+                           direction=f'{fighting[0].title}->{quester.title}', dungeon=False)
+                    return
+                loop = asyncio.get_running_loop()
+                candidates = [c for c in members if not any(c is f for f in fighting)
+                              and party_battle_pair_mode(anchor, c, party)]
+                for hitter in candidates:
+                    mode = party_battle_pair_mode(anchor, hitter, party)
+                    session = dungeon_session_for(quester) if mode == 'dungeon' else None
+                    details = dict(anchor=anchor.title, direction=f'{anchor.title}->{hitter.title}',
+                                   dungeon=mode == 'dungeon')
+                    async def guard(*, owned=False, expected=None):
+                        if not quest_party_enabled:
+                            return 'party-disabled'
+                        current = current_quest_party(combat_group_for(quester))
+                        if (quester not in current.questers
+                                or party_battle_pair_mode(anchor, hitter, current) != mode
+                                or quester not in combat_group_for(hitter)
+                                or quester not in combat_group_for(anchor)):
+                            return 'group-or-role-changed'
+                        if any(not any(c is live for live in walker.clients)
+                               or callable(getattr(c, 'is_running', None)) and not c.is_running()
+                               for c in (quester, anchor, hitter)):
+                            return 'client-unavailable'
+                        if not all(c.questing_status for c in (quester, anchor, hitter)):
+                            return 'questing-stopped'
+                        if not await anchor.in_battle():
+                            return 'battle-ended'
+                        duel = await anchor.duel.duel_id_full()
+                        details['duel'] = duel
+                        if type(duel) is not int or duel <= 0:
+                            return 'duel-unreadable'
+                        if expected is not None and duel != expected[0]:
+                            return 'duel-or-area-changed'
+                        details['loading'] = (await anchor.is_loading(), await hitter.is_loading())
+                        if any(details['loading']) or await quester.is_loading():
+                            return 'loading'
+                        details['zone'] = (await anchor.zone_name(), await hitter.zone_name())
+                        details['instance_confirmed'] = await clients_share_live_area(anchor, hitter)
+                        details['session_confirmed'] = bool(session and session.confirmed)
+                        if any(getattr(c, 'in_solo_zone', False) for c in (quester, anchor, hitter)):
+                            return 'solo-zone'
+                        if getattr(quester, 'quest_party_probe_pending', False):
+                            return 'probe-pending'
+                        if details['zone'][0] != details['zone'][1]:
+                            return 'zone-mismatch'
+                        if not details['instance_confirmed']:
+                            return 'instance-unconfirmed'
+                        if mode == 'dungeon' and (dungeon_session_for(quester) is not session
+                                or any(dungeon_session_for(c) is not session or not dungeon_member_inside(c)
+                                       for c in (anchor, hitter))):
+                            return 'dungeon-session-changed'
+                        if expected is not None:
+                            _, zone, a_token, h_token, tasks, control = expected
+                            if (details['zone'] != (zone, zone)
+                                    or await _party_area_token(anchor) != a_token
+                                    or await _party_area_token(hitter) != h_token):
+                                return 'duel-or-area-changed'
+                            for c, task in tasks:
+                                if (await c.quest_id(), await c.goal_id()) != task:
+                                    return 'task-changed'
+                            if await _movement_control_changed(hitter, control):
+                                return 'controlled-object-changed'
+                        if await hitter.in_battle():
+                            return ('hitter-joined' if await hitter.duel.duel_id_full() == duel
+                                    else 'different-battle')
+                        details['duel_phase'] = await anchor.duel.duel_phase()
+                        details['joinable'] = getattr(anchor, 'duel_circle_joinable', True)
+                        if (details['joinable'] is not True or details['duel_phase'] not in (
+                                DuelPhase.starting, DuelPhase.pre_planning, DuelPhase.planning,
+                                DuelPhase.pre_execution, DuelPhase.execution, DuelPhase.resolution)):
+                            return 'circle-not-joinable'
+                        details['recovery_owner'] = tuple(bool(getattr(c, 'quest_recovery_owner', None))
+                                                          for c in (quester, anchor, hitter))
+                        details['busy_flags'] = [(c.title, flag) for c in (quester, anchor, hitter)
+                            for flag in ('refilling_potions', 'quest_party_safe_return_active',
+                                         'post_combat_movement_active', 'feeding_pet_status',
+                                         'quest_party_entry_active') if getattr(c, flag, False)]
+                        if any(details['recovery_owner']) or details['busy_flags']:
+                            return 'recovery-owner'
+                        if getattr(quester, 'quest_party_battle_rescue_active', False) and not (owned and hitter is quester):
+                            return 'quester-rescue-active'
+                        if getattr(anchor, 'quest_party_battle_rescue_active', False):
+                            return 'anchor-rescue-active'
+                        if getattr(hitter, 'quest_party_battle_rescue_active', False) and not owned:
+                            return 'rescue-active'
+                        if getattr(hitter, 'invincible_combat_timer', False):
+                            return 'invulnerable-timer'
+                        moving = getattr(hitter, '_quest_active_movement', None)
+                        if moving is not None and moving is not current_task and not moving.done():
+                            return 'movement-active'
+                        ownership = get_client_automation_ownership(hitter)
+                        details['input_owner'] = ownership.owner_label
+                        if ownership.locked and (not owned or ownership._owner_task is not current_task
+                                                 or ownership.owner_label != 'battle-rescue'):
+                            return 'input-owner-busy'
+                        return None
                     try:
-                        if not await hitter.in_battle():
-                            await asyncio.shield(
-                                hitter.teleport(await quester.body.position())
-                            )
-                    except Exception:
-                        pass
-                    finally:
-                        if saved_original_position:
-                            original_client_locations.pop(hitter.process_id, None)
-                    raise
-                except Exception as exc:
-                    hitter.just_entered_combat = None
-                    hitter.entity_detect_combat_status = False
-                    hitter.client_being_helped = None
-                    if hitter in quester.helper_clients:
-                        quester.helper_clients.remove(hitter)
-                    try:
-                        if not await hitter.in_battle():
-                            await hitter.teleport(await quester.body.position())
-                    except Exception:
-                        logger.debug(f"打手 {hitter.title} 暂时无法离开入战恢复坐标。")
-                    if saved_original_position:
-                        original_client_locations.pop(hitter.process_id, None)
-                    logger.warning(
-                        f"打手 {hitter.title} 入战恢复暂未成功，将稍后重试：{exc}"
-                    )
-                finally:
-                    hitter.quest_party_battle_rescue_active = False
+                        reason = await guard()
+                        if reason:
+                            if reason in ('solo-zone', 'probe-pending'):
+                                quester.quest_party_battle_started_at = None
+                            report(reason, hitter, **details)
+                            continue
+                        if quester.quest_party_battle_started_at is None:
+                            quester.quest_party_battle_started_at = loop.time()
+                        if loop.time() - quester.quest_party_battle_started_at < 3:
+                            report('normal-join-grace', hitter, **details)
+                            continue
+                        duel, zone = details['duel'], details['zone'][0]
+                        tasks = [(c, (await c.quest_id(), await c.goal_id())) for c in members]
+                        if any(type(task[0]) is not int or task[0] < 0 or type(task[1]) is not int for _, task in tasks):
+                            report('task-unreadable', hitter, **details)
+                            continue
+                        original = await _movement_position(hitter)
+                        control = getattr(hitter, '_quest_movement_control', None)
+                        expected = (duel, zone, await _party_area_token(anchor), await _party_area_token(hitter), tasks, control)
+                        # Canonical quester evidence keeps the same budget if the reference changes.
+                        key = (duel, zone, await _party_area_token(quester))
+                        state = getattr(quester, '_quest_party_battle_rescue_state', None)
+                        if not isinstance(state, dict) or state['key'] != key:
+                            state = quester._quest_party_battle_rescue_state = dict(key=key, attempts={})
+                        used = state['attempts'].get(hitter.process_id, 0)
+                        details['attempts'] = used
+                        if used >= 3:
+                            report('attempts-exhausted', hitter, **details)
+                            continue
+                        remaining = 7 - (loop.time() - getattr(hitter, 'quest_party_battle_rescue_at', 0))
+                        if remaining > 0:
+                            report('cooldown', hitter, remaining=round(remaining, 1), **details)
+                            continue
+                        from src.ibao_runtime import complete_before_cancel
+                        saved = moved = False
+                        async def restore_origin():
+                            if (moved and not await hitter.in_battle() and not await hitter.is_loading()
+                                    and await hitter.zone_name() == zone
+                                    and await _party_area_token(hitter) == expected[3]
+                                    and not await _movement_control_changed(hitter, control)):
+                                await hitter.teleport(original)
+                        async with asyncio.timeout(8), automation_owner(hitter, 'battle-rescue'):
+                            hitter.quest_party_battle_rescue_active = True
+                            try:
+                                reason = await guard(owned=True, expected=expected)
+                                if reason:
+                                    report(reason, hitter, **details)
+                                    continue
+                                state['attempts'][hitter.process_id] = used + 1
+                                hitter.quest_party_battle_rescue_at = loop.time()
+                                report(f'entered-{used + 1}/3', hitter, **details)
+                                logger.info(f"客户端 {hitter.title} 未进入 {anchor.title} 的战斗，正在执行入战恢复。")
+                                if hitter.process_id not in original_client_locations:
+                                    original_client_locations[hitter.process_id] = original
+                                    saved = True
+                                    await capture_dungeon_return(hitter)
+                                reason = await guard(owned=True, expected=expected)
+                                if reason:
+                                    report(reason, hitter, **details)
+                                    continue
+                                moved = True
+                                await complete_before_cancel(asyncio.create_task(hitter.teleport(XYZ(0, 0, -3000))))
+                                for keycode in (Keycode.A, Keycode.D):
+                                    reason = await guard(owned=True, expected=expected)
+                                    if reason:
+                                        break
+                                    await complete_before_cancel(asyncio.create_task(hitter.send_key(key=keycode, seconds=.25)))
+                                reason = await guard(owned=True, expected=expected)
+                                if reason:
+                                    report(reason, hitter, **details)
+                                    continue
+                                target = await _movement_position(anchor)
+                                reason = await guard(owned=True, expected=expected)
+                                if reason:
+                                    report(reason, hitter, **details)
+                                    continue
+                                hitter.entity_detect_combat_status = True
+                                hitter.just_entered_combat = time.time()
+                                hitter.client_being_helped = anchor
+                                if hitter not in anchor.helper_clients:
+                                    anchor.helper_clients.append(hitter)
+                                await complete_before_cancel(asyncio.create_task(hitter.teleport(target)))
+                                deadline = loop.time() + 3
+                                while loop.time() < deadline:
+                                    reason = await guard(owned=True, expected=expected)
+                                    if reason:
+                                        break
+                                    await asyncio.sleep(.25)
+                                joined = (await guard(owned=True, expected=expected)) == 'hitter-joined'
+                                report('joined' if joined else reason or 'join-unconfirmed', hitter, **details)
+                            finally:
+                                try:
+                                    in_battle = await hitter.in_battle()
+                                    same_battle = (in_battle and await anchor.in_battle()
+                                        and await hitter.duel.duel_id_full() == expected[0]
+                                        and await anchor.duel.duel_id_full() == expected[0])
+                                    if not same_battle:
+                                        if not in_battle:
+                                            hitter.just_entered_combat = None
+                                            hitter.entity_detect_combat_status = False
+                                        if hitter.client_being_helped is anchor:
+                                            hitter.client_being_helped = None
+                                        if hitter in anchor.helper_clients:
+                                            anchor.helper_clients.remove(hitter)
+                                        await complete_before_cancel(asyncio.create_task(restore_origin()))
+                                        if saved and not in_battle:
+                                            original_client_locations.pop(hitter.process_id, None)
+                                finally:
+                                    hitter.quest_party_battle_rescue_active = False
+                    except asyncio.CancelledError:
+                        report('cancelled', hitter, **details)
+                        raise
+                    except Exception as exc:
+                        report('state-or-input-failed', hitter, error=f'{type(exc).__name__}: {exc}', **details)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                report('state-unreadable', error=f'{type(exc).__name__}: {exc}')
+            finally:
+                if getattr(quester, '_quest_party_battle_rescue_owner', None) is current_task:
+                    quester._quest_party_battle_rescue_owner = None
 
         async def detect_combat(p: Client):
             global original_client_locations
@@ -3216,13 +3620,12 @@ async def main():
                 await asyncio.sleep(0.5)
 
                 if p.questing_status:
+                    combat_group = combat_group_for(p)
+                    combat_party = current_quest_party(combat_group)
+                    other_clients = [c for c in combat_group if c != p]
+                    await rescue_missing_party_hitters(p, party=combat_party)
                     if getattr(p, "quest_party_battle_rescue_active", False):
                         continue
-
-                    combat_group = combat_group_for(p)
-                    other_clients = [c for c in combat_group if c != p]
-                    if quest_party_enabled and p in current_quest_party().questers:
-                        await rescue_missing_party_hitters(p)
                     if p.just_entered_combat is not None:
                         # 5 seconds have passed since the client entered combat
                         if time.time() >= (p.just_entered_combat + 7):
@@ -3281,9 +3684,13 @@ async def main():
                                     none_in_solo_zone = True
                                     all_already_in_battle = False
                                     for c in other_clients:
+                                        if quest_party_enabled and party_battle_pair_mode(p, c, combat_party) != 'forward':
+                                            # Confirmed dungeon pairs use the bounded actual-battle
+                                            # recovery above; outside, retain quester -> assigned hitter.
+                                            continue
                                         client_is_hitter_client = False
                                         if quest_party_enabled:
-                                            party = current_quest_party()
+                                            party = combat_party
                                             client_is_hitter_client = c in party.hitters
                                             if client_is_hitter_client:
                                                 non_hitters = [

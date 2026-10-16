@@ -1,4 +1,6 @@
 import ast
+import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -274,14 +276,35 @@ class CloseFriendWindowsTests(unittest.IsolatedAsyncioTestCase):
         panel.write_flags.assert_not_awaited()
         self.client.mouse_handler.click_window.assert_not_awaited()
 
-    async def test_task_follow_cleanup_uses_the_baseline_escape_sequence(self):
+    async def test_task_follow_cleanup_closes_character_and_confirms_hidden(self):
         tree = ast.parse(Path('XuanShu.py').read_text(encoding='utf-8'))
-        fn = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == 'close_stale_friend_ui')
-        from wizwalker import Keycode
-        visible = AsyncMock(side_effect=[True, False])
-        client = SimpleNamespace(send_key=AsyncMock())
-        ns = dict(Client=object, Keycode=Keycode, friend_ui_is_open=visible,
-                  asyncio=SimpleNamespace(sleep=AsyncMock()))
-        exec(compile(ast.Module(body=[fn], type_ignores=[]), 'XuanShu.py', 'exec'), ns)
+        names = {'friend_window_visible', 'friend_ui_is_open', 'close_stale_friend_ui', 'probe_mouse'}
+        functions = [n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name in names]
+        from src.automation_ownership import automation_owner, get_client_automation_ownership
+        panel, button = AsyncMock(), AsyncMock()
+        panel.is_visible.return_value = True
+        button.is_visible.return_value = True
+        button.flags.return_value = WindowFlags.visible
+        button.is_control_grayed.return_value = False
+        client = SimpleNamespace(send_key=AsyncMock(), root_window=object(), title='p2',
+            mouse_handler=AsyncMock(), questing_status=True,
+            is_loading=AsyncMock(return_value=False), in_battle=AsyncMock(return_value=False),
+            zone_name=AsyncMock(return_value='World/Area'), quest_id=AsyncMock(return_value=42),
+            goal_id=AsyncMock(return_value=7))
+        async def lookup(_, path):
+            return {('WorldView', 'windowHUD', 'wndCharacter'): panel,
+                    ('WorldView', 'windowHUD', 'wndCharacter', 'btnCharacterClose'): button}.get(tuple(path), False)
+        async def close(clicked):
+            self.assertIs(clicked, button)
+            panel.is_visible.return_value = False
+        client.mouse_handler.click_window.side_effect = close
+        ns = dict(Client=object, WindowFlags=WindowFlags, hitter=client, quester=client,
+                  automation_owner=automation_owner, get_client_automation_ownership=get_client_automation_ownership,
+                  get_window_from_path=lookup, dungeon_session_for=lambda _: None,
+                  asyncio=asyncio, sys=__import__('sys'), asynccontextmanager=asynccontextmanager)
+        exec(compile(ast.Module(body=functions, type_ignores=[]), 'XuanShu.py', 'exec'), ns)
         await ns['close_stale_friend_ui'](client)
-        client.send_key.assert_awaited_once_with(Keycode.ESC, 0.1)
+        client.mouse_handler.click_window.assert_awaited_once_with(button)
+        self.assertFalse(panel.is_visible.return_value)
+        client.send_key.assert_not_awaited()
+        self.assertFalse(get_client_automation_ownership(client).locked)

@@ -36,6 +36,7 @@ class DoorApproachTests(PartyTransitionFixture, unittest.IsolatedAsyncioTestCase
         self.visible.side_effect = lambda c, path: ((path == npc_range_path and self.prompt)
             or (path == advance_dialog_path and self.dialogue and c is self.q))
         self.title.return_value = 'Door'
+        self.stack.enter_context(patch.object(Quester, 'read_quest_txt', AsyncMock(return_value='Use Door')))
         self.stack.enter_context(patch('src.questing.get_quest_name', AsyncMock(return_value='Use Door')))
         self.stack.enter_context(patch('src.mainline_progress.log_mainline_progress', AsyncMock()))
         for name in ('src.mainline_recovery.maybe_recover_mainline', 'src.questing.is_potion_needed',

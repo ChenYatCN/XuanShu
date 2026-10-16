@@ -24,6 +24,7 @@ class OriginInteractionTests(prompts.Fixture):
         self.nearby(361)
         await self.failure()
         self.title, self.prompt = 'Storm Turbine A', '按下 或 互动'
+        self.objective = 'Use Storm Turbine A'
         before = await self.quester._dungeon_quest_snapshot(self.client)
         self.on_x = lambda: setattr(self, 'goal', self.goal + 1)
         await self.quester.auto_quest_solo()
@@ -54,13 +55,13 @@ class OriginInteractionTests(prompts.Fixture):
         state['pending'] = self.target, self.position, await self.client.zone_name()
         self.assertFalse(await self.quester.quest_interaction_ready(self.client, self.target))
 
-    async def test_read_failure_retains_known_baseline_and_uses_existing_cooldown(self):
+    async def test_unreadable_prompt_retains_tp_baseline_without_new_interaction_context(self):
         self.nearby(361)
         state = await self.failure((self.title, self.prompt))
         self.quester.read_popup.side_effect = RuntimeError('unreadable')
         self.assertFalse(await self.quester.quest_interaction_ready(self.client, self.target))
         self.assertEqual(state['origin_signature'], (self.title, self.prompt))
-        self.assertIsNotNone(self.client._quest_internal_failure_wait)
+        self.assertIsNone(getattr(self.client, '_quest_internal_failure_wait', None))
         self.assertLessEqual(self.quester.read_popup.await_count, 3)
 
     async def test_missing_pre_tp_identity_has_finite_recovery_without_new_baseline(self):
@@ -167,6 +168,7 @@ class AttemptIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.stack.enter_context(patch.object(movement, 'get_window_from_path', AsyncMock(
             return_value=SimpleNamespace(maybe_text=AsyncMock(side_effect=lambda: self.action)))))
         self.stack.enter_context(patch.object(movement, '_retreat_toward', AsyncMock(return_value=False)))
+        self.stack.enter_context(patch.object(movement, 'navmap_tp', AsyncMock(return_value=None)))
 
     async def test_actual_tp_captures_origin_identity_and_retries_preserve_record(self):
         self.assertEqual(await movement.collision_tp(self.client, self.target), 'failed')

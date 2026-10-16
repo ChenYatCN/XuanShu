@@ -63,7 +63,7 @@ class TeleportHotkeySelectionTests(unittest.IsolatedAsyncioTestCase):
                     await self.ns[action](selected)
                     source_number = int(selected[0][1:])
                     if action == 'navmap_teleport_hotkey':
-                        self.ns['navmap_tp'].assert_awaited_once_with(members[0], (source_number, 2, 3))
+                        self.ns['navmap_tp'].assert_awaited_once_with(members[0], (source_number, 2, 3), require_questing=False)
                     elif action == 'mass_navmap_teleport_hotkey':
                         calls = self.ns['navmap_tp'].await_args_list
                         self.assertEqual([call.args[0].title for call in calls], selected)
@@ -111,7 +111,7 @@ class TeleportHotkeySelectionTests(unittest.IsolatedAsyncioTestCase):
         await self.ns['xyz_sync_hotkey'](['p3', 'p4'])
         self.clients[2].teleport.assert_awaited_once_with((4, 5, 6), yaw=4)
         await self.ns['navmap_teleport_hotkey'](['p3', 'p4'])
-        self.ns['navmap_tp'].assert_awaited_once_with(self.clients[3], (4, 2, 3))
+        self.ns['navmap_tp'].assert_awaited_once_with(self.clients[3], (4, 2, 3), require_questing=False)
         self.ns['navmap_tp'].reset_mock()
         await self.ns['mass_navmap_teleport_hotkey'](['p3', 'p4'])
         self.assertEqual([call.args[1] for call in self.ns['navmap_tp'].await_args_list], [(4, 2, 3)] * 2)

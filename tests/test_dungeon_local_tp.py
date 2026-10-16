@@ -420,7 +420,8 @@ class FollowerTests(DungeonFixture, unittest.IsolatedAsyncioTestCase):
             clients_share_live_area=self.proof,
             SprintyClient=lambda c: c,
             asyncio=SimpleNamespace(sleep=tick, get_running_loop=lambda: SimpleNamespace(time=lambda: self.clock),
-                wait_for=asyncio.wait_for, CancelledError=asyncio.CancelledError, TimeoutError=TimeoutError))
+                wait_for=asyncio.wait_for, CancelledError=asyncio.CancelledError, TimeoutError=TimeoutError,
+                timeout=asyncio.timeout, current_task=asyncio.current_task))
         namespace.update(extra or {})
         follow = entry('_follow_quester_session', namespace, members=[self.q, self.h],
             change_party_equipment=AsyncMock(return_value=True), prepare_quester_name=AsyncMock(),
@@ -439,31 +440,20 @@ class FollowerTests(DungeonFixture, unittest.IsolatedAsyncioTestCase):
                 waiter.cancel()
                 await asyncio.gather(task, waiter, return_exceptions=True)
 
-    async def test_real_follower_replays_retained_entrance_without_new_room_goal(self):
+    async def test_real_follower_uses_bounded_friend_recovery_without_old_entrance_x(self):
         await self.enter()
-        entrance = XYZ(600, 700, 0)
-        await party.remember_dungeon_transition(self.q, entrance)
+        await party.remember_dungeon_transition(self.q, XYZ(600, 700, 0))
         self.q.zone = 'Dungeon/Room2'
         self.q.quest_party_observed_zone = self.q.zone
         done = asyncio.Event()
-        async def local(c, target, **_):
-            self.assertIs(c, self.h)
-            self.assertEqual(tuple(target), tuple(entrance))
-            c.position = target
-        async def entered(code, _seconds):
-            self.assertEqual(code, Keycode.X)
-            self.h.zone = self.q.zone
-            done.set()
-        self.h.send_key.side_effect = entered
-        self.q.quest_position.position.reset_mock()
-        with patch.object(Quester, 'teleport_to_quest_target', AsyncMock(side_effect=local)), patch(
-                'src.questing.is_visible_by_path', AsyncMock(side_effect=lambda _c, path: path == npc_range_path)), patch(
-                'src.questing.get_popup_title', AsyncMock(return_value='Door')):
-            await self.follow_until(done)
-        self.q.quest_position.position.assert_not_awaited()
-        self.q.body.position.assert_not_awaited()
-        self.h.send_key.assert_awaited_once()
-        self.friend.assert_not_awaited()
+        local = AsyncMock()
+        def status(_h, _q, text):
+            if '归队尝试已达上限' in text: done.set()
+        with patch.object(Quester, 'teleport_to_quest_target', local):
+            await self.follow_until(done, when_status=status)
+        local.assert_not_awaited()
+        self.h.send_key.assert_not_awaited()
+        self.assertEqual(self.friend.await_count, 2)
 
     async def test_real_follower_never_follows_or_probes_quester_potion_region(self):
         session = await self.enter()
@@ -605,6 +595,10 @@ class FollowerTests(DungeonFixture, unittest.IsolatedAsyncioTestCase):
         done = asyncio.Event()
         async def friend_arrive(*_args, **_kw): self.h.zone = self.q.zone
         friend = AsyncMock(side_effect=friend_arrive)
+        async def reference_position():
+            friend.assert_awaited_once()  # Proximity reads must follow actual arrival.
+            return self.q.position
+        self.q.body.position.side_effect = reference_position
         async def local(c, target, **_):
             self.assertFalse(self.q.quest_party_probe_pending)
             friend.assert_awaited_once()
@@ -614,7 +608,8 @@ class FollowerTests(DungeonFixture, unittest.IsolatedAsyncioTestCase):
                 Quester, 'handle_questing_zone_change', AsyncMock()), patch.object(
                 Quester, 'get_truncated_quest_objectives', AsyncMock(return_value='Use switch')):
             await self.follow_until(done, primary=True, extra=dict(teleport_to_friend_from_list=friend))
-        self.q.body.position.assert_not_awaited()
+        self.q.body.position.assert_awaited()
+        self.q.teleport.assert_not_awaited()
 
     async def test_failed_recall_keeps_local_hitter_flow_after_refill_flag_clears(self):
         session = await self.enter()
@@ -685,7 +680,8 @@ class FollowerTests(DungeonFixture, unittest.IsolatedAsyncioTestCase):
             is_visible_by_path=AsyncMock(return_value=False), is_friend_teleport_error=AsyncMock(return_value=False),
             teleport_to_friend_from_list=friend, SprintyClient=lambda c: c,
             asyncio=SimpleNamespace(sleep=tick, get_running_loop=lambda: SimpleNamespace(time=lambda: self.clock),
-                wait_for=asyncio.wait_for, CancelledError=asyncio.CancelledError, TimeoutError=TimeoutError)),
+                wait_for=asyncio.wait_for, CancelledError=asyncio.CancelledError, TimeoutError=TimeoutError,
+                timeout=asyncio.timeout, current_task=asyncio.current_task)),
             members=[self.q, self.h], change_party_equipment=AsyncMock(), prepare_quester_name=AsyncMock(),
             remove_party_status=Mock(), restart_quest_worker_after_probe=Mock(side_effect=lambda c: done.set()),
             update_party_status=Mock())
@@ -745,12 +741,13 @@ class EntryCallerTests(DungeonFixture, unittest.IsolatedAsyncioTestCase):
     async def run_entry(self, *, reject_hitter=False):
         reader = Quester(self.q, [self.q], None)
         reader.read_popup = AsyncMock(return_value='Press X to Enter')
+        reader.read_quest_txt = AsyncMock(return_value='Enter Dungeon A')
         self.clock = 0
         async def tick(delay):
             self.clock += delay
             for c in (self.q, self.h): c.is_loading.return_value = False
             await REAL_SLEEP(0)
-        async def move(c, target): c.position = target
+        async def move(c, target, **_kwargs): c.position = target
         async def key(c, key, seconds):
             if key != Keycode.X: return
             session = party.dungeon_session_for(c)
@@ -763,7 +760,8 @@ class EntryCallerTests(DungeonFixture, unittest.IsolatedAsyncioTestCase):
         async def q_key(k, t): await key(self.q, k, t)
         async def h_key(k, t): await key(self.h, k, t)
         self.q.send_key.side_effect, self.h.send_key.side_effect = q_key, h_key
-        with patch.object(Quester, 'teleport_to_quest_target', AsyncMock(side_effect=move)), patch.object(
+        with patch('src.questing.get_popup_title', AsyncMock(return_value='Dungeon A')), patch.object(
+                Quester, 'teleport_to_quest_target', AsyncMock(side_effect=move)), patch.object(
                 Quester, 'handle_pending_dungeon_confirmation', AsyncMock(return_value=False)), patch(
                 'src.questing.close_npc_quest_menu', AsyncMock(return_value=False)), patch(
                 'src.questing.close_automation_popup', AsyncMock(return_value=False)), patch(

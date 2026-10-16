@@ -167,7 +167,12 @@ class FullTaskPathTests(unittest.IsolatedAsyncioTestCase):
         hitter.teleport.assert_awaited_once_with(self.target)
 
     async def test_npc_missing_x_retries_three_times_without_new_npc_cache(self):
-        self.quester.read_quest_txt = AsyncMock(return_value='Talk to NPC')
+        # Retry coverage starts at the actual task NPC, with input ownership available.
+        self.position = self.target
+        self.client.refilling_potions = False
+        self.client.quest_recovery_owner = None
+        self.prompt = 'Press X to Talk'
+        self.quester.read_quest_txt = AsyncMock(return_value='Talk to Lever')
         with patch('src.questing.is_free_leader_questing', AsyncMock(return_value=True)):
             self.assertFalse(await self.quester.handle_npc_talking_quests(self.client, [self.client]))
         self.assertEqual(self.client.send_key.await_count, 2)  # first X is sent by caller

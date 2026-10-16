@@ -188,23 +188,52 @@ async def read_control_checkbox_text(checkbox: Window) -> str:
 
 
 # Teleport to given world through spiral door
-async def go_to_new_world(p, destinationWorld, open_window: bool = True):
+async def go_to_new_world(p, destinationWorld, open_window: bool = True, *, select_only=False, stop=None):
+    async def stopped():
+        return stop is not None and await stop()
+    async def window_visible():
+        return (await get_spiral_teleport_button(p) is not None if select_only
+                else await is_visible_by_path(p, spiral_door_path))
+    async def click_button(name):
+        if await stopped():
+            return False
+        if select_only:
+            enter = await get_spiral_teleport_button(p)
+            parent = await enter.parent() if enter else None
+            pane = await parent.get_child_by_name(spiral_door_path[-1]) if parent else None
+            button = await pane.get_child_by_name(name) if pane else None
+            if button is None or not await button.is_visible() or await stopped():
+                return False
+            await p.mouse_handler.click_window(button)
+        else:
+            await p.mouse_handler.click_window_with_name(name)
+        return True
+    if await stopped():
+        return False
     if open_window:
         while portal_kind(
             await get_popup_title(p)
-        ) != "world_gate" and not await is_visible_by_path(p, spiral_door_path):
+        ) != "world_gate" and not await window_visible():
+            if await stopped():
+                return False
             await asyncio.sleep(0.1)
 
-        while not await is_visible_by_path(p, spiral_door_path):
+        while not await window_visible():
             await asyncio.sleep(0.1)
+            if await stopped():
+                return False
             await p.send_key(Keycode.X, 0.1)
 
-    while await p.is_in_npc_range():
+    while not select_only and await p.is_in_npc_range():
+        if await stopped():
+            return False
         await p.send_key(Keycode.X, 0.1)
         await asyncio.sleep(0.4)
 
-    while not await is_visible_by_path(p, spiral_door_path):
+    while not await window_visible():
         await asyncio.sleep(0.1)
+        if await stopped():
+            return False
         await p.send_key(Keycode.X, 0.1)
 
     async with p.mouse_handler:
@@ -272,29 +301,38 @@ async def go_to_new_world(p, destinationWorld, open_window: bool = True):
         # user could be on any of the three pages when opening the world door depending on what their active quest is
         # switch all the way to the first page to standardize it
         for i in range(6):
-            await p.mouse_handler.click_window_with_name("leftButton")
+            if await stopped():
+                return False
+            await click_button("leftButton")
             await asyncio.sleep(0.2)
 
-        option_window = await p.root_window.get_windows_with_name("optionWindow")
+        if select_only:
+            button = await get_spiral_teleport_button(p)
+            parent = await button.parent() if button else None
+            option_window = [await parent.get_child_by_name(spiral_door_path[-1])] if parent else []
+        else:
+            option_window = await p.root_window.get_windows_with_name("optionWindow")
 
         assert len(option_window) == 1, str(option_window)
 
         for child in await option_window[0].children():
             if await child.name() == "pageCount":
-                pageCount = await child.maybe_text()
-                pageCount = pageCount[8:-9]
+                pageCount = await read_control_text(child) if select_only else await child.maybe_text()
+                pageCount = plain_text(pageCount) if select_only else pageCount[8:-9]
                 currentPage = pageCount.split("/", 1)[0]
                 maxPage = pageCount.split("/", 1)[1]
                 break
 
         # ensure we are on page 1 (and if not click over again)
         while str(currentPage) != "1":
-            await p.mouse_handler.click_window_with_name("leftButton")
+            if await stopped():
+                return False
+            await click_button("leftButton")
             await asyncio.sleep(0.2)
             for child in await option_window[0].children():
                 if await child.name() == "pageCount":
-                    pageCount = await child.maybe_text()
-                    pageCount = pageCount[8:-9]
+                    pageCount = await read_control_text(child) if select_only else await child.maybe_text()
+                    pageCount = plain_text(pageCount) if select_only else pageCount[8:-9]
                     currentPage = pageCount.split("/", 1)[0]
 
         worldIndex = worldList.index(destinationWorld)
@@ -303,17 +341,23 @@ async def go_to_new_world(p, destinationWorld, open_window: bool = True):
         isChildFound = False
 
         for i in range(int(maxPage)):
+            if await stopped():
+                return False
             for child in await option_window[0].children():
                 if await child.name() in ["opt0", "opt1", "opt2", "opt3"]:
-                    name = await read_control_checkbox_text(child)
+                    name = await read_control_text(child) if select_only else await read_control_checkbox_text(child)
                     if name == spiralGateName or matches_text(
                         name, f"WorldNames_{destinationWorld}"
                     ):
-                        await p.mouse_handler.click_window_with_name(
-                            zoneDoorOptions[worldIndex]
-                        )
+                        if await stopped():
+                            return False
+                        await click_button(zoneDoorOptions[worldIndex])
                         await asyncio.sleep(0.4)
-                        await p.mouse_handler.click_window_with_name("teleportButton")
+                        if await stopped():
+                            return False
+                        if select_only:
+                            return True
+                        await click_button("teleportButton")
                         await p.wait_for_zone_change()
 
                         # move away from the spiral door so we dont accidentally click on it again after teleporting later
@@ -327,14 +371,16 @@ async def go_to_new_world(p, destinationWorld, open_window: bool = True):
                 previousPage = currentPage
                 loopCount = 0
                 while currentPage == previousPage and loopCount < 30:
+                    if await stopped():
+                        return False
                     loopCount += 1
-                    await p.mouse_handler.click_window_with_name("rightButton")
+                    await click_button("rightButton")
 
                     # ensure that wizwalker didn't misclick and that we actually changed pages
                     for child in await option_window[0].children():
                         if await child.name() == "pageCount":
-                            pageCount = await child.maybe_text()
-                            pageCount = pageCount[8:-9]
+                            pageCount = await read_control_text(child) if select_only else await child.maybe_text()
+                            pageCount = plain_text(pageCount) if select_only else pageCount[8:-9]
                             currentPage = pageCount.split("/", 1)[0]
 
 
@@ -1660,22 +1706,207 @@ async def is_spiral_door_open(client: Client) -> bool:
     return await get_spiral_teleport_button(client) is not None
 
 
-async def spiral_door_with_quest(client: Client):
-    async with asyncio.timeout(15):
-        button = await get_spiral_teleport_button(client)
-        if button is None:
-            return
-        logger.debug(f"Client {client.title}: 世界选择界面已识别，点击进入世界。")
-        while button is not None:
-            async with client.mouse_handler:
-                await client.mouse_handler.click_window(button)
-            await asyncio.sleep(0.25)
-            if await client.is_loading():
-                break
-            button = await get_spiral_teleport_button(client)
+async def get_spiral_selected_world(client: Client):
+    """Resolve selection from the live option pane, not mere dialog visibility.
 
-    while await client.is_loading():
-        await asyncio.sleep(0.1)
+    UniverseMap.gui places the movable check mark over the selected wbtn icon,
+    inside optionWindow. All positions below come from the actual controls.
+    """
+    button = await get_spiral_teleport_button(client)
+    if button is None:
+        return None, None
+    parent = await button.parent()
+    panel = await parent.get_child_by_name(spiral_door_path[-1]) if parent else None
+    if panel is None or not await panel.is_visible():
+        return None, button
+    children = await panel.children()
+    marks = [w for w in children if await w.name() == spiral_door_selected_path[-1]
+             and await w.is_visible()]
+    if len(marks) != 1:
+        return None, button
+    rect = await marks[0].window_rectangle()
+    x, y = (rect.x1 + rect.x2) / 2, (rect.y1 + rect.y2) / 2
+    selected = []
+    for window in children:
+        name = await window.name()
+        if not name.startswith('wbtn') or not await window.is_visible():
+            continue
+        icon = await window.window_rectangle()
+        if icon.x1 <= x < icon.x2 and icon.y1 <= y < icon.y2:
+            selected.append(name[4:])
+    return (selected[0] if len(selected) == 1 else None), button
+
+
+async def spiral_door_with_quest(client: Client):
+    from src.automation_ownership import automation_owner
+    from src.logging_utils import log_blocked, log_exception
+    from src.teleport_math import (_movement_task_snapshot, _movement_body,
+                                   _movement_control_changed, _movement_stop_reason, _same_movement_task)
+    task = await _movement_task_snapshot(client)
+    if task is None or type(task[0]) is not int or task[0] <= 0 or type(task[1]) is not int:
+        log_blocked(client, task, '世界门任务信息暂不可读，停止本轮恢复')
+        return False
+    _, control = await _movement_body(client)
+    state = getattr(client, '_quest_world_gate_recovery', None)
+    if not isinstance(state, dict) or state['task'] != task[:2]:
+        state = dict(task=task[:2], fallback_used=False, blocked='')
+        client._quest_world_gate_recovery = state
+    async def stopped():
+        if hasattr(client, 'is_running') and not client.is_running():
+            return 'world-gate client disconnected'
+        reason = await _movement_stop_reason(client, task[2], task[3], task,
+                                             interaction=False, control=control)
+        if not reason and any(getattr(client, flag, False) for flag in (
+                'refilling_potions', 'quest_recovery_owner', 'post_combat_movement_active',
+                'feeding_pet_status', 'entity_detect_combat_status', 'quest_party_safe_return_active')):
+            reason = 'world-gate control unavailable'
+        if reason:
+            logger.debug(f"Client {client.title}: 世界门旧恢复停止：{reason}")
+        return reason
+
+    def blocked(reason):
+        state['blocked'] = reason
+        client._quest_internal_block_reason = reason
+        log_blocked(client, task, reason)
+        return False
+
+    button_read_failed = False
+
+    async def read_enter_button():
+        nonlocal button_read_failed
+        try:
+            button = await get_spiral_teleport_button(client)
+            if button is None or not await button.is_visible():
+                return 'UNKNOWN', None
+            grayed = await button.is_control_grayed()
+            if grayed is False:
+                return 'AVAILABLE', button
+            if grayed is True:
+                return 'DISABLED', button
+        except Exception as exc:
+            # A disappearing/unreadable control is not evidence of a gray button.
+            if not button_read_failed:
+                log_exception(client, '世界门进入按钮暂不可读，有限等待重读', exc, level='DEBUG')
+                button_read_failed = True
+        return 'UNKNOWN', None
+
+    async def enter(world, *, explicit_selection=False):
+        async with client.mouse_handler:
+            if await stopped():
+                return False
+            status, button = await read_enter_button()
+            if status != 'AVAILABLE':
+                return blocked(f'世界门点击前进入按钮状态变为 {status}，停止本轮恢复')
+            if explicit_selection:
+                selected, _ = await get_spiral_selected_world(client)
+                if selected != world:
+                    raise RuntimeError(f'未能确认明确选择魔法城：selected={selected}, expected={world}')
+            logger.debug(f"Client {client.title}: 世界门进入按钮可用，目标验证={world}，明确选世界={explicit_selection}")
+            if await stopped():
+                return False
+            await client.mouse_handler.click_window(button)
+        while True:
+            # Once enter was clicked, loading and the expected world transition
+            # are allowed. A different task/control or unexpected zone aborts.
+            if (not getattr(client, 'questing_status', True)
+                    or (hasattr(client, 'is_running') and not client.is_running())
+                    or await _movement_control_changed(client, control)
+                    or await client.in_battle()
+                    or any(getattr(client, flag, False) for flag in (
+                        'refilling_potions', 'quest_recovery_owner', 'post_combat_movement_active',
+                        'feeding_pet_status', 'entity_detect_combat_status', 'quest_party_safe_return_active'))
+                    or (await client.quest_id(), await client.goal_id()) != task[:2]):
+                logger.debug(f"Client {client.title}: 世界门进入等待期间任务或控制状态变化，停止旧恢复")
+                return False
+            zone = await client.zone_name()
+            if world is not None and zone != task[3] and zone.split('/', 1)[0] != world:
+                logger.debug(f"Client {client.title}: 世界门区域已变化为 {zone}，停止旧恢复")
+                return False
+            if (zone == task[3] and not await client.is_loading()
+                    and not _same_movement_task(task, await _movement_task_snapshot(client))):
+                logger.debug(f"Client {client.title}: 世界门等待期间目标已变化或不可读，停止旧恢复")
+                return False
+            if (isinstance(zone, str) and zone and zone != task[3]
+                    and not await client.is_loading()
+                    and (world is None or zone.split('/', 1)[0] == world)):
+                fresh = await _movement_task_snapshot(client)
+                if fresh is None:
+                    log_blocked(client, task, f'区域已变化为 {zone}，任务信息暂不可读，等待重新读取')
+                    return False
+                if fresh[:2] != task[:2]:
+                    return False
+                if await client.is_loading() or await client.zone_name() != zone:
+                    await asyncio.sleep(.1)
+                    continue
+                # Fresh task/zone reads may yield to a different controller.
+                if (not getattr(client, 'questing_status', True)
+                        or (hasattr(client, 'is_running') and not client.is_running())
+                        or await _movement_control_changed(client, control)
+                        or await client.in_battle()
+                        or any(getattr(client, flag, False) for flag in (
+                            'refilling_potions', 'quest_recovery_owner', 'post_combat_movement_active',
+                            'feeding_pet_status', 'entity_detect_combat_status', 'quest_party_safe_return_active'))
+                        or (await client.quest_id(), await client.goal_id()) != task[:2]):
+                    return False
+                client._quest_internal_block_reason = ''
+                logger.debug(f"Client {client.title}: 已确认到达 {zone}，已重新读取任务 {fresh[:2]}；交回原自动任务")
+                return True
+            await asyncio.sleep(.1)
+
+    async with automation_owner(client, 'world-gate'):
+        if await stopped():
+            return False
+        # Inspect the real enter control before optional goal/selection metadata.
+        # UNKNOWN may settle, but only a visible, explicitly gray control can
+        # spend the persistent one-time WizardCity fallback budget.
+        try:
+            async with asyncio.timeout(15):
+                while True:
+                    if await stopped():
+                        return False
+                    status, _ = await read_enter_button()
+                    if status != 'UNKNOWN':
+                        break
+                    await asyncio.sleep(.1)
+                if status == 'AVAILABLE':
+                    state['blocked'] = ''
+                    client._quest_internal_block_reason = ''
+                    expected = None
+                    try:
+                        quest = (await (await client.quest_manager()).quest_data()).get(task[0])
+                        goal = (await quest.goal_data()).get(task[1]) if quest else None
+                        destination = await goal.goal_destination_zone() if goal else None
+                        expected = destination.split('/', 1)[0] if isinstance(destination, str) and destination else None
+                    except Exception as exc:
+                        # The goal is optional for entering; a real zone change
+                        # remains required even when destination reads fail.
+                        log_exception(client, '世界门目标世界暂不可读，按实际切区确认进入', exc, level='DEBUG')
+                    return await enter(expected)
+        except Exception as exc:
+            log_exception(client, '世界门按钮读取或进入未确认', exc, level='DEBUG')
+            return blocked(f'世界门按钮读取或进入未确认：{type(exc).__name__}: {exc}')
+        if await stopped():
+            return False  # Never start a fallback using an old task/area.
+        status, _ = await read_enter_button()
+        if status != 'DISABLED':
+            return False
+        if state['fallback_used']:
+            return blocked('世界门进入按钮仍灰色；同一任务魔法城回退已使用 1/1 次')
+        state['fallback_used'] = True  # Persistent on the client, including cancellation/restarts.
+        logger.bind(client=client.title).info('世界门进入按钮明确灰色；执行魔法城回退 1/1 次')
+        try:
+            async with asyncio.timeout(15):
+                if not await go_to_new_world(client, 'WizardCity', open_window=False,
+                                              select_only=True, stop=stopped):
+                    if await stopped():
+                        return False
+                    raise RuntimeError('未能明确选择魔法城')
+                return await enter('WizardCity', explicit_selection=True)
+        except Exception as exc:
+            if await stopped():
+                return False
+            log_exception(client, '魔法城回退未确认', exc, level='DEBUG')
+            return blocked(f'魔法城回退失败（本任务已使用 1/1 次）：{type(exc).__name__}: {exc}')
 
 
 async def sync_camera(client: Client, xyz: XYZ = None, yaw: float = None):
@@ -1730,91 +1961,77 @@ async def _cycle_to_online_friends(client, friends_list):
     raise ValueError("Could not find the online friends list")
 
 
+class FriendLookupError(ValueError):
+    """A lookup/UI failure is distinct from an explicit instance rejection."""
+    def __init__(self, reason, message='', *, candidate_count=None, match_method='name'):
+        self.reason = reason
+        self.candidate_count = candidate_count
+        self.match_method = match_method
+        super().__init__(f'{reason}: {message}')
+
+
 async def _cycle_friends_list(
-    client, right_button, friends_list, icon, icon_list, name, current_page
+    client, right_button, friends_list, icon, icon_list, name, current_page, *, strict_identity=None
 ):
-
-    if getattr(client, 'questing_status', False) is not True:
-        name = " ".join(plain_text(name).split()).casefold() if name is not None else None
-        list_text = await friends_list.maybe_text() or ""
-        candidates = []
-        for idx, friend_entry in enumerate(_friend_list_entry.finditer(list_text)):
-            friend_icon = int(friend_entry.group("icon_index"))
-            friend_icon_list = int(friend_entry.group("icon_list"))
-            friend_name = " ".join(plain_text(friend_entry.group("name")).split()).casefold()
-            if icon is not None and icon_list is not None:
-                if friend_icon != icon or friend_icon_list != icon_list:
-                    continue
-            elif not name:
-                raise RuntimeError("Invalid args")
-            if name and not (friend_name == name or (
-                    " " not in name and friend_name.split(maxsplit=1)[0] == name)):
+    automatic = (getattr(client, 'questing_status', False) is True
+                 if strict_identity is None else strict_identity)
+    name = " ".join(plain_text(name).split()).casefold() if name is not None else None
+    if automatic and not name:
+        raise FriendLookupError('quester-name-unavailable')
+    list_text = await friends_list.maybe_text() or ''
+    candidates = []
+    for idx, friend_entry in enumerate(_friend_list_entry.finditer(list_text)):
+        friend_name = " ".join(plain_text(friend_entry.group('name')).split()).casefold()
+        # Automatic followers keep the complete reference identity. Icons are
+        # cosmetic and cannot override a name or authorize a name-less lookup.
+        if not automatic and icon is not None and icon_list is not None:
+            if (int(friend_entry.group('icon_index')) != icon
+                    or int(friend_entry.group('icon_list')) != icon_list):
                 continue
-            candidates.append((friend_entry, idx))
-
-        if len(candidates) > 1:
-            raise ValueError(f"好友匹配不唯一：{name or f'图标 {icon_list}:{icon}'}；请使用完整角色名或唯一好友图标")
-        match, idx = candidates[0] if candidates else (None, 0)
-        if match is not None:
-            if name and name != " ".join(plain_text(match.group("name")).split()).casefold():
-                logger.debug("好友首名唯一匹配：{} -> {}", name, match.group("name"))
-            target_page = (idx // 10) + 1
-
-            if target_page != current_page:
-                if target_page < current_page:
-                    raise ValueError("目标好友在前一页；未确认翻页方向，停止本次传送")
-                for _ in range(target_page - current_page):
-                    await client.mouse_handler.click_window(right_button)
-
-        return match, idx
-    if name is not None:
-        name = name.lower()
-
-    list_text = await friends_list.maybe_text()
-
-    match = None
-    idx = 0
-
-    for idx, friend_entry in enumerate(list(_friend_list_entry.finditer(list_text))):
-        friend_icon = int(friend_entry.group("icon_index"))
-        friend_icon_list = int(friend_entry.group("icon_list"))
-        friend_name = (friend_entry.group("name")).lower()
-
-        if icon is not None and icon_list is not None and name:
-            if (
-                friend_icon == icon
-                and friend_icon_list == icon_list
-                and friend_name == name
-            ):
-                match = friend_entry
-                break
-
-        elif icon is not None and icon_list is not None:
-            if friend_icon == icon and friend_icon_list == icon_list:
-                match = friend_entry
-                break
-
-        elif name:
-            if friend_name == name:
-                match = friend_entry
-                break
-
-        else:
-            raise RuntimeError("Invalid args")
-
-    if match:
+        elif not name:
+            raise RuntimeError('Invalid args')
+        if name and not (friend_name == name or (not automatic and
+                ' ' not in name and friend_name.split(maxsplit=1)[0] == name)):
+            continue
+        candidates.append((friend_entry, idx))
+    client._friend_lookup_diagnostic = dict(candidate_count=len(candidates),
+        match_method='name' if name else 'icon')
+    if len(candidates) > 1:
+        raise FriendLookupError('ambiguous-friend-match', '好友匹配不唯一；请使用完整角色名',
+                                candidate_count=len(candidates))
+    match, idx = candidates[0] if candidates else (None, 0)
+    if match is not None:
         target_page = (idx // 10) + 1
-
-        if target_page != current_page:
-            for _ in range(target_page - current_page):
-                await client.mouse_handler.click_window(right_button)
-
+        if target_page < current_page:
+            raise FriendLookupError('friend-ui-not-ready', '目标好友在前一页；未确认翻页方向')
+        for _ in range(target_page - current_page):
+            await client.mouse_handler.click_window(right_button)
     return match, idx
 
 
 # TODO: add error if friend is busy message pops up
+async def _request_friend_teleport(client, character_window):
+    """Request only: the follower still must prove loading ended and the same live instance."""
+    try:
+        await _teleport_to_friend(client, character_window)
+    except ValueError as exc:
+        # The installed helper already clicked GoToFriend before these lookups.
+        # It also already waited finitely for the modal. Never repeat the friend
+        # selection merely because a late/disappearing confirmation was absent.
+        if str(exc) == 'No child window named btnGoToFriend':
+            raise FriendLookupError('friend-entry-found-but-tp-unavailable') from exc
+        if str(exc) not in {f'No child window named {name}' for name in (
+                'MessageBoxModalWindow', 'centerButton', 'btnCharacterClose')}:
+            raise
+        logger.debug(f"[friend_request] {client.title}: confirmation pending/disappeared: {exc}; "
+                     "request not retried, await actual instance arrival")
+        return False
+    return True  # Confirmation input only, never an arrival result.
+
+
 async def teleport_to_friend_from_list(
-    client, *, icon_list: int = None, icon_index: int = None, name: str = None
+    client, *, icon_list: int = None, icon_index: int = None, name: str = None,
+    strict_identity: bool = False
 ):
     """
     Teleport to a friend from the client's friend list
@@ -1824,6 +2041,7 @@ async def teleport_to_friend_from_list(
         icon_list: Icon list the icon is from (1 or 2) or None
         icon_index: Index of the icon or None
         name: Name of the player or None
+        strict_identity: Require the complete reference name for automatic followers
     """
     if (
         icon_list is None
@@ -1836,93 +2054,140 @@ async def teleport_to_friend_from_list(
     if all(i is None for i in (icon_list, icon_index, name)):
         raise ValueError("Must specify icon_list and icon_index or name or all")
 
+    automatic = getattr(client, 'questing_status', False) is True
+    client._friend_lookup_diagnostic = dict(candidate_count=None, match_method='name' if name else 'icon')
+    if strict_identity and not (name and plain_text(name).strip()):
+        raise FriendLookupError('quester-name-unavailable')
+    stage = 'friend-ui-not-ready'
     try:
-        friends_window = await _maybe_get_named_window(
-            client.root_window, "NewFriendsListWindow"
-        )
-    except ValueError:
-        # friend's list isn't open so open it
-        friend_button = await _maybe_get_named_window(client.root_window, "btnFriends")
-        await client.mouse_handler.click_window(friend_button)
-
-        friends_window = await _maybe_get_named_window(
-            client.root_window, "NewFriendsListWindow"
-        )
-    else:
-        if not await friends_window.is_visible():
-            # friend's list isn't open so open it
-            friend_button = await _maybe_get_named_window(
-                client.root_window, "btnFriends"
+        try:
+            friends_window = await _maybe_get_named_window(
+                client.root_window, "NewFriendsListWindow"
             )
+        except ValueError:
+            # friend's list isn't open so open it
+            friend_button = await _maybe_get_named_window(client.root_window, "btnFriends")
             await client.mouse_handler.click_window(friend_button)
 
-    await _cycle_to_online_friends(client, friends_window)
+            friends_window = await _maybe_get_named_window(
+                client.root_window, "NewFriendsListWindow"
+            )
+        else:
+            if not await friends_window.is_visible():
+                # friend's list isn't open so open it
+                friend_button = await _maybe_get_named_window(
+                    client.root_window, "btnFriends"
+                )
+                await client.mouse_handler.click_window(friend_button)
 
-    friends_list_window = await _maybe_get_named_window(friends_window, "listFriends")
-    friends_list_text = await friends_list_window.maybe_text()
+        await _cycle_to_online_friends(client, friends_window)
 
-    # no friends online
-    if not friends_list_text:
-        raise ValueError("No friends online")
+        friends_list_window = await _maybe_get_named_window(friends_window, "listFriends")
+        friends_list_text = await friends_list_window.maybe_text()
 
-    right_button = await _maybe_get_named_window(friends_window, "btnArrowDown")
-    page_number = await _maybe_get_named_window(friends_window, "PageNumber")
+        # no friends online
+        if not friends_list_text:
+            raise FriendLookupError('quester-not-found', candidate_count=0)
 
-    page_number_text = await page_number.maybe_text()
+        right_button = await _maybe_get_named_window(friends_window, "btnArrowDown")
+        page_number = await _maybe_get_named_window(friends_window, "PageNumber")
 
-    current_page, _ = map(
-        int,
-        page_number_text.replace("<center>", "")
-        .replace("</center>", "")
-        .replace(" ", "")
-        .split("/"),
-    )
+        page_number_text = await page_number.maybe_text()
 
-    friend, friend_index = await _cycle_friends_list(
-        client,
-        right_button,
-        friends_list_window,
-        icon_index,
-        icon_list,
-        name,
-        current_page,
-    )
-
-    if friend is None:
-        raise ValueError(
-            f"Could not find friend with icon {icon_index} icon list {icon_list} and/or name {name}"
+        current_page, _ = map(
+            int,
+            page_number_text.replace("<center>", "")
+            .replace("</center>", "")
+            .replace(" ", "")
+            .split("/"),
         )
 
-    await _click_on_friend(client, friends_list_window, friend_index)
+        friend, friend_index = await _cycle_friends_list(
+            client,
+            right_button,
+            friends_list_window,
+            icon_index,
+            icon_list,
+            name,
+            current_page,
+            strict_identity=strict_identity,
+        )
 
-    if getattr(client, 'questing_status', False) is True:
-        character_window = await _maybe_get_named_window(client.root_window, "wndCharacter")
-    else:
-        # Other UI panels retain hidden wndCharacter children. Only the live
-        # profile opened from this friend list may receive the teleport click.
-        character_window = None
-        for attempt in range(5):
-            visible_profiles = []
-            for window in await client.root_window.get_windows_with_name("wndCharacter"):
-                if (await window.is_visible()
-                        and all([await parent.is_visible() for parent in await window.get_parents()])):
-                    visible_profiles.append(window)
-            if len(visible_profiles) > 1:
-                raise ValueError("当前有多个可见好友详情窗口，停止本次传送")
-            if visible_profiles:
-                character_window = visible_profiles[0]
-                break
-            if attempt < 4:
-                await asyncio.sleep(0.4)
-        if character_window is None:
-            raise ValueError("好友详情窗口尚未显示，停止本次传送")
-        if (await client.is_loading() or not await character_window.is_visible()
-                or not all([await parent.is_visible() for parent in await character_window.get_parents()])):
-            raise ValueError("好友详情窗口已关闭或客户端正在加载，停止本次传送")
-    await _teleport_to_friend(client, character_window)
+        if friend is None:
+            raise FriendLookupError('quester-not-found', candidate_count=0)
 
-    # close friends window
-    await friends_window.write_flags(WindowFlags(2147483648))
+        if strict_identity:
+            # A re-sort or task stop while reading/paging must not click a
+            # different row. This reuses the parsed list's actual row index.
+            current = list(_friend_list_entry.finditer(await friends_list_window.maybe_text() or ''))
+            if (friend_index >= len(current) or current[friend_index].group(0) != friend.group(0)
+                    or not client.questing_status or await client.is_loading() or await client.in_battle()):
+                raise FriendLookupError('friend-ui-not-ready', '好友列表或客户端状态已变化')
+        stage = 'friend-tp-click-failed'
+        await _click_on_friend(client, friends_list_window, friend_index)
+
+        stage = 'friend-ui-not-ready'
+        if automatic and not strict_identity:
+            character_window = await _maybe_get_named_window(client.root_window, 'wndCharacter')
+        else:
+            # Other UI panels retain hidden wndCharacter children. Only the live
+            # profile opened from this friend list may receive the teleport click.
+            character_window = None
+            for attempt in range(5):
+                visible_profiles = []
+                for window in await client.root_window.get_windows_with_name("wndCharacter"):
+                    if (await window.is_visible()
+                            and all([await parent.is_visible() for parent in await window.get_parents()])):
+                        visible_profiles.append(window)
+                if len(visible_profiles) > 1:
+                    raise ValueError("当前有多个可见好友详情窗口，停止本次传送")
+                if visible_profiles:
+                    character_window = visible_profiles[0]
+                    break
+                if attempt < 4:
+                    await asyncio.sleep(0.4)
+            if character_window is None:
+                raise ValueError("好友详情窗口尚未显示，停止本次传送")
+            if (await client.is_loading() or not await character_window.is_visible()
+                    or not all([await parent.is_visible() for parent in await character_window.get_parents()])):
+                raise ValueError("好友详情窗口已关闭或客户端正在加载，停止本次传送")
+        stage = 'friend-tp-click-failed'
+        if strict_identity:
+            if not client.questing_status or await client.is_loading() or await client.in_battle():
+                raise FriendLookupError('friend-ui-not-ready', '客户端状态已变化')
+            stage = 'friend-entry-found-but-tp-unavailable'
+            go = await _maybe_get_named_window(character_window, 'btnGoToFriend')
+            if (not await go.is_visible() or await go.is_control_grayed()
+                    or WindowFlags.disabled in await go.flags()):
+                raise FriendLookupError(stage)
+            stage = 'friend-tp-click-failed'
+            await _request_friend_teleport(client, character_window)
+        elif automatic:
+            await _request_friend_teleport(client, character_window)
+        else:
+            await _teleport_to_friend(client, character_window)
+
+        # close friends window
+        if not (getattr(client, 'questing_status', False) is True and await client.is_loading()):
+            await friends_window.write_flags(WindowFlags(2147483648))
+
+
+    except asyncio.CancelledError:
+        raise
+    except (ValueError, AttributeError, wizwalker.WizWalkerMemoryError) as exc:
+        diagnostic = client._friend_lookup_diagnostic
+        reason = exc.reason if isinstance(exc, FriendLookupError) else stage
+        if isinstance(exc, FriendLookupError) and exc.candidate_count is not None:
+            diagnostic['candidate_count'] = exc.candidate_count
+        diagnostic['reason'] = reason
+        count = diagnostic.get('candidate_count')
+        logger.debug(f"[friend_lookup] follower={client.title} quester_name_available={bool(name)} "
+            f"candidate_count={count if count is not None else 'unavailable'} match_method={diagnostic.get('match_method')} "
+            f"decision=retry reason={reason}")
+        if isinstance(exc, FriendLookupError):
+            raise
+        raise FriendLookupError(reason, str(exc), candidate_count=diagnostic.get('candidate_count'),
+                                match_method=diagnostic.get('match_method')) from exc
 
 
 # returns True if all provided friends are in the list, and False if any single friend is not

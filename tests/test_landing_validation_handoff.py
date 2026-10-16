@@ -32,12 +32,19 @@ class LandingTests(unittest.IsolatedAsyncioTestCase):
         self.client.questing_status=True
         self.reader=Quester(self.client,[self.client],None)
         self.reader._npc_dialogue_visible=AsyncMock(return_value=False)
+        self.reader.read_quest_txt=AsyncMock(return_value='Use Streamportal')
+        self.reader.read_popup=AsyncMock(return_value='Interact')
+        self.stack.enter_context(patch('src.questing.get_popup_title', AsyncMock(return_value='Streamportal')))
+        self.stack.enter_context(patch.object(movement, '_movement_objective', AsyncMock(return_value='Use Streamportal')))
+        self.stack.enter_context(patch.object(movement, '_movement_interaction_signature', AsyncMock(
+            side_effect=lambda *_a, **_k: ('Streamportal', 'Interact') if self.range_visible else None)))
         self.reader._quest_interaction_signature=AsyncMock(return_value=('Streamportal','Interact'))
         self.stack.enter_context(patch('src.questing.collision_tp',movement.collision_tp))
         visible=AsyncMock(side_effect=lambda _,p:p==npc_range_path and self.range_visible)
         self.stack.enter_context(patch.object(movement,'is_visible_by_path',visible))
         self.stack.enter_context(patch('src.questing.is_visible_by_path',visible))
         self.stack.enter_context(patch.object(movement,'_retreat_toward',AsyncMock(return_value=False)))
+        self.stack.enter_context(patch.object(movement, 'navmap_tp', AsyncMock(return_value=None)))
 
     async def teleport(self,dest):
         self.events.append(('tp',dest))

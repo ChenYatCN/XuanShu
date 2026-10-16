@@ -90,7 +90,8 @@ class PartyProbeTests(fixtures.DungeonFixture, unittest.IsolatedAsyncioTestCase)
         return SimpleNamespace(sleep=tick,
             get_running_loop=lambda: SimpleNamespace(time=lambda: self.clock),
             wait_for=bounded if accelerated else REAL_WAIT_FOR,
-            CancelledError=asyncio.CancelledError, TimeoutError=TimeoutError)
+            CancelledError=asyncio.CancelledError, TimeoutError=TimeoutError,
+            timeout=asyncio.timeout, current_task=asyncio.current_task)
 
     def probe_namespace(self, **extra):
         return dict(clients_share_live_area=self.proof, **extra)

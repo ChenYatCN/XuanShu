@@ -18,9 +18,9 @@ from src.teleport_math import (_movement_task_snapshot, _same_movement_task,
                                _movement_interaction_handoff, _movement_failure_blocks_interaction,
                                _movement_failure_for_target, _movement_stop_reason,
                                _movement_body, _movement_position, _movement_control_changed)
-from src.teleport_math import _movement_interaction_signature
+from src.teleport_math import _movement_interaction_signature, _quest_interaction_eligibility
 from src.utils import _party_area_token
-from src.automation_ownership import automation_owner
+from src.automation_ownership import automation_owner, get_client_automation_ownership
 from wizwalker import XYZ, Orient, Keycode, MemoryReadError, Client, Rectangle, HookAlreadyActivated, HookNotActive
 from wizwalker.errors import MemoryInvalidated, ExceptionalTimeout
 from wizwalker.file_readers.wad import Wad
@@ -36,6 +36,7 @@ from src.quest_party import (
     dungeon_member_inside, record_dungeon_exit, clear_dungeon_session,
     pause_dungeon_for_potions, finish_dungeon_potions,
     quest_party_members_ready, remember_dungeon_transition,
+    dungeon_entry_waiting, end_dungeon_entry,
 )
 from thefuzz import fuzz
 
@@ -70,6 +71,134 @@ class Quester():
     DARKMOOR_MAYOR_HARP_POSITION = XYZ(-1203.329, 3168.999, .999)
 
     DARKMOOR_MAYOR_HARP_ORIENTATION = Orient(0.000, 0.000, 1.490)
+
+    async def _ensure_quest_pet_mode(self, client):
+        """Enter only for the tracked HUD goal; never toggle an observed pet out."""
+        goal = await self.read_quest_txt(client)
+        if not plain_text(goal) and not quest_has_action(goal, 'pet_mode'):
+            # An unreadable frame is not a new goal or a renewed toggle budget.
+            return not isinstance(getattr(client, '_quest_pet_mode_transition', None), dict)
+        if not quest_has_action(goal, 'pet_mode'):
+            client._quest_pet_mode_transition = None
+            return True
+        if (not getattr(client, 'questing_status', True) or not await is_free(client)
+                or any(getattr(client, flag, False) for flag in (
+                    'refilling_potions', 'quest_recovery_owner', 'quest_party_safe_return_active',
+                    'post_combat_movement_active', 'feeding_pet_status', 'entity_detect_combat_status'))):
+            return False
+        task = await _movement_task_snapshot(client)
+        progress = await self._dungeon_quest_snapshot(client)
+        if task is None or progress is None:
+            log_blocked(client, task, '宠物模式任务信息暂时不可读')
+            return False
+        state = getattr(client, '_quest_pet_mode_transition', None)
+        if (not isinstance(state, dict) or not _same_movement_task(state.get('task'), task)
+                or state.get('text') != plain_text(progress[2])):
+            state = dict(task=task, text=plain_text(progress[2]), attempted=False, reason='')
+            client._quest_pet_mode_transition = state
+        old_wait = getattr(client, '_quest_internal_failure_wait', None)
+
+        def failed(reason):
+            if state['reason'] != reason:
+                logger.warning('自动任务：{} 宠物模式未确认：{}', client.title, reason)
+                state['reason'] = reason
+            return False
+
+        async def stopped(*, switched=False):
+            if (not getattr(client, 'questing_status', True) or not await is_free(client)
+                    or any(getattr(client, flag, False) for flag in (
+                        'refilling_potions', 'quest_recovery_owner', 'quest_party_safe_return_active',
+                        'post_combat_movement_active', 'feeding_pet_status', 'entity_detect_combat_status'))):
+                return '加载、战斗、对话、停止或其他流程正在控制客户端'
+            current = await _movement_task_snapshot(client)
+            current_progress = await self._dungeon_quest_snapshot(client)
+            if (current is None or current_progress is None or current[:2] != task[:2]
+                    or current[3] != task[3] or current_progress != progress
+                    or not switched and not _same_movement_task(task, current)):
+                return '任务、目标或区域变化；结束旧切换'
+            return None
+
+        async def confirmed():
+            body, control = await _movement_body(client)
+            if body is client.body or control is None:
+                return False
+            # Refresh the target/zone and position after the intentional switch.
+            # Subsequent movement starts with this new control token, not the old one.
+            await _movement_position(client)
+            reason = await stopped(switched=True)
+            if reason or await _movement_control_changed(client, control):
+                return False
+            if (isinstance(old_wait, dict) and old_wait.get('kind') in ('movement', 'exhausted')
+                    and _same_movement_task(old_wait.get('task'), task)
+                    and getattr(client, '_quest_internal_block_reason', '') == old_wait.get('reason')):
+                client._quest_internal_block_reason = ''
+            state['reason'] = ''
+            return True
+
+        try:
+            if await confirmed():
+                return True
+            if state['attempted']:
+                return False  # A new worker is not permission to replay a mode toggle.
+            state['attempted'] = True  # Reserve before any await/input; cancellation keeps it spent.
+            from src.ibao_runtime import complete_before_cancel
+            async with asyncio.timeout(8):
+                moving = getattr(client, '_quest_active_movement', None)
+                if isinstance(moving, asyncio.Task) and moving is not asyncio.current_task() and not moving.done():
+                    moving.cancel()
+                    await complete_before_cancel(asyncio.gather(moving, return_exceptions=True))
+                async with automation_owner(client, 'quest-pet-mode'):
+                    reason = await stopped()
+                    if reason:
+                        return failed(reason)
+                    _, control = await _movement_body(client)
+                    # A child flag can remain visible under a hidden layout.
+                    expanded = (await is_visible_by_path(client, play_as_pet_button_path[:-1])
+                                and await is_visible_by_path(client, play_as_pet_button_path))
+                    if not expanded:
+                        menu = await get_window_from_path(client.root_window, pet_system_button_path)
+                        if (menu is None or not await is_visible_by_path(client, pet_system_button_path)
+                                or await menu.is_control_grayed()):
+                            return failed('宠物菜单按钮不可见或不可用')
+                        if await stopped() or await _movement_control_changed(client, control):
+                            return failed('点击菜单前任务或受控对象变化')
+                        await complete_before_cancel(asyncio.create_task(
+                            click_window_by_path(client, pet_system_button_path)))
+                    for _ in range(10):
+                        reason = await stopped()
+                        if reason:
+                            return failed(reason)
+                        if (await is_visible_by_path(client, play_as_pet_button_path[:-1])
+                                and await is_visible_by_path(client, play_as_pet_button_path)):
+                            break
+                        await asyncio.sleep(.1)
+                    else:
+                        return failed('展开菜单后未出现扮演宠物按钮')
+                    button = await get_window_from_path(client.root_window, play_as_pet_button_path)
+                    if button is None or await button.is_control_grayed():
+                        return failed('扮演宠物按钮不可用')
+                    if await stopped() or await _movement_control_changed(client, control):
+                        return failed('切换前任务或受控对象变化')
+                    await complete_before_cancel(asyncio.create_task(
+                        click_window_by_path(client, play_as_pet_button_path)))
+                    last_error = ''
+                    for _ in range(40):
+                        reason = await stopped(switched=True)
+                        if reason:
+                            return failed(reason)
+                        try:
+                            if await confirmed():
+                                logger.debug('自动任务：{} 已确认宠物受控对象；重新读取目标后继续任务', client.title)
+                                return True
+                        except (MemoryReadError, HookNotActive, ValueError) as exc:
+                            last_error = str(exc)
+                        await asyncio.sleep(.1)
+                    return failed('点击后未确认实际宠物模式' + (f'：{last_error}' if last_error else ''))
+        except asyncio.CancelledError:
+            failed('模式切换已取消；不重放旧点击')
+            raise
+        except Exception as exc:
+            return failed(f'{type(exc).__name__}: {exc}')
 
     async def _dungeon_quest_snapshot(self, client: Client):
         """Use the same live quest identifiers and HUD goal as NPC retry."""
@@ -191,11 +320,137 @@ class Quester():
         await client.send_key(Keycode.Z, .1)
         await self._finish_photomancy_photo(client, zone)
 
-    async def take_photomancy_photo(self, client, objective):
+    async def _photomancy_interaction_ready(self, client, target, task_before,
+                                           leader_client=None, owner_task=None):
+        """A live Z action is independent of success at the model-centre XYZ."""
+        def rejected(reason):
+            key = (task_before[:2] + (task_before[3],) if task_before is not None else None, reason)
+            if getattr(client, '_quest_photo_ready_log', None) != key:
+                logger.debug(f"[photo_ready] {client.title}: reason={reason} "
+                             f"task={task_before} target={target}")
+                client._quest_photo_ready_log = key
+            return None
+
+        try:
+            source = leader_client or client
+            objective = await self.read_quest_txt(source)
+            if not quest_has_action(objective, 'photomance'):
+                return rejected('task-action-mismatch')
+            if task_before is None:
+                return rejected('task-snapshot-unreadable')
+            ownership = get_client_automation_ownership(client)
+            owner = (ownership._owner_task, ownership.owner_label)
+            if ownership.locked and (owner[0] is not (owner_task or asyncio.current_task())
+                    or owner[1] not in ('quest-photo', 'dungeon-shared-target')):
+                return rejected(f'input-busy owner={owner[1]}')
+            _, control = await _movement_body(client)
+
+            async def current_reason():
+                if not client.questing_status:
+                    return 'questing-stopped'
+                if await client.is_loading() or await client.in_battle():
+                    return 'loading-or-battle'
+                flags = [flag for flag in (
+                    'refilling_potions', 'quest_recovery_owner', 'quest_party_safe_return_active',
+                    'post_combat_movement_active', 'feeding_pet_status', 'entity_detect_combat_status',
+                    'quest_party_entry_active', 'quest_party_battle_rescue_active') if getattr(client, flag, False)]
+                if flags or await dungeon_entry_waiting(client):
+                    return f'automation-active flags={flags}'
+                if not _same_movement_task(task_before, await _movement_task_snapshot(source)):
+                    return 'old-task-or-unreadable-snapshot'
+                if await client.zone_name() != task_before[3]:
+                    return 'zone-changed'
+                if await _movement_control_changed(client, control):
+                    return 'controlled-object-changed'
+                if (get_client_automation_ownership(client) is not ownership
+                        or (ownership._owner_task, ownership.owner_label) != owner):
+                    return 'input-owner-changed'
+                return None
+
+            reason = await current_reason()
+            if reason:
+                return rejected(reason)
+            first = getattr(client, '_quest_target_first_move', None)
+            if isinstance(first, dict) and first.get('pending'):
+                attempted = False
+                for attr in ('_quest_tp_landing', '_quest_tp_rejected'):
+                    record = getattr(client, attr, None)
+                    if (isinstance(record, dict) and _movement_failure_for_target(
+                            client, target, task_before, task_before[3], record=record) is not None):
+                        attempted |= bool(record.get('confirmed') or record.get('rejected') or record.get('walks'))
+                if not attempted:
+                    return rejected('first-move-not-attempted')
+                # A rejected model-centre landing or a bounded walk is an actual
+                # attempt. It cannot veto a current independently verified Z action.
+            signature = await _movement_interaction_signature(client, read_popup=self.read_popup,
+                read_title=get_popup_title, visible=is_visible_by_path)
+            if signature is None:
+                return rejected('prompt-not-ready')
+            if not quest_interaction_matches(objective, signature[0]):
+                return rejected('prompt-target-mismatch')
+            title, action = signature
+            action = plain_text(action).casefold()
+            prefix = action[:-len(title)] if action.endswith(title.casefold()) else action
+            if not (matches_text(action, 'WizardQuestGoals_00000670', 'WizardQuestGoals_00000672')
+                    or matches_text(prefix, 'WizardQuestGoals_00000670', 'WizardQuestGoals_00000672')):
+                return rejected('prompt-action-not-z')
+            reason = await current_reason()
+            if reason:
+                return rejected(reason)
+            if (await self.read_quest_txt(source) != objective
+                    or await _movement_interaction_signature(client, read_popup=self.read_popup,
+                        read_title=get_popup_title, visible=is_visible_by_path) != signature):
+                return rejected('task-or-prompt-changed-during-read')
+            reason = await current_reason()
+            if reason:
+                return rejected(reason)
+            client._quest_photo_ready_log = None
+            return objective
+        except (MemoryReadError, MemoryInvalidated, ExceptionalTimeout, HookNotActive, ValueError) as exc:
+            return rejected(f'state-unreadable error={type(exc).__name__}')
+
+    async def _take_ready_photomancy_photo(self, client, target, task_before):
+        ownership = get_client_automation_ownership(client)
+        if ownership.locked and (ownership._owner_task is not asyncio.current_task()
+                or ownership.owner_label not in ('quest-photo', 'dungeon-shared-target')):
+            await self._photomancy_interaction_ready(client, target, task_before)
+            return False
+        _, control = await _movement_body(client)
+        async with automation_owner(client, 'quest-photo'):
+            objective = await self._photomancy_interaction_ready(client, target, task_before)
+            if objective is None:
+                return False
+            owner = (ownership._owner_task, ownership.owner_label)
+            async def guard():
+                return (get_client_automation_ownership(client) is ownership
+                    and (ownership._owner_task, ownership.owner_label) == owner
+                    and not any(getattr(client, flag, False) for flag in (
+                        'refilling_potions', 'quest_recovery_owner', 'quest_party_safe_return_active',
+                        'post_combat_movement_active', 'feeding_pet_status', 'entity_detect_combat_status'))
+                    and not await _movement_stop_reason(client, target, task_before[3],
+                        task_before, interaction=False, control=control))
+            if not await guard():
+                return False
+            log_recovered(client, '当前目标的 Z 拍照交互已就绪，交回原拍照流程')
+            await self.take_photomancy_photo(client, objective, guard=guard)
+            after = await _movement_task_snapshot(client)
+            if after is not None and not _same_movement_task(task_before, after):
+                for attr in ('_quest_tp_rejected', '_quest_tp_landing'):
+                    record = getattr(client, attr, None)
+                    if _movement_failure_for_target(client, target, task_before,
+                            task_before[3], record=record) is not None:
+                        setattr(client, attr, None)
+                wait = getattr(client, '_quest_internal_failure_wait', None)
+                if isinstance(wait, dict) and _same_movement_task(wait['task'], task_before):
+                    client._quest_internal_failure_wait = None
+                    client._quest_internal_block_reason = ''
+            return True  # Action handoff only; task advancement is read separately above.
+
+    async def take_photomancy_photo(self, client, objective, *, guard=None):
         zone = await client.zone_name()
         async def ready():
             return (client.questing_status and not await client.is_loading() and not await client.in_battle()
-                    and await client.zone_name() == zone)
+                    and await client.zone_name() == zone and (guard is None or await guard()))
         async def view(orientation):
             if not await ready():
                 return False
@@ -220,6 +475,8 @@ class Quester():
             if not await ready():
                 return False
             await client.send_key(Keycode.Z, .1)
+            if guard is not None and not await guard():
+                return False
             await self._finish_photomancy_photo(client, zone)
             return True
         if not await ready():
@@ -679,16 +936,9 @@ class Quester():
                         await new_portals_cycle(c, self.d_location)
         else:
             # Handles spiral door navigation
+            # World selection belongs to the quester. Assigned hitters keep
+            # their existing friend-follow/probe flow after the confirmed change.
             await spiral_door_with_quest(self.current_leader_client)
-
-            await asyncio.sleep(1)
-            leader_world = (await self.current_leader_client.zone_name()).split('/', 1)[0]
-
-            # Follower clients use separate spiral door navigation than leader (since they may not have the same quest)
-            for c in self.clients:
-                if c.process_id != self.current_leader_pid:
-                    if await is_visible_by_path(c, spiral_door_teleport_path):
-                        await go_to_new_world(c, leader_world)
 
     async def auto_tfc_friend_all_wizards(self):
         for code_generator in self.clients:
@@ -1021,6 +1271,61 @@ class Quester():
         return await _movement_interaction_signature(client, prompt,
             read_popup=self.read_popup, read_title=get_popup_title, visible=is_visible_by_path)
 
+    async def _interaction_eligibility(self, client, target, task=None, *, task_client=None, expected=None):
+        return await _quest_interaction_eligibility(client, target, task, task_client=task_client,
+            expected=expected, read_objective=self.read_quest_txt, read_popup=self.read_popup,
+            read_title=get_popup_title, visible=is_visible_by_path)
+
+    async def _send_quest_interaction_x(self, client, target, eligibility, *, task_client=None, seconds=.1):
+        """Consume the same proof immediately before ordinary input, without entry side effects."""
+        if eligibility is None or not eligibility.accepted:
+            return False
+        owner = get_client_automation_ownership(client)
+        if owner.locked and owner._owner_task is not asyncio.current_task():
+            return False
+        async with automation_owner(client, 'quest-interaction'):
+            if await _movement_failure_blocks_interaction(client, target,
+                    await _movement_task_snapshot(task_client or client), signature=eligibility.identity):
+                return False
+            current = await self._interaction_eligibility(client, target, task_client=task_client,
+                expected=eligibility)
+            if not current.accepted:
+                return False
+            await client.send_key(Keycode.X, seconds)
+            return True
+
+    async def _send_leader_interaction_x(self, target, eligibility):
+        from contextlib import AsyncExitStack
+        if eligibility is None or not eligibility.accepted or not self.clients:
+            return False
+        async with AsyncExitStack() as owners:
+            for client in self.clients:
+                owner = get_client_automation_ownership(client)
+                if owner.locked and owner._owner_task is not asyncio.current_task():
+                    return False
+                await owners.enter_async_context(automation_owner(client, 'quest-interaction'))
+            proofs = []
+            for client in self.clients:
+                if await _movement_failure_blocks_interaction(client, target,
+                        await _movement_task_snapshot(self.current_leader_client)):
+                    return False
+                proof = await self._interaction_eligibility(client, target,
+                    task_client=self.current_leader_client,
+                    expected=eligibility if client is self.current_leader_client else None)
+                if (not proof.accepted or proof.task != eligibility.task
+                        or proof.zone != eligibility.zone or proof.objective != eligibility.objective
+                        or proof.identity != eligibility.identity):
+                    return False
+                proofs.append((client, proof))
+            for client, proof in proofs:
+                if not (await self._interaction_eligibility(client, target,
+                        task_client=self.current_leader_client, expected=proof)).accepted:
+                    return False
+            # Commit one already-validated simultaneous input batch. An immediate
+            # leader update caused by its own X must not discard peers' same batch.
+            await gather_owned(*[client.send_key(Keycode.X, .1) for client, _ in proofs])
+            return True
+
     async def _quest_interaction_retry_state(self, client, target, task_client=None, *, task_snapshot=None):
         """Reuse failed identities while the actual task/target stays unchanged."""
         task = task_snapshot if task_snapshot is not None else await _movement_task_snapshot(task_client or client)
@@ -1048,10 +1353,19 @@ class Quester():
         if progress is None or time.monotonic() < getattr(client, '_quest_x_turn_next_at', 0.0):
             return False
 
+        proven = getattr(client, '_quest_interaction_eligibility', None)
+        if (proven is None or not proven.accepted or proven.task[:2] != progress[:2]
+                or proven.objective != plain_text(progress[2]).strip()
+                or proven.zone != zone or proven.target != tuple(target)):
+            proven = await self._interaction_eligibility(client, target)
+            if not proven.accepted:
+                return False
+
         async def state():
             if (not client.questing_status or await client.is_loading() or await client.in_battle()
                     or client.entity_detect_combat_status or getattr(client, 'refilling_potions', False)
-                    or await client.zone_name() != zone):
+                    or await client.zone_name() != zone
+                    or await _movement_control_changed(client, control)):
                 return 'stop'
             if await dialogue_visible():
                 return 'ready'  # Temporary quest reads cannot end a real dialogue.
@@ -1068,10 +1382,11 @@ class Quester():
                 logger.debug(f'Client {client.title} - stopping A search at {math.degrees(abs(rotation)):.1f}°.')
                 return 'progress'
             current_target = await client.quest_position.position()
-            current_position = await client.body.position()
+            current_position = await _movement_position(client)
             if await dialogue_visible():
                 return 'ready'
-            if (not all(math.isfinite(v) for v in (current_target.x, current_target.y, current_target.z))
+            if (await _movement_control_changed(client, control)
+                    or not all(math.isfinite(v) for v in (current_target.x, current_target.y, current_target.z))
                     or calc_Distance(current_target, target) > 1.0
                     or calc_Distance(current_position, target) >= 750.0):
                 return 'stop'
@@ -1087,13 +1402,14 @@ class Quester():
         failed_interactions = retry['failed'] if retry is not None else set()
         pending_interaction = None
         try:
+            body, control = await _movement_body(client)
             first_interaction = failed_interaction or await self._quest_interaction_signature(client)
             if first_interaction:
                 failed_interactions.add(first_interaction)
             outcome = await state()
             if outcome != 'ready':
                 return outcome == 'progress'
-            last_yaw = await client.body.yaw()
+            last_yaw = await body.yaw()
             if not math.isfinite(last_yaw):
                 return False
             best_rotation = 0.0
@@ -1117,7 +1433,7 @@ class Quester():
                     if not await dialogue_visible() and pending_interaction:
                         failed_interactions.add(pending_interaction)
                         pending_interaction = None
-                    last_yaw = await client.body.yaw()
+                    last_yaw = await body.yaw()
                     if not math.isfinite(last_yaw):
                         return False
                     moved_at = time.monotonic()
@@ -1134,8 +1450,12 @@ class Quester():
                     return False
                 # timed_send_key releases A in its finally block, including
                 # cancellation. No key remains held during X/dialogue waits.
+                if await _movement_control_changed(client, control):
+                    return False
                 await client.send_key(Keycode.A, .1)
-                yaw = await client.body.yaw()
+                if await _movement_control_changed(client, control):
+                    return False
+                yaw = await body.yaw()
                 if not math.isfinite(yaw):
                     return False
                 if await dialogue_visible():
@@ -1175,8 +1495,15 @@ class Quester():
                         continue
                     if not await is_visible_by_path(client, npc_range_path):
                         continue
+                    eligibility = await self._interaction_eligibility(client, target,
+                        (progress[0], progress[1], target, zone))
+                    if not eligibility.accepted or eligibility.identity != signature:
+                        continue
+                    if await _movement_control_changed(client, control):
+                        return False
+                    if not await self._send_quest_interaction_x(client, target, eligibility):
+                        continue
                     pending_interaction = signature
-                    await client.send_key(Keycode.X, .1)
                     for _ in range(3):
                         outcome = await state()
                         if outcome != 'ready':
@@ -1228,6 +1555,14 @@ class Quester():
                              or await self._npc_dialogue_visible(talking_client))
         initial_state = await read_quest_state()
         initial_zone = await talking_client.zone_name()
+        eligibility = None
+        if (not dialogue_observed and (before_progress is None or initial_state[2] == before_progress)):
+            if initial_state[1] is None:
+                return False
+            eligibility = await self._interaction_eligibility(talking_client, initial_state[1])
+            if not eligibility.accepted:
+                return False
+            talking_client._quest_interaction_eligibility = eligibility
         retry = (await self._quest_interaction_retry_state(talking_client, initial_state[1],
                     task_snapshot=(*initial_state[2][:2], initial_state[1], initial_zone))
                  if initial_state[1] is not None and initial_state[2] is not None else None)
@@ -1292,7 +1627,9 @@ class Quester():
                     return progress_confirmed()
                 if not dialogue_observed:
                     failed_interaction = await self._quest_interaction_signature(talking_client)
-                    await talking_client.send_key(Keycode.X, 0.15)
+                    if not await self._send_quest_interaction_x(talking_client, initial_state[1],
+                            eligibility, seconds=.15):
+                        return False
 
             # A missed X press previously left this loop waiting forever.  Give
             # the game a few seconds to display dialogue, then retry the input.
@@ -1426,6 +1763,10 @@ class Quester():
             return False
         if not getattr(client, 'questing_status', True):
             return True  # A retry must never undo an explicit user stop.
+        if (state.get('target') is not None
+                and await self._photomancy_interaction_ready(client, state['target'], state['task'],
+                    leader_client=state['source'])):
+            return False  # Keep the movement budget; a live photo action can end its wait.
         log_blocked(client, state['task'], state['reason'])
         try:
             if (await client.is_loading() or await client.in_battle()
@@ -1474,12 +1815,11 @@ class Quester():
         if (failure is not None and not failure.get('pending')
                 and failure.get('origin_identity_waited') and failure.get('origin_signature') is None):
             failure['origin_identity_recovered'] = True
-        if state['kind'] == 'exhausted' and current is not None and not changed:
-            failure = _movement_failure_for_target(client, state['target'], current, zone)
-            if failure is not None and not failure.get('pending'):
-                failure.update(walks=0, announced=False)
-                # Keep origin/rejected/ready: a new finite walk batch cannot
-                # turn a rejected TP or an origin popup into successful arrival.
+        if state['kind'] == 'exhausted' and not changed:
+            # Cooldown/worker restart is not progress. Retain the exhausted
+            # budget and reason until a fresh task/area or measured advance.
+            await asyncio.sleep(.5)
+            return True
         client._quest_internal_failure_wait = None
         client._quest_internal_block_reason = ''
         return False
@@ -1580,6 +1920,10 @@ class Quester():
             logger.debug(f"[quest_interaction] {client.title}: reason=task-changed-before-interaction "
                          f"previous={task_before} target={xyz}")
             return False
+        eligibility = await self._interaction_eligibility(client, xyz, task_before,
+            task_client=leader_client)
+        if not eligibility.accepted:
+            return False  # Unrelated prompts must not establish retry/failure context.
         retry = await self._quest_interaction_retry_state(client, xyz, leader_client)
         signature = await self._quest_interaction_signature(client)
         if retry is not None:
@@ -1601,7 +1945,9 @@ class Quester():
         ready = await _movement_interaction_handoff(client, xyz,
             retry['task'] if retry is not None else None, signature=signature,
             range_visible=await is_visible_by_path(client, npc_range_path),
-            entry_visible=await is_visible_by_path(client, team_up_button_path))
+            entry_visible=await is_visible_by_path(client, team_up_button_path),
+            task_client=leader_client, read_objective=self.read_quest_txt, read_popup=self.read_popup,
+            read_title=get_popup_title, visible=is_visible_by_path)
         failure = _movement_failure_for_target(client, xyz,
             retry['task'] if retry is not None else None, await client.zone_name())
         if not ready and failure is not None and failure.get('interaction_issue'):
@@ -1622,6 +1968,8 @@ class Quester():
         first_move = await self._quest_target_first_move_state(client, xyz, leader_client)
         if first_move is None:
             return 'blocked'
+        if await self._photomancy_interaction_ready(client, xyz, first_move['task'], leader_client):
+            return 'photo-ready'
         if not first_move['pending'] and await self.quest_interaction_ready(client, xyz, leader_client):
             return 'ready'
         task_before = await _movement_task_snapshot(leader_client or client)
@@ -1630,6 +1978,8 @@ class Quester():
             return 'changed' if task_before is not None else 'blocked'
 
         control = getattr(client, '_quest_movement_control', None)
+        photo_task = quest_has_action(await self.read_quest_txt(leader_client or client), 'photomance')
+        requester = asyncio.current_task()
         async def stopped():
             if any(getattr(client, flag, False) for flag in (
                     'refilling_potions', 'quest_recovery_owner', 'quest_party_safe_return_active',
@@ -1656,39 +2006,63 @@ class Quester():
                 await asyncio.sleep(.1)
                 if await stopped():
                     return
+                if photo_task and await self._photomancy_interaction_ready(
+                        client, xyz, task_before, leader_client, owner_task=requester):
+                    return 'photo-ready'
 
         first_move['active'] = first_move['pending']
         previous_failure = getattr(client, '_quest_tp_rejected', None)
         movement = asyncio.create_task(collision_tp(client, xyz, leader_client=leader_client))
+        client._quest_active_movement = movement
         watcher = asyncio.create_task(watch_movement_state())
         result = None
         try:
             done, _ = await asyncio.wait((movement, watcher), return_when=asyncio.FIRST_COMPLETED)
             result = None
             if watcher in done:
-                await watcher
+                handoff = await watcher
                 movement.cancel()
                 current = await _movement_task_snapshot(leader_client or client)
-                result = ('changed' if current is not None and task_before is not None
+                result = (handoff if handoff == 'photo-ready' else 'changed' if current is not None and task_before is not None
                           and not _same_movement_task(task_before, current) else 'blocked')
-            if movement in done:
+            if movement in done and result != 'photo-ready':
                 result = await movement
+            if (photo_task and result in ('failed', 'exhausted')
+                    and await self._photomancy_interaction_ready(client, xyz, task_before, leader_client)):
+                result = 'photo-ready'
             if result == 'exhausted':
                 if not _same_movement_task(task_before, await _movement_task_snapshot(leader_client or client)):
                     return 'changed'  # An exhausted old goal must not stop a newly advanced task.
+                recovery = getattr(client, '_quest_navmap_recovery', None)
+                reason = ('任务 TP 后备落点搜索及补走已用尽 3/3 次，未确认实际进展'
+                          if isinstance(recovery, dict) and recovery['attempts'] >= 3
+                          else '3次补走后仍未确认可交互位置')
                 await self._defer_internal_quest_failure(client,
-                    '3次补走后仍未确认可交互位置', kind='exhausted', delay=10,
+                    reason, kind='exhausted', delay=10,
                     task=task_before, target=xyz, task_client=leader_client)
             elif result == 'failed':
                 if _same_movement_task(task_before, await _movement_task_snapshot(leader_client or client)):
                     await self._defer_internal_quest_failure(client,
                         '任务导航或补走尚未成功', kind='movement', delay=2,
                         task=task_before, target=xyz, task_client=leader_client)
+            if (result == 'ready' and movement in done
+                    and _same_movement_task(task_before, await _movement_task_snapshot(leader_client or client))
+                    and await client.zone_name() == zone_before
+                    and not await _movement_control_changed(client, control)):
+                arrived = await _movement_position(client)
+                # A called/no-op navigator or a nearby popup alone is not provenance.
+                if (calc_Distance(position, arrived) > 5
+                        and calc_Distance(arrived, xyz) <= 150
+                        and not await _movement_failure_blocks_interaction(client, xyz, task_before)):
+                    client._quest_target_arrival = dict(task=task_before, target=copy(xyz),
+                        zone=zone_before, control=control)
             return result
         finally:
             movement.cancel()
             watcher.cancel()
             await gather_owned(movement, watcher, return_exceptions=True)
+            if getattr(client, '_quest_active_movement', None) is movement:
+                client._quest_active_movement = None
             if first_move['active']:
                 # Existing validator records prove that input was attempted,
                 # including cancellation during its settle wait. Pre-input
@@ -1709,11 +2083,13 @@ class Quester():
                         # final safety check/input. Discard only that new empty
                         # record so a deferred first TP is not mistaken for failure.
                         client._quest_tp_rejected = previous_failure
-                if attempted or not input_blocked and result in ('ready', 'failed', 'exhausted'):
+                if attempted or not input_blocked and result in ('ready', 'photo-ready', 'failed', 'exhausted'):
                     first_move['pending'] = False
                 first_move['active'] = False
 
     async def teleport_to_quest_target(self, client, xyz, leader_client=None):
+        if await dungeon_entry_waiting(client):
+            return 'blocked'
         zone = await client.zone_name()
         try:
             position = await _movement_position(client)
@@ -1952,6 +2328,8 @@ class Quester():
             return
         if any(await gather_owned(*[close_automation_popup(c) for c in self.clients])):
             return
+        if not await self._ensure_quest_pet_mode(self.current_leader_client):
+            return
         if await is_spiral_door_open(self.current_leader_client):
             self._krok_exit_watch.pop(id(self.current_leader_client), None)
             await self.handle_spiral_navigation()
@@ -1978,7 +2356,10 @@ class Quester():
             control = getattr(self.current_leader_client, '_quest_movement_control', None)
 
             leader_client_objective_xyz = await self.current_leader_client.quest_position.position()
-            if await is_visible_by_path(self.current_leader_client, npc_range_path) and calc_Distance(leader_client_objective_xyz, current_pos) < 750.0:
+            leader_task = await _movement_task_snapshot(self.current_leader_client)
+            if await self.quest_interaction_ready(self.current_leader_client,
+                    leader_client_objective_xyz, task_before=leader_task):
+                eligibility = self.current_leader_client._quest_interaction_eligibility
                 if await _movement_control_changed(self.current_leader_client, control):
                     return
                 if await _movement_failure_blocks_interaction(self.current_leader_client,
@@ -1995,10 +2376,26 @@ class Quester():
                 sigil_msg_check = await self.read_popup(self.current_leader_client)
                 if await self._maybe_photo_giant_vat(self.current_leader_client, sigil_msg_check):
                     return
+                if portal_kind(await get_popup_title(self.current_leader_client)) == 'world_gate':
+                    world_task = await _movement_task_snapshot(self.current_leader_client)
+                    async with automation_owner(self.current_leader_client, 'world-gate'):
+                        if world_task is None or not await self.quest_interaction_ready(
+                                self.current_leader_client, leader_client_objective_xyz, task_before=world_task):
+                            return
+                        if not await self._send_quest_interaction_x(
+                                self.current_leader_client, leader_client_objective_xyz, eligibility):
+                            return
+                        await asyncio.sleep(.75)
+                        if not _same_movement_task(world_task, await _movement_task_snapshot(self.current_leader_client)):
+                            return
+                        if await is_spiral_door_open(self.current_leader_client):
+                            await self.handle_spiral_navigation()
+                    return  # Hitters retain their original follow/probe workflow.
                 if is_dungeon_entry_prompt(sigil_msg_check):
                     while is_dungeon_entry_prompt(sigil_msg_check):
                         logger.debug('Entering dungeon')
-                        await gather_owned(*[p.send_key(Keycode.X, 0.1) for p in self.clients])
+                        if not await self._send_leader_interaction_x(leader_client_objective_xyz, eligibility):
+                            return
                         await asyncio.sleep(1.0)
                         for c in self.clients:
                             if await is_visible_by_path(c, dungeon_warning_path):
@@ -2011,7 +2408,8 @@ class Quester():
                     msg = sigil_msg_check.lower()
                     if interaction_kind(msg) == "talk":
                         before_progress = await self._dungeon_quest_snapshot(self.current_leader_client)
-                        await gather_owned(*[p.send_key(Keycode.X, 0.1) for p in self.clients])
+                        if not await self._send_leader_interaction_x(leader_client_objective_xyz, eligibility):
+                            return
                         logger.debug('Talking to NPC')
                         quest_updated = await self.handle_npc_talking_quests(
                             self.current_leader_client, self.clients, before_progress=before_progress
@@ -2021,13 +2419,17 @@ class Quester():
                             return
 
                     elif interaction_kind(msg) in {"ride", "teleport"}:
-                        await self.current_leader_client.send_key(Keycode.X, 0.1)
+                        if not await self._send_quest_interaction_x(
+                                self.current_leader_client, leader_client_objective_xyz, eligibility):
+                            return
                         await asyncio.sleep(1.0)
-                        await gather_owned(*[p.send_key(Keycode.X, 0.1) for p in self.clients])
+                        if not await self._send_leader_interaction_x(leader_client_objective_xyz, eligibility):
+                            return
                     else:
                         search_progress = await self._dungeon_quest_snapshot(self.current_leader_client)
                         search_zone = await self.current_leader_client.zone_name()
-                        await gather_owned(*[p.send_key(Keycode.X, 0.1) for p in self.clients])
+                        if not await self._send_leader_interaction_x(leader_client_objective_xyz, eligibility):
+                            return
                         await asyncio.sleep(.75)
                         if await self._recover_quest_x_direction(
                             self.current_leader_client, search_progress, leader_client_objective_xyz,
@@ -2469,8 +2871,406 @@ class Quester():
         while await self.client.is_loading():
             await asyncio.sleep(.1)
 
-    async def prepare_party_dungeon_entry(self) -> list[Client]:
+    def _entry_blocked(self, reason, member=None):
+        """Record a changed entrance rejection once, without creating retry state."""
+        reason = f'{getattr(member, "title", self.client.title)}: {reason}'
+        previous = getattr(self.client, '_logging_blocks', {}).get('dungeon-entry')
+        if previous is None or previous['reason'] != reason:
+            log_blocked(self.client, None, reason, channel='dungeon-entry')
+
+    def _entry_input_busy(self, members):
+        for c in members:
+            owner = get_client_automation_ownership(c)
+            if owner.locked and (owner._owner_task is not asyncio.current_task()
+                    or owner.owner_label != 'dungeon-entry'):
+                self._entry_blocked(f'入口输入被占用 owner={owner.owner_label}', c)
+                return True
+        return False
+
+    async def _generic_entry_prompts_ready(self, members):
+        """Non-sigil doors still require each actual Enter prompt before group X."""
+        reference = await _movement_interaction_signature(self.client, read_popup=self.read_popup,
+            read_title=get_popup_title, visible=is_visible_by_path)
+        if reference is None:
+            self._entry_blocked('任务端当前交互提示不可读或未就绪')
+            return False
+        if not is_dungeon_entry_prompt(reference[1]):
+            return True  # Preserve ordinary in-dungeon Use/exit interactions.
+        signatures = {}
+        for c in members:
+            signature = await _movement_interaction_signature(c, read_popup=self.read_popup,
+                read_title=get_popup_title, visible=is_visible_by_path)
+            signatures[id(c)] = signature
+            if (signature is None or not is_dungeon_entry_prompt(signature[1])
+                    or plain_text(signature[0]).casefold() != plain_text(reference[0]).casefold()):
+                self._entry_blocked('共同 X 前当前同入口进入提示未就绪', c)
+                return False
+        for c in members:
+            if (await _movement_interaction_signature(c, read_popup=self.read_popup,
+                    read_title=get_popup_title, visible=is_visible_by_path) != signatures[id(c)]):
+                self._entry_blocked('整组提示复读时入口发生变化', c)
+                return False
+        return await quest_party_members_ready(self.client)
+
+    async def _sigil_entry_readiness(self, state):
+        """Recheck the recorded group/source and each actual Enter interaction."""
+        members = state['members']
+        if (tuple([self.client, *getattr(self.client, 'quest_party_hitters', ())]) != members
+                or dungeon_session_for(self.client) is not state['session']
+                or state['session'].transition is not state['source']
+                or not await quest_party_members_ready(self.client, zone=state['zone'])):
+            self._entry_blocked('整组、会话、来源或当前实例未就绪')
+            return False, []
+        missing, signatures = [], {}
+        for c in members:
+            if (getattr(c, 'in_solo_zone', False)
+                    or getattr(c, 'quest_party_probe_pending', False)
+                    or getattr(c, 'feeding_pet_status', False)
+                    or getattr(c, 'entity_detect_combat_status', False)
+                    or getattr(c, '_quest_dialogue_update_pending', False)
+                    or not await is_free(c) or await self._npc_dialogue_visible(c)
+                    or c is not self.client and getattr(c, 'quest_party_quester', self.client) is not self.client
+                    or c not in getattr(self.client, 'hotkey_quest_clients', members)
+                    or self.client not in getattr(c, 'hotkey_quest_clients', members)):
+                self._entry_blocked('停止、对话、战斗或其他自动操作未就绪', c)
+                return False, []
+            await observe_party_area(c)
+            task = await _movement_task_snapshot(c)
+            if (await _party_area_token(c) != state['tokens'][id(c)]
+                    or task is None or task[:2] != state['tasks'][id(c)][:2]
+                    or c is self.client and not _same_movement_task(task, state['tasks'][id(c)])
+                    or await _movement_control_changed(c, state['controls'][id(c)])):
+                self._entry_blocked('来源区域、任务或受控对象变化/暂不可读', c)
+                return False, []
+            signature = await _movement_interaction_signature(c, read_popup=self.read_popup,
+                read_title=get_popup_title, visible=is_visible_by_path)
+            signatures[id(c)] = signature
+            if signature:
+                title, action = signature
+                if (portal_kind(title) == 'world_gate' or not is_dungeon_entry_prompt(action)
+                        or plain_text(title).casefold() != state['title']):
+                    self._entry_blocked('当前不是同一入口的进入提示', c)
+                    return False, []  # Another door/NPC is not a missing frame of this sigil.
+            if (signature is None or calc_Distance(await _movement_position(c), state['target']) >= 750):
+                missing.append(c)
+        # A later member's read can overlap an earlier member losing its popup.
+        for c in members:
+            task = await _movement_task_snapshot(c)
+            if (await _movement_interaction_signature(c, read_popup=self.read_popup,
+                    read_title=get_popup_title, visible=is_visible_by_path) != signatures[id(c)]
+                    or await _party_area_token(c) != state['tokens'][id(c)]
+                    or task is None or task[:2] != state['tasks'][id(c)][:2]
+                    or c is self.client and not _same_movement_task(task, state['tasks'][id(c)])):
+                self._entry_blocked('整组复读期间交互、任务或区域变化/暂不可读', c)
+                return False, []
+        # UI reads span frames; do not release a member that has since entered.
+        return await quest_party_members_ready(self.client, zone=state['zone']), missing
+
+    async def _prepare_sigil_entry(self, *, interaction=None):
+        """None is an ordinary interaction; [] is a blocked, evidenced dungeon entry."""
+        from contextlib import AsyncExitStack
+        from copy import copy
+        from src.ibao_runtime import complete_before_cancel
+        if interaction is not None:
+            if (not interaction.accepted or not is_dungeon_entry_prompt(interaction.identity[1])
+                    or not (await self._interaction_eligibility(self.client,
+                        XYZ(*interaction.target), expected=interaction)).accepted):
+                return []
+        members = tuple([self.client, *getattr(self.client, 'quest_party_hitters', ())])
+        if len(members) < 2:
+            return None
+        session = dungeon_session_for(self.client)
+        if session and session.confirmed and session.exited:
+            self.client._quest_party_entry = None
+            return None  # Preserve the existing last-member exit flow.
+        state = getattr(self.client, '_quest_party_entry', None)
+        task = await _movement_task_snapshot(self.client)
+        if task is None:
+            self._entry_blocked('当前任务暂不可读，保留已有准备预算')
+            return []
+        if isinstance(state, dict) and (state['session'] is not session
+                or session.transition is not state['source']):
+            self.client._quest_party_entry = state = None
+        source = session.transition if session else None
+        if source and source.get('entry_sent') and (not session.confirmed
+                or task[3] == source['source_zone'] and task[:2] == source['quester_task']):
+            if (await dungeon_entry_waiting(self.client)
+                    or any([await c.is_loading() or await is_visible_by_path(c, team_up_wait_path)
+                            for c in members])):
+                self._entry_blocked('实际入场等待、加载或倒计时仍在继续，保留本轮状态')
+                return []
+            # Sent input is history, not a new preparation budget. A real new
+            # task/area can retire a failed round only when nobody entered.
+            await observe_party_area(self.client)
+            token = await _party_area_token(self.client)
+            source_changed = (all(type(v) is int and v > 0 for v in token[1:3])
+                and await _party_area_token(self.client) == token
+                and token != source['source_tokens'].get(id(self.client)))
+            if (not source.get('arrivals') and not session.entry_zones and not session.potion_areas
+                    and not any(getattr(c, 'refilling_potions', False) for c in members)
+                    and not session.confirmed and (task[:2] != source['quester_task'] or source_changed)):
+                end_dungeon_entry(session, source, 'source-context-changed')
+                clear_dungeon_session(self.client)
+                session = None
+                self.client._quest_party_entry = state = None
+            else:
+                self._entry_blocked('本轮入口 X 已发送；等待真实入场或已有有限归队，不自动重放')
+                return []
+        if isinstance(state, dict):
+            zones = [await c.zone_name() for c in state['members']]
+            # A partial arrival belongs to the existing source-entry/follow recovery.
+            if any([await c.is_loading() for c in state['members']]) or len(set(zones)) != 1:
+                await self.recover_dungeon_transition()
+                self._entry_blocked('成员正在加载或已分处不同区域，旧入口不重放')
+                return []
+            if (state['members'] != members or not _same_movement_task(task, state['tasks'][id(self.client)])
+                    or zones[0] != state['zone']):
+                self.client._quest_party_entry = None
+                state = None
+            elif state['source'].get('entry_sent'):
+                self._entry_blocked('本轮入口 X 已发送，不自动重放')
+                return []  # A missed shared X is recovered by friend arrival, never another entrance X.
+        if state is None:
+            reference = None
+            for c in members:
+                signature = await _movement_interaction_signature(c, read_popup=self.read_popup,
+                    read_title=get_popup_title, visible=is_visible_by_path)
+                if (signature and is_dungeon_entry_prompt(signature[1])
+                        and (interaction is None or plain_text(signature[0]).casefold()
+                             == plain_text(interaction.identity[0]).casefold())
+                        and portal_kind(signature[0]) != 'world_gate'
+                        and await is_visible_by_path(c, team_up_button_path)):
+                    reference = c, plain_text(signature[0]).casefold()
+                    break
+            if reference is None:
+                return None  # Only the existing Team Up control proves a new sigil.
+            if (task is None or not await quest_party_members_ready(self.client)
+                    or any(getattr(c, 'in_solo_zone', False) for c in members)):
+                self._entry_blocked('当前任务、整组实例或单人区状态未就绪')
+                return []
+            target = copy(await _movement_position(reference[0]))
+            if not all(math.isfinite(v) for v in (target.x, target.y, target.z)):
+                self._entry_blocked('入口站立位置不可读')
+                return []
+            previous = dungeon_session_for(self.client)
+            session = await begin_dungeon_entry(self.client, members, evidence=True)
+            if session is None or not await remember_dungeon_transition(self.client, target):
+                if (previous is None and session is not None and not session.confirmed
+                        and dungeon_session_for(self.client) is session):
+                    clear_dungeon_session(self.client)
+                self._entry_blocked('入口来源任务或区域凭据暂不可用')
+                return []
+            source = session.transition
+            tasks, controls = {}, {}
+            for c in members:
+                tasks[id(c)] = await _movement_task_snapshot(c)
+                if tasks[id(c)] is None:
+                    self._entry_blocked('成员任务快照暂不可读，未缓存空快照', c)
+                    return []
+                _, controls[id(c)] = await _movement_body(c)
+            state = dict(members=members, session=session, source=source, target=target,
+                zone=source['source_zone'], tokens=dict(source['source_tokens']),
+                tasks=tasks, controls=controls, title=reference[1])
+            self.client._quest_party_entry = state
+        valid, missing = await self._sigil_entry_readiness(state)
+        if not valid:
+            return []
+        if not missing:
+            return list(members)
+        if getattr(self.client, 'quest_party_entry_active', False):
+            return []
+        source = state['source']  # Preserve the pre-X per-member entrance preparation budget.
+        if any(source['attempts'].get(id(c), 0) >= 2 for c in missing):
+            log_blocked(self.client, state['tasks'][id(self.client)], '地牢入口恢复次数已耗尽，整组等待')
+            return []
+        if time.monotonic() >= source['deadline']:
+            log_blocked(self.client, state['tasks'][id(self.client)], '地牢来源入口恢复时间已耗尽，整组等待')
+            return []
+        if any(time.monotonic() < source['next_attempt_at'].get(id(c), 0) for c in missing):
+            return []
+        if self._entry_input_busy(members):
+            return []
+        self.client.quest_party_entry_active = True
+        try:
+            # Its parent worker may await this task directly; cancellation would
+            # also cancel that worker. Wait rather than taking over its movement.
+            for c in members:
+                moving = getattr(c, '_quest_active_movement', None)
+                if isinstance(moving, asyncio.Task) and not moving.done() and moving is not asyncio.current_task():
+                    self._entry_blocked('原移动尚未结束', c)
+                    return []
+            async with asyncio.timeout(max(.01, source['deadline'] - time.monotonic())), AsyncExitStack() as owners:
+                for c in members:
+                    await owners.enter_async_context(automation_owner(c, 'dungeon-entry'))
+                valid, missing = await self._sigil_entry_readiness(state)
+                if not valid:
+                    return []
+                for c in missing:
+                    valid, current_missing = await self._sigil_entry_readiness(state)
+                    if not valid:
+                        return []
+                    if c not in current_missing:
+                        continue
+                    key = id(c)
+                    source['attempts'][key] = source['attempts'].get(key, 0) + 1
+                    source['next_attempt_at'][key] = time.monotonic() + 1.5
+                    original = copy(await _movement_position(c))
+                    if state['controls'][key] is not None:
+                        hook = await c.client_object.actor_body()
+                        if hook is None or await hook.read_base_address() != state['controls'][key][0]:
+                            return []
+                    logger.info(f"[{c.title}] 地牢入口交互缺失，恢复后重新检查整组（{source['attempts'][key]}/2）")
+                    async def watch():
+                        while (await self._sigil_entry_readiness(state))[0]:
+                            await asyncio.sleep(.1)
+                    async def approach():
+                        if not (await self._sigil_entry_readiness(state))[0]:
+                            return
+                        return await self.teleport_to_quest_target(c, state['target'], leader_client=self.client)
+                    movement = watcher = None
+                    try:
+                        await complete_before_cancel(asyncio.create_task(c.teleport(XYZ(0, 0, -10000))))
+                        movement, watcher = asyncio.create_task(approach()), asyncio.create_task(watch())
+                        done, _ = await asyncio.wait((movement, watcher),
+                            timeout=max(0, source['deadline'] - time.monotonic()),
+                            return_when=asyncio.FIRST_COMPLETED)
+                        if movement in done:
+                            await movement
+                    finally:
+                        active = [t for t in (movement, watcher) if t is not None]
+                        for t in active:
+                            t.cancel()
+                        await gather_owned(*active, return_exceptions=True)
+                        # Never leave a cancelled/failed approach at the reset coordinate,
+                        # or reuse source coordinates after loading/instance changes.
+                        if (not await c.is_loading() and not await c.in_battle()
+                                and await _party_area_token(c) == state['tokens'][key]
+                                and _same_movement_task(await _movement_task_snapshot(c), state['tasks'][key])
+                                and _same_movement_task(await _movement_task_snapshot(self.client),
+                                                       state['tasks'][id(self.client)])
+                                and not await _movement_control_changed(c, state['controls'][key])
+                                and (await _movement_position(c)).z == -10000):
+                            await complete_before_cancel(asyncio.create_task(c.teleport(original)))
+                valid, missing = await self._sigil_entry_readiness(state)
+                return list(members) if valid and not missing else []
+        except asyncio.TimeoutError:
+            log_blocked(self.client, state['tasks'][id(self.client)], '地牢入口恢复或输入所有权等待超时，整组等待')
+            return []
+        finally:
+            self.client.quest_party_entry_active = False
+
+    async def _send_dungeon_entry_x(self, members, *, interaction=None):
+        """Acquire input ownership and check all sigil prompts again before X."""
+        from contextlib import AsyncExitStack
+        state = getattr(self.client, '_quest_party_entry', None)
+        if isinstance(state, dict) and state['members'] == tuple(members):
+            if state['source'].get('entry_sent'):
+                self._entry_blocked('本轮入口 X 已发送，不自动重放')
+                return False
+            if self._entry_input_busy(members):
+                return False
+            self.client.quest_party_entry_active = True
+            try:
+                for c in members:
+                    moving = getattr(c, '_quest_active_movement', None)
+                    if isinstance(moving, asyncio.Task) and not moving.done() and moving is not asyncio.current_task():
+                        self._entry_blocked('原移动尚未结束', c)
+                        return False
+                async with asyncio.timeout(5.0), AsyncExitStack() as owners:
+                    for c in members:
+                        await owners.enter_async_context(automation_owner(c, 'dungeon-entry'))
+                    valid, missing = await self._sigil_entry_readiness(state)
+                    if not valid or missing:
+                        return False
+                    if interaction is not None and not (await self._interaction_eligibility(
+                            self.client, XYZ(*interaction.target), expected=interaction)).accepted:
+                        return False
+                    state['source']['entry_sent'] = True
+                    state['source']['deadline'] = time.monotonic() + 30.0
+                    state['session'].entry_wait = dict(source=state['source'],
+                        deadline=state['source']['deadline'], stable=None)
+                    logger.debug(f"[dungeon_entry] {self.client.title}: phase=shared-x "
+                                 f"members={[c.title for c in members]} "
+                                 f"source={state['zone']} owner=dungeon-entry "
+                                 f"deadline={state['source']['deadline']}")
+                    await gather_owned(*[c.send_key(Keycode.X, .1) for c in members])
+            except asyncio.CancelledError:
+                if state['source'].get('entry_sent'):
+                    end_dungeon_entry(state['session'], state['source'], 'send-cancelled')
+                raise
+            except asyncio.TimeoutError:
+                if state['source'].get('entry_sent'):
+                    end_dungeon_entry(state['session'], state['source'], 'send-timeout')
+                self._entry_blocked('入口输入所有权等待或发送超时')
+                return False
+            except Exception:
+                if state['source'].get('entry_sent'):
+                    end_dungeon_entry(state['session'], state['source'], 'send-error')
+                raise
+            finally:
+                self.client.quest_party_entry_active = False
+        else:
+            session = dungeon_session_for(self.client)
+            source = session.transition if session else None
+            if source and len(members) > 1:
+                if (source.get('entry_sent') or self._entry_input_busy(members)
+                        or any(isinstance(getattr(c, '_quest_active_movement', None), asyncio.Task)
+                            and not c._quest_active_movement.done() for c in members)):
+                    self._entry_blocked('本轮已发送入口 X、输入占用或原移动未结束')
+                    return False
+                try:
+                    async with asyncio.timeout(5.0), AsyncExitStack() as owners:
+                        for c in members:
+                            await owners.enter_async_context(automation_owner(c, 'dungeon-entry'))
+                        if (dungeon_session_for(self.client) is not session or session.transition is not source
+                                or not await quest_party_members_ready(self.client, zone=source['source_zone'])
+                                or any([await _party_area_token(c) != source['source_tokens'].get(id(c))
+                                    or (await c.quest_id(), await c.goal_id()) != source['source_tasks'].get(id(c))
+                                    for c in members])):
+                            self._entry_blocked('共同 X 前来源任务、区域或实例已变化/不可读')
+                            return False
+                        if not await self._generic_entry_prompts_ready(members):
+                            return False
+                        if (dungeon_session_for(self.client) is not session or session.transition is not source
+                                or any([await _party_area_token(c) != source['source_tokens'].get(id(c))
+                                    or (await c.quest_id(), await c.goal_id()) != source['source_tasks'].get(id(c))
+                                    for c in members])):
+                            self._entry_blocked('整组提示读取期间来源任务或区域发生变化')
+                            return False
+                        if interaction is not None and not (await self._interaction_eligibility(
+                                self.client, XYZ(*interaction.target), expected=interaction)).accepted:
+                            return False
+                        source['entry_sent'] = True
+                        source['deadline'] = time.monotonic() + 30.0
+                        session.entry_wait = dict(source=source, deadline=source['deadline'], stable=None)
+                        logger.debug(f"[dungeon_entry] {self.client.title}: phase=shared-x "
+                                     f"members={[c.title for c in members]} owner=dungeon-entry")
+                        await gather_owned(*[c.send_key(Keycode.X, .1) for c in members])
+                except asyncio.CancelledError:
+                    if source.get('entry_sent'):
+                        end_dungeon_entry(session, source, 'send-cancelled')
+                    raise
+                except asyncio.TimeoutError:
+                    if source.get('entry_sent'):
+                        end_dungeon_entry(session, source, 'send-timeout')
+                    self._entry_blocked('入口输入所有权等待或发送超时')
+                    return False
+                except Exception:
+                    if source.get('entry_sent'):
+                        end_dungeon_entry(session, source, 'send-error')
+                    raise
+            else:
+                if interaction is not None:
+                    return await self._send_quest_interaction_x(
+                        self.client, XYZ(*interaction.target), interaction)
+                await gather_owned(*[c.send_key(Keycode.X, .1) for c in members])
+        return True  # Input only; arrival is confirmed by observe_dungeon_session.
+
+    async def prepare_party_dungeon_entry(self, *, interaction=None) -> list[Client]:
         """Move assigned hitters to the entrance before everyone presses X."""
+        sigil_members = await self._prepare_sigil_entry(interaction=interaction)
+        if sigil_members is not None:
+            return sigil_members
         entry_clients = list(self.clients)
         session = dungeon_session_for(self.client)
         finishing = bool(session and session.confirmed and id(self.client) not in session.exited)
@@ -2488,6 +3288,8 @@ class Quester():
         if portal_kind(await get_popup_title(self.client)) == 'world_gate':
             return [self.client]
 
+        reference = await _movement_interaction_signature(self.client, read_popup=self.read_popup,
+            read_title=get_popup_title, visible=is_visible_by_path)
         deadline = time.monotonic() + 4.0
         pending = list(assigned_hitters)
         while pending and time.monotonic() < deadline:
@@ -2505,7 +3307,16 @@ class Quester():
                         and await is_free(hitter)
                         and await clients_share_live_area(self.client, hitter)
                     ):
-                        await hitter.teleport(quester_position)
+                        signature = await _movement_interaction_signature(hitter, read_popup=self.read_popup,
+                            read_title=get_popup_title, visible=is_visible_by_path)
+                        ready_enter = bool(reference and is_dungeon_entry_prompt(reference[1])
+                            and signature and is_dungeon_entry_prompt(signature[1])
+                            and plain_text(signature[0]).casefold() == plain_text(reference[0]).casefold())
+                        if not ready_enter:
+                            if reference and is_dungeon_entry_prompt(reference[1]) and signature:
+                                self._entry_blocked('打手当前交互属于其他入口或动作', hitter)
+                                return []
+                            await hitter.teleport(quester_position)
                         if (not await clients_share_live_area(self.client, hitter)
                                 or calc_Distance(await hitter.body.position(), quester_position) >= 750):
                             continue
@@ -2537,11 +3348,15 @@ class Quester():
         if any([calc_Distance(await c.body.position(), entrance) >= 750
                 for c in entry_clients]):
             return []
+        if reference and is_dungeon_entry_prompt(reference[1]) and not await self._generic_entry_prompts_ready(entry_clients):
+            return []
         return entry_clients
 
     async def _quest_party_probe_blocks_movement(self) -> bool:
         """Pause quest movement until the assigned hitter finishes its zone probe."""
         session = await observe_dungeon_session(self.client)
+        if await dungeon_entry_waiting(self.client):
+            return True
         if await self.client.is_loading():
             return True
         # The follower can cross first. Finish this client's recorded source
@@ -2654,6 +3469,10 @@ class Quester():
 
     async def _recover_door_approach(self, client, target, *, x_attempted=False, source_entry=None):
         """One short measured step in the existing worker, only for an evidenced door."""
+        session = dungeon_session_for(client)
+        if (source_entry is not None or session and session.transition
+                and session.transition.get('entry_sent')):
+            return False  # A shared entrance has already been attempted; no old-door movement/X.
         try:
             _, control = await _movement_body(client)
         except (MemoryReadError, HookNotActive, ValueError):
@@ -2917,166 +3736,26 @@ class Quester():
             return False
 
     async def recover_dungeon_transition(self) -> bool:
-        """Replay one old-room entrance step; group proof alone releases movement."""
-        client = self.client
-        session = dungeon_session_for(client)
-        if not session or client not in session.members:
+        """Observe an outstanding shared entry; missed members never replay its input."""
+        session = dungeon_session_for(self.client)
+        if session is None or self.client not in session.members:
             return False
-        quester, state = session.quester, session.transition
-        def discard_expired():
-            if (state and session.transition is state and time.monotonic() >= state['deadline']):
-                session.transition = None  # Only this entrance operation owns this record.
-                logger.debug(f"[source_entry] {client.title}: end=source-entry-invalid "
-                             f"field=deadline saved={state['deadline']} now={time.monotonic()}; record released")
-                return True
-            return False
-
-        if not state or discard_expired():
-            return False
-        if not session.confirmed and not session.entry_evidence:
-            return False
-        key = id(client)
-        rejection = None
-
-        def reject_source(field, **details):
-            nonlocal rejection
-            if rejection != (field, details):
-                logger.debug(f"[source_entry] {client.title}: end=source-entry-invalid "
-                             f"field={field} {details}")
-                rejection = (field, details)
-            return False
-
-        async def source_is_current():
-            try:
-                for field, invalid in (
-                        ('session', dungeon_session_for(client) is not session),
-                        ('transition', session.transition is not state),
-                        ('assignment', getattr(client, 'quest_party_quester', quester) is not quester),
-                        ('member_exited', id(client) in session.exited),
-                        ('potion_members', bool(session.potion_areas))):
-                    if invalid:
-                        return reject_source(field)
-                if time.monotonic() >= state['deadline']:
-                    discard_expired()
-                    return False
-                if (not getattr(client, 'questing_status', True)
-                        or getattr(client, 'quest_recovery_owner', None)
-                        or getattr(quester, 'quest_recovery_owner', None)
-                        or getattr(client, 'entity_detect_combat_status', False)
-                        or getattr(client, 'quest_party_safe_return_active', False)
-                        or getattr(client, 'post_combat_movement_active', False)
-                        or getattr(client, 'refilling_potions', False)
-                        or getattr(quester, 'refilling_potions', False)
-                        or getattr(quester, 'post_combat_movement_active', False)
-                        or getattr(quester, 'quest_party_safe_return_active', False)
-                        or await client.is_loading() or await client.in_battle()
-                        or await quester.in_battle()
-                        or not await is_free(client) or await self._npc_dialogue_visible(client)):
-                    return reject_source('safety-or-control', loading=await client.is_loading(),
-                        battle=await client.in_battle(), recovery_owner=getattr(client, 'quest_recovery_owner', None))
-                zone = await client.zone_name()
-                if zone != state['source_zone']:
-                    return reject_source('source_zone', saved=state['source_zone'], actual=zone)
-                await observe_party_area(client)
-                token = await _party_area_token(client)
-                if token != state['source_tokens'].get(key):
-                    return reject_source('source_token', saved=state['source_tokens'].get(key), actual=token)
-                task = await client.quest_id(), await client.goal_id()
-                if task != state['source_tasks'].get(key):
-                    return reject_source('source_task', saved=state['source_tasks'].get(key), actual=task)
-                # A peer's new goal is irrelevant to this unchanged source member.
-                # Only its own recorded area/task authorizes the old entrance.
-                crossed = False
-                for member in session.members:
-                    member_key = id(member)
-                    if member is client or member_key not in state['source_tokens']:
-                        continue
-                    if (getattr(member, 'refilling_potions', False)
-                            or getattr(member, 'quest_recovery_owner', None)
-                            or await member.in_battle()):
-                        continue
-                    if await member.is_loading():
-                        arrival = state.get('arrivals', {}).get(member_key)
-                        if arrival and arrival[0] != state['source_zone']:
-                            crossed = True
-                        continue
-                    await observe_party_area(member)
-                    token = await _party_area_token(member)
-                    if (token[0] != state['source_zone']
-                            and all(type(v) is int and v > 0 for v in token[1:3])
-                            and token != state['source_tokens'][member_key]
-                            and not await member.is_loading() and await member.zone_name() == token[0]):
-                        state.setdefault('arrivals', {})[member_key] = token
-                        crossed = True
-                valid = (crossed and dungeon_session_for(client) is session
-                        and session.transition is state
-                        and await _party_area_token(client) == state['source_tokens'].get(key)
-                        and (await client.quest_id(), await client.goal_id()) == state['source_tasks'].get(key))
-                if not valid:
-                    return reject_source('peer-arrival-or-source-recheck', peer_crossed=crossed)
-                return True
-            except Exception as exc:
-                logger.debug(f"Client {client.title} - source entrance evidence unavailable; "
-                             f"keeping existing party wait/recovery: {exc}")
-                return False
-
-        if not await source_is_current():
-            return False
-        if portal_kind(await get_popup_title(client)) == 'world_gate':
-            return reject_source('world-gate')
-        if state['attempts'].get(key, 0) >= 2:
-            return reject_source('attempt-budget', attempts=state['attempts'][key], limit=2)
-        if time.monotonic() < state['next_attempt_at'].get(key, 0):
-            return True  # Wait for this member's first X/load to take effect.
-        state['attempts'][key] = state['attempts'].get(key, 0) + 1
-        state['next_attempt_at'][key] = time.monotonic() + 1.5
-        logger.debug(f"Client {client.title} - replaying recorded source entrance "
-                     f"in {state['source_zone']}; peers crossed, local task/area unchanged "
-                     f"(attempt {state['attempts'][key]}/2).")
-
-        async def approach():
-            async with automation_owner(client, 'dungeon-source-entry'):
-                if not await source_is_current():
-                    return False
-                move_result = await self.teleport_to_quest_target(client, state['target'])
-                if not await source_is_current():
-                    return False
-                if move_result in ('failed', 'exhausted', 'blocked', 'changed'):
-                    return False
-                x_attempted = (calc_Distance(await client.body.position(), state['target']) < 750
-                    and await is_visible_by_path(client, npc_range_path)
-                    and portal_kind(await get_popup_title(client)) != 'world_gate')
-                if x_attempted:
-                    await client.send_key(Keycode.X, .1)
-                    await asyncio.sleep(.1)
-                stepped = await self._recover_door_approach(client, state['target'],
-                    x_attempted=x_attempted, source_entry=state)
-                return x_attempted or stepped
-
-        async def watch_source():
-            while await source_is_current():
-                await asyncio.sleep(.1)
-            return False
-
-        movement = asyncio.create_task(approach())
-        watcher = asyncio.create_task(watch_source())
-        try:
-            done, _ = await asyncio.wait((movement, watcher),
-                timeout=max(0, state['deadline'] - time.monotonic()),
-                return_when=asyncio.FIRST_COMPLETED)
-            if movement in done:
-                return await movement
-            if watcher in done:
-                await watcher
-            return False
-        finally:
-            movement.cancel()
-            watcher.cancel()
-            await gather_owned(movement, watcher, return_exceptions=True)
-            discard_expired()
+        if await dungeon_entry_waiting(self.client):
+            return True
+        state = session.transition
+        if state is not None:
+            if not state.get('replay_disabled_reported'):
+                logger.debug(f"[source_entry] {self.client.title}: phase=no-replay "
+                             "old entrance movement/X disabled; use bounded friend recovery")
+                state['replay_disabled_reported'] = True
+            # Keep read-only source/arrival evidence for choosing the missing
+            # member's friend destination. This record can never authorize X.
+        return False
 
     async def _confirmed_dungeon_target(self, session):
         """Confirm one quester snapshot for both existing workers before release."""
+        if await dungeon_entry_waiting(self.client):
+            return None
         quester = session.quester
 
         async def ready():
@@ -3132,6 +3811,8 @@ class Quester():
         return state['movement_task']
 
     async def move_dungeon_member(self, *, require_local_goal=False, _quester_snapshot=None) -> bool:
+        if await dungeon_entry_waiting(self.client):
+            return False
         """One shared movement step in the existing quester or hitter worker."""
         client = self.client
         session = await observe_dungeon_session(client)
@@ -3231,6 +3912,14 @@ class Quester():
                         move_result = await self.teleport_to_quest_target(client, snapshot[2])
                     else:
                         move_result = await self.teleport_to_quest_target(client, snapshot[2], leader_client=client)
+                    if move_result == 'photo-ready' and client is not quester:
+                        # The hitter has no auto_quest_solo interaction branch.
+                        # Its existing shared worker owns this handoff and drains
+                        # the lower movement before taking the current photo action.
+                        if await target_is_current():
+                            await self._take_ready_photomancy_photo(client, snapshot[2],
+                                await _movement_task_snapshot(client))
+                        return False  # Photo input is not proof of movement/task completion.
                     return move_result not in ('failed', 'exhausted', 'blocked', 'changed') and await target_is_current()
 
             async def watch_target():
@@ -3296,6 +3985,8 @@ class Quester():
                 or getattr(self.client, '_quest_dialogue_update_pending', False)):
             await self.handle_npc_talking_quests(self.client, [self.client], direction_search=False)
             return
+        if not await self._ensure_quest_pet_mode(self.client):
+            return
         if await self._wait_internal_quest_failure(self.client):
             return
         await log_mainline_progress(self.client)
@@ -3360,7 +4051,15 @@ class Quester():
                         or getattr(self.client, '_quest_dialogue_update_pending', False)):
                     await self.handle_npc_talking_quests(self.client, [self.client], direction_search=False)
                     return
-                if dungeon_member_inside(self.client):
+                entry_eligibility = await self._interaction_eligibility(self.client, quest_xyz, quest_move_task)
+                sigil_members = (await self._prepare_sigil_entry(interaction=entry_eligibility)
+                                 if entry_eligibility.accepted
+                                 and is_dungeon_entry_prompt(entry_eligibility.identity[1]) else None)
+                if sigil_members is not None:
+                    if not sigil_members:
+                        return
+                    move_result = 'ready'  # Ready members stay at their verified sigil positions.
+                elif dungeon_member_inside(self.client):
                     try:
                         snapshot = await self._confirmed_dungeon_target(dungeon_session_for(self.client))
                     except Exception as exc:
@@ -3406,15 +4105,23 @@ class Quester():
                     logger.debug(f"[quest_interaction] {self.client.title}: reason=task-changed-after-movement "
                                  f"task={quest_move_task} target={quest_xyz}; ending old interaction")
                     return
+                if (move_result == 'photo-ready' or await self._photomancy_interaction_ready(
+                        self.client, quest_xyz, quest_move_task)):
+                    await self._take_ready_photomancy_photo(self.client, quest_xyz, quest_move_task)
+                    return
                 if move_result in ('failed', 'exhausted', 'blocked', 'changed') or not self.client.questing_status:
                     return
                 if await is_visible_by_path(self.client, cancel_chest_roll_path):
                     # Handles chest reroll menu, will always cancel
                     await click_window_by_path(self.client, cancel_chest_roll_path)
 
-                current_pos = await self.client.body.position()
-                if (await is_visible_by_path(self.client, npc_range_path)
-                        and await self.quest_interaction_ready(self.client, quest_xyz, task_before=quest_move_task)):
+                current_pos = await _movement_position(self.client)
+                interaction_ready = ((await self._interaction_eligibility(self.client, quest_xyz,
+                    quest_move_task, expected=entry_eligibility)).accepted if sigil_members else
+                    await self.quest_interaction_ready(self.client, quest_xyz, task_before=quest_move_task))
+                if interaction_ready:
+                    eligibility = (entry_eligibility if sigil_members else
+                                   self.client._quest_interaction_eligibility)
                     # Handles interactables
                     sigil_msg_check = await self.read_popup(self.client)
                     if (await self._npc_dialogue_visible(self.client)
@@ -3425,7 +4132,7 @@ class Quester():
                         return
                     if is_dungeon_entry_prompt(sigil_msg_check):
                         # Handles entering dungeons
-                        entry_clients = await self.prepare_party_dungeon_entry()
+                        entry_clients = await self.prepare_party_dungeon_entry(interaction=eligibility)
                         if not entry_clients:
                             return
                         entry_session = await begin_dungeon_entry(
@@ -3433,21 +4140,32 @@ class Quester():
                             evidence=await is_visible_by_path(self.client, team_up_button_path),
                         )
                         if portal_kind(await get_popup_title(self.client)) != 'world_gate':
-                            if (entry_session is not None and not await remember_dungeon_transition(
+                            strict_entry = getattr(self.client, '_quest_party_entry', None)
+                            if (isinstance(strict_entry, dict)
+                                    and strict_entry['members'] == tuple(entry_clients)):
+                                # Preparation already captured the exact entrance and budget.
+                                # A nearby landing must not replace it with a fresh release.
+                                if (entry_session is not strict_entry['session']
+                                        or entry_session.transition is not strict_entry['source']):
+                                    return
+                            elif (entry_session is not None and not await remember_dungeon_transition(
                                     self.client, await self.client.body.position())):
                                 if not entry_session.confirmed and dungeon_session_for(self.client) is entry_session:
                                     clear_dungeon_session(self.client)
                                 return
-                        await gather_owned(
-                            *[p.send_key(Keycode.X, 0.1) for p in entry_clients]
-                        )
+                        entry_zones_before = {id(c): await c.zone_name() for c in entry_clients}
+                        if not await self._send_dungeon_entry_x(entry_clients, interaction=eligibility):
+                            return
                         loading_clients = []
                         for c in entry_clients:
                             loading_deadline = time.monotonic() + 15.0
                             while (
                                 not await c.is_loading()
+                                and await c.zone_name() == entry_zones_before[id(c)]
                                 and time.monotonic() < loading_deadline
                             ):
+                                if not c.questing_status or await c.in_battle():
+                                    return
                                 if await is_visible_by_path(c, dungeon_warning_path):
                                     if entry_session is not None:
                                         entry_session.entry_evidence = True
@@ -3455,7 +4173,8 @@ class Quester():
                                             member._xuanshu_mainline_dungeon_session = entry_session
                                     await c.send_key(Keycode.ENTER, 0.1)
                                 await asyncio.sleep(0.1)
-                            if await c.is_loading():
+                            if (await c.is_loading()
+                                    or await c.zone_name() != entry_zones_before[id(c)]):
                                 loading_clients.append(c)
                             else:
                                 logger.warning(
@@ -3471,9 +4190,16 @@ class Quester():
                             if await c.is_loading():
                                 logger.debug(f"Client {c.title} - dungeon loading still pending; retry next iteration.")
                                 return
-                        await observe_dungeon_session(self.client)
+                        for c in entry_clients:
+                            await observe_dungeon_session(c)
+                        if entry_session is not None and entry_session.confirmed:
+                            logger.info('已确认整组进入同一地牢实例：' + ', '.join(c.title for c in entry_clients))
                         if entry_session is not None and not entry_session.entry_evidence:
-                            clear_dungeon_session(self.client)
+                            source = entry_session.transition
+                            if (not source or not source.get('entry_sent')
+                                    or all([await c.zone_name() != entry_zones_before[id(c)] for c in entry_clients])
+                                    and await quest_party_members_ready(self.client)):
+                                clear_dungeon_session(self.client)
                         if (
                             getattr(self.client, "quest_party_hitters", [])
                             and await self.client.zone_name()
@@ -3493,7 +4219,8 @@ class Quester():
                         failed_interaction = await self._quest_interaction_signature(self.client, sigil_msg_check)
                         if not await self.quest_interaction_ready(self.client, quest_xyz, task_before=quest_move_task):
                             return
-                        await self.client.send_key(Keycode.X, 0.1)
+                        if not await self._send_quest_interaction_x(self.client, quest_xyz, eligibility):
+                            return
                         quest_updated = await self.handle_npc_talking_quests(
                             self.client, [self.client], before_progress=before_progress,
                             failed_interaction=failed_interaction
@@ -3506,17 +4233,10 @@ class Quester():
                         search_progress = await self._dungeon_quest_snapshot(self.client)
                         search_zone = await self.client.zone_name()
                         failed_interaction = await self._quest_interaction_signature(self.client, sigil_msg_check)
-                        input_members = [self.client]
-                        if (dungeon_member_inside(self.client)
-                                and portal_kind(await get_popup_title(self.client)) != 'world_gate'):
-                            input_members = await self.prepare_party_dungeon_entry()
-                            if not input_members:
-                                return
-                            if not await remember_dungeon_transition(self.client, await self.client.body.position()):
-                                return
                         if not await self.quest_interaction_ready(self.client, quest_xyz, task_before=quest_move_task):
                             return
-                        await gather_owned(*[c.send_key(Keycode.X, .1) for c in input_members])
+                        if not await self._send_quest_interaction_x(self.client, quest_xyz, eligibility):
+                            return
 
                         await asyncio.sleep(0.75)
                         if await is_spiral_door_open(self.client):

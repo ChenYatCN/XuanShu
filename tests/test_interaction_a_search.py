@@ -24,14 +24,14 @@ class InteractionASearchTests(unittest.IsolatedAsyncioTestCase):
         self.held = set()
         self.prompt = 'Press X for something unrelated to the objective'
         self.title = 'Lever'
-        self.objective = 'Talk to Sunless Shrine'
+        self.objective = 'Use Lever or Different NPC or Different object'
         self.goal = 7
         self.target = XYZ(1000, 2000, 3)
         self.dialogue = False
         self.on_a = lambda: None
         self.on_x = lambda: None
         self.after_sleep = lambda delay: None
-        self.client = SimpleNamespace(title='p3', questing_status=True,
+        self.client = SimpleNamespace(root_window=SimpleNamespace(), title='p3', questing_status=True,
             entity_detect_combat_status=False, use_potions=False, auto_pet_status=False,
             quest_party_hitters=[], refilling_potions=False,
             is_loading=AsyncMock(return_value=False), in_battle=AsyncMock(return_value=False),
@@ -64,9 +64,16 @@ class InteractionASearchTests(unittest.IsolatedAsyncioTestCase):
             AsyncMock(side_effect=lambda _, path: path == npc_range_path or
                       (path == advance_dialog_path and self.dialogue))))
         self.stack.enter_context(patch('src.questing.exit_menus', AsyncMock()))
-        self.stack.enter_context(patch('src.questing.get_quest_name', AsyncMock(return_value='Use Lever')))
+        self.stack.enter_context(patch('src.questing.get_quest_name', AsyncMock(side_effect=lambda _: self.objective)))
         self.stack.enter_context(patch('src.questing.get_popup_title', AsyncMock(side_effect=lambda _: self.title)))
         self.stack.enter_context(patch('src.questing.collision_tp', AsyncMock()))
+        # Shared movement reads the same fake HUD and actual popup identity.
+        self.stack.enter_context(patch('src.teleport_math._movement_objective',
+            AsyncMock(side_effect=lambda _: self.objective)))
+        self.stack.enter_context(patch('src.teleport_math.get_popup_title',
+            AsyncMock(side_effect=lambda _: self.title)))
+        self.stack.enter_context(patch('src.teleport_math.get_window_from_path',
+            AsyncMock(return_value=SimpleNamespace(maybe_text=AsyncMock(side_effect=lambda: self.prompt)))))
 
     async def sleep(self, delay):
         self.clock += delay
@@ -223,6 +230,7 @@ class InteractionASearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.keys, [])
 
     async def test_dialogue_opening_during_prompt_read_prevents_x(self):
+        self.client._quest_interaction_eligibility = await self.quester._interaction_eligibility(self.client, self.target)
         opened = []
         def read_prompt(client):
             if not opened:

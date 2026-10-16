@@ -93,6 +93,10 @@ async def ui_read(client, stage, path):
     except Exception as exc:
         exc.add_note(f'主线找回 UI 阶段={stage}，路径={list(path)}')
         exc._xuanshu_log_stage = stage
+        exc._xuanshu_ui_read_failed = stage in (
+            'root-window', 'visibility', 'children', 'child-name',
+            'card-control-type', 'card-text', 'card-title', 'card-visibility',
+            'page-cards', 'page-counter-type', 'page-counter')
         log_exception(client, f'主线找回 UI 读取失败：阶段={stage}，路径={list(path)}', exc, level='DEBUG')
         raise
 
@@ -121,13 +125,19 @@ async def visible_nodes(client):
         root = await get_window_from_path(client.root_window, list(root_path))
         if not root or not await root.is_visible():
             raise RuntimeError('Q 任务界面未显示')
-    pending, nodes = [(root, root_path)], []
+    pending, nodes, inactive = [(root, root_path)], [], []
     while pending:
         if len(nodes) + len(pending) > 300:
             raise RuntimeError('任务界面层级超过检查上限')
         window, path = pending.pop(0)
         async with ui_read(client, 'visibility', path):
             if not await window.is_visible():
+                # These are the existing card content roots, not arbitrary
+                # hidden descendants or a title-less visible card.
+                if (path[-1] == 'questInfoWindow' and re.fullmatch(r'wndQuestInfo\d+', path[-2])
+                        or path[-2:] == ('questInfoWindow', 'wndQuestInfo')
+                        and re.fullmatch(r'wndQuestInfo\d+', path[-3])):
+                    inactive.append((window, path))
                 continue
         nodes.append((window, path))
         async with ui_read(client, 'children', path):
@@ -136,16 +146,30 @@ async def visible_nodes(client):
             async with ui_read(client, 'child-name', path):
                 name = await child.name()
                 pending.append((child, (*path, name)))
-    return nodes
+    return nodes, inactive
 
 
 async def page(client):
-    nodes = await visible_nodes(client)
+    nodes, inactive = await visible_nodes(client)
     cards, signature = [], []
     for window, path in nodes:
         if not re.fullmatch(r'wndQuestInfo\d+', path[-1]):
             continue
         descendants = [(w, p) for w, p in nodes if p[:len(path)] == path]
+        hidden_content = [(w, p) for w, p in inactive if p[:len(path)] == path]
+        async with ui_read(client, 'card-visibility', path):
+            if not await window.is_visible():
+                raise RuntimeError(f'任务卡片可见状态变化：{list(path)}')
+            for w, p in hidden_content:
+                if await w.is_visible():
+                    raise RuntimeError(f'任务卡片可见状态变化：{list(p)}')
+        visible_fields = [p for _, p in descendants if
+            p[-1].casefold().startswith('txt') or 'title' in p[-1].casefold()]
+        if hidden_content and not visible_fields:
+            logger.debug('{} 主线找回空槽：外壳={}，内容区域明确隐藏={}',
+                         client.title, list(path), [list(p) for _, p in hidden_content])
+            signature.append(('inactive-card', path, tuple(p for _, p in hidden_content)))
+            continue
         values = []
         for w, p in descendants:
             # Container windows do not have a text layout. Read the actual
@@ -165,12 +189,22 @@ async def page(client):
             title = next((value for value, _, p in values if value and 'title' in p[-1].casefold()), '')
         if not title:
             async with ui_read(client, 'card-title', path):
-                raise RuntimeError(f'任务卡片标题不可读：{list(path)}')
+                title_fields = [(p, value) for value, _, p in values if
+                    p[-1].casefold() in ('txtquesttitle', 'txtquestname', 'txtname')
+                    or 'title' in p[-1].casefold()]
+                reason = '可见标题字段为空' if title_fields else '未发现可见标题字段，卡片尚未加载或结构不完整'
+                raise RuntimeError(f'任务卡片标题不可读：{list(path)}；{reason}；'
+                                   f'可见字段={[(list(p), value) for value, _, p in values]}；'
+                                   f'隐藏内容区域={[list(p) for _, p in hidden_content]}')
+        async with ui_read(client, 'card-visibility', path):
+            if not await window.is_visible():
+                raise RuntimeError(f'任务卡片可见状态变化：{list(path)}')
         target = next(((w, p) for _, w, p in values if p[-1] == 'txtGoal'), (window, path))
         cards.append((title, target))
         signature.append(tuple(value for value, _, _ in values if value))
     if not cards:
-        raise RuntimeError('当前页没有可读取的任务卡片')
+        async with ui_read(client, 'page-cards', ()):
+            raise RuntimeError('当前页没有可读取的任务卡片')
     # Page counters are optional: actual card contents alone can prove a page change.
     for window, path in nodes:
         if 'page' in path[-1].casefold() and not path[-1].startswith('btn'):
@@ -197,7 +231,7 @@ def transient_ui_read(exc):
                     or re.fullmatch(r'Size was \d+ and the max was \d+', str(exc)))
     return isinstance(exc, RuntimeError) and str(exc).startswith((
         'Q 任务界面未显示', '当前页没有可读取的任务卡片', '任务卡片标题不可读',
-        '控件文本结构无效', '控件文本指针无效'))
+        '控件文本结构无效', '控件文本指针无效', '任务卡片可见状态变化'))
 
 
 async def stable_page(client, zone, phase):
@@ -221,6 +255,7 @@ async def stable_page(client, zone, phase):
             if current[0] == previous:
                 logger.debug('{} 主线找回 {} 页面完整且稳定：读取 {}/{}',
                              client.title, phase, attempt, PAGE_READ_ATTEMPTS)
+                client._xuanshu_mainline_book_read_error = ''
                 return current
             previous = current[0]
             current = None  # Retain the signature only, never old Window objects.
@@ -229,8 +264,11 @@ async def stable_page(client, zone, phase):
         if attempt < PAGE_READ_ATTEMPTS:
             await sleep(.15)
     stage = getattr(failure, '__notes__', [phase])[-1]
-    raise RuntimeError(f'{phase} 页面读取 {PAGE_READ_ATTEMPTS}/{PAGE_READ_ATTEMPTS} 次后仍未稳定；'
-                       f'最后失败阶段={stage}；原因={failure or "完整扫描内容持续变化"}') from failure
+    exc = RuntimeError(f'{phase} 页面读取 {PAGE_READ_ATTEMPTS}/{PAGE_READ_ATTEMPTS} 次后仍未稳定；'
+                       f'最后失败阶段={stage}；原因={failure or "完整扫描内容持续变化"}')
+    exc._xuanshu_log_stage = getattr(failure, '_xuanshu_log_stage', 'page-stability')
+    exc._xuanshu_ui_read_failed = True
+    raise exc from failure
 
 
 async def click(client, target, zone, *, use_post=False):
@@ -368,6 +406,7 @@ def expected_identity(last, identity):
 
 def failed(client, state, reason, *, exc=None):
     stage = getattr(exc, '_xuanshu_log_stage', state.get('phase', '未知阶段'))
+    client._xuanshu_mainline_book_read_error = reason if getattr(exc, '_xuanshu_ui_read_failed', False) else ''
     state.update(phase='cooldown', retry_at=monotonic() + 60, confirmation=None)
     message = f"主线找回未确认：阶段={stage}；尝试 {state['attempts']}/3 次；原因"
     level = 'WARNING' if state['attempts'] >= 3 else 'DEBUG'

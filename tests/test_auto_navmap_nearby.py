@@ -56,9 +56,14 @@ class AutoNavmapNearbyTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(('[navmap_tp]' in m for m in self.messages)))
         attempts = len(self.events)
         self.assertLessEqual(attempts, 14)
-        for _ in range(5):
+        for _ in range(2):
             await movement.collision_tp(self.client, self.target)
-        self.assertEqual(len(self.events), attempts)
+        self.assertEqual(self.client._quest_navmap_recovery['attempts'], 3)
+        inputs = len(self.events)
+        self.assertEqual(inputs, attempts)  # Known ineffective candidates are not replayed.
+        for _ in range(3):
+            self.assertEqual(await movement.collision_tp(self.client, self.target), 'exhausted')
+        self.assertEqual(len(self.events), inputs)
         self.walk.assert_not_awaited()
 
     async def test_partial_far_landing_continues_nearby_search(self):
@@ -78,6 +83,7 @@ class AutoNavmapNearbyTests(unittest.IsolatedAsyncioTestCase):
                 self.messages.clear()
                 self.walk.reset_mock()
                 self.client._quest_tp_rejected = self.client._quest_tp_landing = None
+                self.client._quest_navmap_recovery = None
                 self.position = XYZ(0, 0, 0)
                 self.quest_target = self.target
                 self.zone = 'Novus/NV_Z01_Conatus'
@@ -145,13 +151,11 @@ class AutoNavmapNearbyTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(movement.calc_Distance(self.position, self.target), movement._WALK_GAP_MIN)
         walked = [point for kind, point in self.events if kind == 'walk']
         self.assertTrue(walked)
-        from wizwalker.constants import WIZARD_SPEED
-        previous = self.near
         for x, y in walked:
-            point = XYZ(x, y, 0)
-            self.assertLessEqual(movement.calc_Distance(point, previous), WIZARD_SPEED * 0.1 + 0.001)
             self.assertGreaterEqual(x, self.near.x)
-            previous = point
+            self.assertLessEqual(x, self.target.x)
+            self.assertEqual(y, 0)
+        self.assertEqual(walked[-1], (self.target.x, self.target.y))
 
     async def test_original_task_guard_is_kept_across_navmap_entry(self):
         actual = movement.navmap_tp

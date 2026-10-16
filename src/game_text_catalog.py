@@ -827,6 +827,8 @@ TEXT_RECORDS = {
         "Find",
         "寻找"
     ],
+    # Verified in local Locale/en-US/WizardQuestGoals.lang, 2026-10-15.
+    "WizardQuestGoals_00000667": ["Use Pet Mode", "使用宠物模式"],
     "WizardQuestGoals_00000670": [
         "Press Z to Photomance a Photo of",
         "按下 Z 来拍照以取得这个目标的照片:"

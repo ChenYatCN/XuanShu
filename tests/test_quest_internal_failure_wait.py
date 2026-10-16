@@ -32,17 +32,17 @@ class FailureWaitTests(prompts.Fixture):
         self.assertFalse(await self.quester.quest_interaction_ready(self.client, self.target))
         self.assertFalse(self.keys)
 
-    async def test_cooldown_prevents_repeated_movement_and_reopens_only_walk_budget(self):
+    async def test_cooldown_prevents_repeated_movement_and_retains_exhausted_budget(self):
         state, _ = await self.exhaust()
         with patch('src.questing.collision_tp', AsyncMock(return_value='failed')) as tp:
             for _ in range(4):
                 self.assertEqual(await self.quester.move_until_quest_interaction(self.client, self.target), 'blocked')
             tp.assert_not_awaited()
             self.clock += 10
-            self.assertEqual(await self.quester.move_until_quest_interaction(self.client, self.target), 'failed')
-            tp.assert_awaited_once()
+            self.assertEqual(await self.quester.move_until_quest_interaction(self.client, self.target), 'blocked')
+            tp.assert_not_awaited()
         self.assertIs(self.client._quest_tp_rejected, state)
-        self.assertEqual(state['walks'], 0)
+        self.assertEqual(state['walks'], 3)
         self.assertFalse(state['ready'])
         self.assertTrue(self.client.questing_status)
 
@@ -148,9 +148,9 @@ class FailureWaitTests(prompts.Fixture):
         self.clock += 10
         with patch('src.questing.collision_tp', AsyncMock(return_value='failed')) as tp:
             self.assertEqual(await self.quester.move_until_quest_interaction(
-                self.client, self.target, leader_client=self.client), 'failed')
-            tp.assert_awaited_once()
-        self.assertEqual(state['walks'], 0)
+                self.client, self.target, leader_client=self.client), 'blocked')
+            tp.assert_not_awaited()
+        self.assertEqual(state['walks'], 3)
         self.assertTrue(self.client.questing_status)
 
     async def test_stable_departure_releases_cooldown_and_original_popup_guard(self):

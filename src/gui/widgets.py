@@ -3,6 +3,7 @@ import re
 import time
 import ctypes
 import ctypes.wintypes
+from threading import RLock
 
 import pyperclip
 from PyQt6.QtWidgets import (
@@ -1428,7 +1429,7 @@ class ConsoleTextEdit(QPlainTextEdit):
 
     @pyqtSlot(str)
     def _set_log(self, text):
-        self.setPlainText(text)
+        self.setPlainText(text.rstrip("\n"))
         scrollbar = self.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
@@ -1437,34 +1438,37 @@ class PyQtSink:
     def __init__(self, console_widget: QPlainTextEdit):
         self.console_widget = console_widget
         self.buffer = []
+        self.daily_buffer = []
         self.max_lines = 1000
         self.show_expanded_logs = False
+        self._lock = RLock()
+        self.refresh()
 
     def copy(self):
-        log_str = "```\n"
-        for line, _, _ in self.buffer:
-            log_str += line
-        pyperclip.copy(log_str + "```")
+        with self._lock:
+            log_str = "```\n" + ''.join(line for line, _, _ in self.buffer) + "```"
+        pyperclip.copy(log_str)
         from loguru import logger
 
-        logger.debug("Copied current logs.")
+        logger.info("已复制详细日志缓存（全部级别，最近 {} 条）", self.max_lines)
 
     def toggle_show_expanded_logs(self, override: bool | None = None):
-        match override:
-            case True | False:
-                self.show_expanded_logs = override
-            case _:
-                self.show_expanded_logs = not self.show_expanded_logs
+        with self._lock:
+            match override:
+                case True | False:
+                    self.show_expanded_logs = override
+                case _:
+                    self.show_expanded_logs = not self.show_expanded_logs
+            expanded = self.show_expanded_logs
+            self.refresh()
 
         from loguru import logger
 
-        match self.show_expanded_logs:
+        match expanded:
             case True:
                 logger.debug("Console is now showing full log messages.")
             case _:
                 logger.debug("Console is now truncating log messages.")
-
-        self.refresh()
 
     def write(self, message):
         ansi_pattern = r"\033\[[0-9;]*m"
@@ -1503,41 +1507,44 @@ class PyQtSink:
             from src.logging_utils import daily_text
             truncated_message = daily_text(record)
 
-        self.buffer.append((clean_message, truncated_message, level))
-        if len(self.buffer) > self.max_lines:
-            self.buffer.pop(0)
-
-        try:
-            if level in ('DEBUG', 'TRACE') and not self.show_expanded_logs:
-                return  # Keep details in the existing buffer for expanded view.
-            message_to_write = (
-                clean_message if self.show_expanded_logs else truncated_message
-            )
-            QMetaObject.invokeMethod(
-                self.console_widget,
-                "_append_log",
-                Qt.ConnectionType.QueuedConnection,
-                Q_ARG(str, message_to_write),
-            )
-        except Exception:
-            pass
+        # Serialize snapshots and queued posts together. A late append cannot
+        # overwrite a newer mode refresh when writers run on worker threads.
+        with self._lock:
+            daily = level not in ('DEBUG', 'TRACE')
+            first_visible = not (self.buffer if self.show_expanded_logs else self.daily_buffer)
+            entry = (clean_message, truncated_message, level)
+            self.buffer.append(entry)
+            del self.buffer[:-self.max_lines]
+            if daily:
+                self.daily_buffer.append(entry)
+                del self.daily_buffer[:-self.max_lines]
+            if not daily and not self.show_expanded_logs:
+                return
+            if first_visible:
+                self.refresh()  # Replace the empty-state text.
+                return
+            try:
+                message_to_write = clean_message if self.show_expanded_logs else truncated_message
+                QMetaObject.invokeMethod(
+                    self.console_widget, "_append_log", Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, message_to_write),
+                )
+            except Exception:
+                pass
 
     def refresh(self):
-        try:
-            text = ""
-            for clean, trunc, level in self.buffer:
-                if level in ('DEBUG', 'TRACE') and not self.show_expanded_logs:
-                    continue
-                message_to_write = clean if self.show_expanded_logs else trunc
-                text += message_to_write
-            QMetaObject.invokeMethod(
-                self.console_widget,
-                "_set_log",
-                Qt.ConnectionType.QueuedConnection,
-                Q_ARG(str, text),
-            )
-        except Exception:
-            pass
+        with self._lock:
+            try:
+                entries = self.buffer if self.show_expanded_logs else self.daily_buffer
+                text = ''.join(clean if self.show_expanded_logs else trunc for clean, trunc, _ in entries)
+                if not text:
+                    text = '暂无详细日志' if self.show_expanded_logs else '暂无日常日志，可展开查看详细日志'
+                QMetaObject.invokeMethod(
+                    self.console_widget, "_set_log", Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, text),
+                )
+            except Exception:
+                pass
 
     def get_buffer(self):
         return self.buffer

@@ -12,7 +12,8 @@ from src.collect_catalog import installed_catalog
 from src.interaction_prompts import plain_text
 from src.paths import npc_range_path
 from src.utils import is_free, is_visible_by_path, get_popup_title
-from src.teleport_math import collision_tp, calc_Distance
+from src.teleport_math import (collision_tp, calc_Distance, _movement_body,
+                               _movement_position, _movement_control_changed)
 from src.task_lifecycle import gather_owned
 
 
@@ -59,6 +60,7 @@ class CollectSearch:
         self.catalog = None
         self.observed_names = {}
         self.last_popup = ''
+        self.control = None
 
     async def snapshot(self):
         self.last_text = plain_text(await self.quester.read_quest_txt(self.client))
@@ -76,6 +78,12 @@ class CollectSearch:
             return False
         if await self.client.is_loading() or await self.client.in_battle():
             return False
+        if await _movement_control_changed(self.client, self.control):
+            return False
+        if self.control is not None:
+            hook = await self.client.client_object.actor_body()
+            if hook is None or await hook.read_base_address() != self.control[0]:
+                return False
         if await self.client.zone_name() != self.zone:
             return False
         if self.quest_id is not None and await self.read_quest_id() != self.quest_id:
@@ -140,14 +148,14 @@ class CollectSearch:
                 # Entity pointers can expire as a region streams out. Cancellation
                 # must propagate, but one missing entity must not discard the scan.
                 logger.trace(f'Collect entity became unavailable: {exc}')
-        position = await self.client.body.position()
+        position = await _movement_position(self.client)
         result.sort(key=lambda c: (-c.score, calc_Distance(position, c.xyz)))
         return result
 
     async def prompt_ready(self, candidate):
         if not await self.active() or not await is_visible_by_path(self.client, npc_range_path):
             return False
-        if calc_Distance(await self.client.body.position(), candidate.xyz) >= 750:
+        if calc_Distance(await _movement_position(self.client), candidate.xyz) >= 750:
             return False
         title = await get_popup_title(self.client)
         self.last_popup = title or ''
@@ -172,6 +180,7 @@ class CollectSearch:
                 await asyncio.sleep(.1)
 
         movement = asyncio.create_task(collision_tp(self.client, candidate.xyz))
+        self.client._quest_active_movement = movement
         watcher = asyncio.create_task(stop_condition())
         try:
             async with asyncio.timeout(20):
@@ -182,6 +191,8 @@ class CollectSearch:
             movement.cancel()
             watcher.cancel()
             await gather_owned(movement, watcher, return_exceptions=True)
+            if getattr(self.client, '_quest_active_movement', None) is movement:
+                self.client._quest_active_movement = None
 
     async def collect(self, candidate):
         if not await self.active() or not await self.same_goal():
@@ -277,6 +288,7 @@ class CollectSearch:
     async def run(self):
         if not self.client.questing_status:
             return False
+        _, self.control = await _movement_body(self.client)
         self.zone = await self.client.zone_name()
         self.quest_id = await self.read_quest_id()
         self.goal = await self.snapshot()
@@ -286,6 +298,8 @@ class CollectSearch:
         if self.catalog is not None:
             self.names = await self.catalog.get()
         key = (self.zone, self.quest_id, self.goal.key, self.goal.total)
+        if self.control is not None:
+            key += (self.control,)  # Retire search/position state from another controlled body.
         previous = getattr(self.client, '_deimos_collect_search', None)
         self.state = previous if isinstance(previous, SearchState) and previous.key == key else SearchState(key)
         self.client._deimos_collect_search = self.state
@@ -298,12 +312,12 @@ class CollectSearch:
         if not self.state.route:
             try:
                 self.state.route = await self.quester.get_zone_chunks()
-                origin = await self.client.body.position()
+                origin = await _movement_position(self.client)
                 self.state.route.sort(key=lambda xyz: calc_Distance(origin, xyz))
             except Exception as exc:
                 self.warn(f'地图分区读取失败：{exc}')
                 return False
-        origin = await self.client.body.position()
+        origin = await _movement_position(self.client)
         for _ in range(len(self.state.route)):
             if not await self.active() or not await self.same_goal():
                 return False
@@ -311,10 +325,12 @@ class CollectSearch:
             self.state.cursor = (self.state.cursor + 1) % len(self.state.route)
             # Retain the original underground region-loading approach; each
             # region now uses its own navigation height instead of a global Z=0.
+            if not await self.active():
+                return False
             await self.client.teleport(XYZ(point.x, point.y, point.z - 550))
             if await self.scan(await self.loaded_entities()):
                 return True
-        if await self.active() and await self.same_goal() and await is_free(self.client):
+        if await self.same_goal() and await is_free(self.client) and await self.active():
             await self.client.teleport(origin)
         if self.catalog is not None and time.monotonic() - self.state.last_warning >= 30:
             try:

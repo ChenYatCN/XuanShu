@@ -16,6 +16,7 @@ class Fixture(unittest.IsolatedAsyncioTestCase):
 
     def identity(self):
         self.title = 'Failed NPC'
+        self.objective = 'Talk to Failed NPC or Different NPC or Other NPC or New NPC or New object'
         self.stack.enter_context(patch('src.questing.get_popup_title',
             AsyncMock(side_effect=lambda _: self.title)))
 
@@ -254,6 +255,7 @@ class DialogueStabilityTests(Fixture):
         self.assertGreaterEqual(self.clock, 6.4)
 
     async def test_a_search_does_not_accept_temporary_progress_during_snapshot_read(self):
+        self.client._quest_interaction_eligibility = await self.quester._interaction_eligibility(self.client, self.target)
         progress = await self.quester._dungeon_quest_snapshot(self.client)
         opened = []
         def text(_):
@@ -280,6 +282,7 @@ class DialogueStabilityTests(Fixture):
             with self.subTest(caller=caller):
                 self.setUp()
                 progress = await self.quester._dungeon_quest_snapshot(self.client)
+                self.client._quest_interaction_eligibility = await self.quester._interaction_eligibility(self.client, self.target)
                 polls = []
                 def visible(_, path):
                     if path == npc_range_path: return True

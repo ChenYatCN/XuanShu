@@ -34,6 +34,8 @@ class PartyTransitionFixture(DungeonFixture):
             self.clock += delay
             await REAL_SLEEP(0)
         self.stack.enter_context(patch('src.questing.asyncio.sleep', tick))
+        self.stack.enter_context(patch.object(Quester, 'read_quest_txt', AsyncMock(return_value='Use Door')))
+        self.stack.enter_context(patch('src.questing.get_quest_name', AsyncMock(return_value='Use Door')))
         self.reader = Quester(self.h, [self.h], None)
         self.reader.teleport_to_quest_target = AsyncMock(side_effect=self.land)
         self.reader.auto_collect_rewrite = AsyncMock()
@@ -165,18 +167,10 @@ class SharedGoalTests(PartyTransitionFixture, unittest.IsolatedAsyncioTestCase):
 
 
 class SourceEntranceTests(PartyTransitionFixture, unittest.IsolatedAsyncioTestCase):
-    async def test_valid_source_room_replays_only_recorded_entrance_and_hitter_x(self):
+    async def test_valid_source_room_never_replays_recorded_entrance_or_x(self):
         session = await self.split_after_capture()
-        self.assertTrue(await self.reader.recover_dungeon_transition())
-        self.reader.teleport_to_quest_target.assert_awaited_once()
-        move = self.reader.teleport_to_quest_target.await_args
-        self.assertIs(move.args[0], self.h)
-        self.assertEqual((move.args[1].x, move.args[1].y, move.args[1].z),
-                         (self.source_target.x, self.source_target.y, self.source_target.z))
-        self.assertTrue(move.kwargs.get('leader_client') is None
-                        or move.kwargs.get('leader_client') is self.h)
-        self.h.send_key.assert_awaited_once_with(Keycode.X, .1)
-        self.q.send_key.assert_not_awaited()
+        self.assertFalse(await self.reader.recover_dungeon_transition())
+        self.assert_no_replay()
         self.assertIs(party.dungeon_session_for(self.h), session)
         self.assertNotIn(id(self.h), session.exited)
 
@@ -212,36 +206,16 @@ class SourceEntranceTests(PartyTransitionFixture, unittest.IsolatedAsyncioTestCa
         self.assertFalse(await self.reader.recover_dungeon_transition())
         self.assert_no_replay()
 
-    async def test_source_movement_cancels_when_its_task_or_instance_changes(self):
+    async def test_source_goal_area_or_stop_changes_never_start_old_movement(self):
         for change in ('goal', 'area', 'stop'):
             with self.subTest(change=change):
                 self.setUp()
                 await self.split_after_capture()
-                entered, cancelled = asyncio.Event(), asyncio.Event()
-
-                async def moving(*_args, **_kwargs):
-                    entered.set()
-                    try:
-                        await asyncio.Event().wait()
-                    finally:
-                        cancelled.set()
-
-                self.reader.teleport_to_quest_target.side_effect = moving
-                worker = asyncio.create_task(self.reader.recover_dungeon_transition())
-                try:
-                    await asyncio.wait_for(entered.wait(), timeout=1)
-                    if change == 'goal':
-                        self.h.goal_id.return_value = 8
-                    elif change == 'area':
-                        self.h.area_id += 1
-                    else:
-                        self.h.questing_status = False
-                    await asyncio.wait_for(worker, timeout=1)
-                    self.assertTrue(cancelled.is_set())
-                    self.h.send_key.assert_not_awaited()
-                finally:
-                    worker.cancel()
-                    await asyncio.gather(worker, return_exceptions=True)
+                if change == 'goal': self.h.goal_id.return_value = 9
+                elif change == 'area': self.h.area_id += 1
+                else: self.h.questing_status = False
+                self.assertFalse(await self.reader.recover_dungeon_transition())
+                self.assert_no_replay()
 
     async def test_capture_requires_instance_proof_and_does_not_guess_after_split(self):
         await self.enter()
@@ -300,18 +274,14 @@ class SourceEntranceTests(PartyTransitionFixture, unittest.IsolatedAsyncioTestCa
         self.assertFalse(await self.reader.recover_dungeon_transition())
         self.assert_no_replay()
 
-    async def test_two_attempt_limit_and_cooldown_bound_source_replay(self):
+    async def test_worker_restart_and_old_cooldown_never_reauthorize_source_x(self):
         await self.split_after_capture()
-        await self.reader.recover_dungeon_transition()
-        await self.reader.recover_dungeon_transition()
-        self.assertEqual(self.h.send_key.await_count, 1)
-        self.clock += 2
-        await self.reader.recover_dungeon_transition()
-        self.assertEqual(self.h.send_key.await_count, 2)
-        self.clock += 2
-        await self.reader.recover_dungeon_transition()
-        self.assertEqual(self.h.send_key.await_count, 2)
-        self.assertEqual(self.reader.teleport_to_quest_target.await_count, 2)
+        for _ in range(4):
+            self.assertFalse(await self.reader.recover_dungeon_transition())
+            self.clock += 2
+            self.reader = Quester(self.h, [self.h], None)
+            self.reader.teleport_to_quest_target = AsyncMock()
+        self.assert_no_replay()
 
     async def test_arrived_member_does_not_replay_source_entrance(self):
         await self.split_after_capture()
@@ -427,7 +397,7 @@ class ActualCallerTests(PartyTransitionFixture, unittest.IsolatedAsyncioTestCase
         await self.caller.auto_quest_solo()
         self.assertEqual(self.caller.teleport_to_quest_target.await_count, 0)
 
-    async def test_failed_generic_x_recapture_does_not_send_group_input(self):
+    async def test_ordinary_use_does_not_recapture_entry_or_send_group_input(self):
         await self.enter()
         calls = 0
         remember = party.remember_dungeon_transition
@@ -439,13 +409,14 @@ class ActualCallerTests(PartyTransitionFixture, unittest.IsolatedAsyncioTestCase
             return await remember(quester, target)
         with patch('src.questing.remember_dungeon_transition', capture):
             await self.caller.auto_quest_solo()
-        self.assertEqual(calls, 2)
-        self.assertEqual(self.q.send_key.await_count, 0)
+        self.assertEqual(calls, 1)  # Shared movement release only, no ordinary-Use entry recapture.
+        self.q.send_key.assert_awaited_once_with(Keycode.X, .1)
         self.assertEqual(self.h.send_key.await_count, 0)
 
     async def test_actual_generic_world_gate_input_is_quester_only(self):
         await self.enter()
         self.title.return_value = '世界之门'
+        self.caller.read_quest_txt = AsyncMock(return_value='Use 世界之门')
         await self.caller.auto_quest_solo()
         self.q.send_key.assert_awaited_once_with(Keycode.X, .1)
         self.h.send_key.assert_not_awaited()

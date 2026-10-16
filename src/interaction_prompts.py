@@ -80,6 +80,7 @@ def is_dungeon_entry_prompt(value) -> bool:
 def quest_has_action(value, action) -> bool:
     ids = {
         "defeat": ("WizardQuestGoals_Kill", "WizardQuestGoals_KillCollect"),
+        "pet_mode": ("WizardQuestGoals_00000667",),
         "photomance": ("WizardQuestGoals_00000670", "WizardQuestGoals_00000671",
                        "WizardQuestGoals_00000672", "WizardQuestGoals_00000748"),
     }[action]

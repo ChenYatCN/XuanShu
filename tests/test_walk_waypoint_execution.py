@@ -75,7 +75,8 @@ class WaypointExecutionTests(unittest.IsolatedAsyncioTestCase):
 
     async def press(self, _handle, key, seconds):
         self.assertEqual(key, Keycode.W)
-        self.assertLessEqual(seconds, .10001)
+        self.assertTrue(math.isfinite(seconds))
+        self.assertGreater(seconds, 0)
         self.previous = self.position
         dx, dy = self.destination[0] - self.position.x, self.destination[1] - self.position.y
         distance = math.hypot(dx, dy)
@@ -176,7 +177,11 @@ class WaypointExecutionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_prompt_during_walk_yields_in_reference_ordinary_range(self):
         self.on_step = lambda: setattr(self, 'interaction', True)
-        self.assertFalse(await self.walk())  # Handoff is not quest completion.
+        self.client.is_loading = AsyncMock(return_value=False)
+        self.client.in_battle = AsyncMock(return_value=False)
+        with patch('src.teleport_math._movement_objective', AsyncMock(return_value='Use Task Lever')), patch(
+                'src.teleport_math._movement_interaction_signature', AsyncMock(return_value=('Task Lever', 'Use'))):
+            self.assertFalse(await self.walk())  # Handoff is not quest completion.
         self.assertEqual(len(self.calls), 1)
         self.assertLess(math.hypot(self.position.x-self.target.x,
                                   self.position.y-self.target.y), 750)
@@ -214,7 +219,8 @@ class WaypointExecutionTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.gather(task, return_exceptions=True)
         self.assertTrue(released.is_set())
         self.assertEqual(len(self.calls), 1)
-        self.assertLessEqual(durations[0], .10001)
+        distance = math.hypot(*self.calls[0])
+        self.assertAlmostEqual(durations[0], distance / (WIZARD_SPEED * (1 + self.speed_bonus / 100)))
 
 
 if __name__ == '__main__':

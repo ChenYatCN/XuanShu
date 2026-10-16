@@ -48,7 +48,7 @@ class CurrentPromptTests(Fixture):
 
     async def test_failed_x_alone_does_not_block_next_ordinary_npc_iteration(self):
         self.prompt = 'Press X to Talk'
-        self.objective = 'Talk to NPC'
+        self.objective = 'Talk to Lever'
         await self.quester.auto_quest_solo()
         first_x = self.keys.count(Keycode.X)
         self.assertGreater(first_x, 0)
@@ -88,7 +88,7 @@ class CurrentPromptTests(Fixture):
         tp.assert_awaited_once()
         self.assertEqual(self.keys.count(Keycode.X), first_x + 1)
 
-    async def test_new_interaction_identity_at_current_target_is_allowed_after_old_failure(self):
+    async def test_unrelated_new_identity_is_rejected_after_old_failure(self):
         self.prompt = 'Press X to Use'
         await self.quester.auto_quest_solo()
         first_x = self.keys.count(Keycode.X)
@@ -96,7 +96,7 @@ class CurrentPromptTests(Fixture):
         self.on_x = lambda: setattr(self, 'goal', self.goal + 1)
         self.clock += 6
         await self.quester.auto_quest_solo()
-        self.assertEqual(self.keys.count(Keycode.X), first_x + 1)
+        self.assertEqual(self.keys.count(Keycode.X), first_x)
 
     async def test_task_change_during_movement_never_interacts_with_old_target(self):
         self.prompt = 'Press X to Talk'
@@ -107,14 +107,14 @@ class CurrentPromptTests(Fixture):
         await self.quester.auto_quest_solo()
         self.assertEqual(self.keys.count(Keycode.X), 0)
 
-    async def test_unreadable_identity_does_not_add_an_ordinary_target_proof_gate(self):
+    async def test_unreadable_identity_never_authorizes_ordinary_x(self):
         self.title = ''
         self.prompt = 'Press X to Use'
         await self.quester.auto_quest_solo()
         first_x = self.keys.count(Keycode.X)
         self.clock += 6
         await self.quester.auto_quest_solo()
-        self.assertEqual(self.keys.count(Keycode.X), first_x + 1)
+        self.assertEqual(self.keys.count(Keycode.X), 0)
 
     async def test_confirmed_dialogue_progress_releases_failure_for_same_goal_coordinates(self):
         self.prompt = 'Press X to Use'
@@ -124,7 +124,7 @@ class CurrentPromptTests(Fixture):
         self.dialogue = True
         def settle(_delay):
             self.dialogue = False
-            self.objective = 'Updated objective'
+            self.objective = 'Use Lever (updated objective)'
         self.after_sleep = settle
         self.assertTrue(await self.quester.handle_npc_talking_quests(
             self.client, [self.client], direction_search=False, before_progress=before))

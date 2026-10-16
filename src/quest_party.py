@@ -62,12 +62,28 @@ class DungeonSession:
     room_evidence: dict = field(default_factory=dict)
     transition: dict | None = None
     follow_attempts: dict = field(default_factory=dict)
+    entry_wait: dict | None = None
+
+
+def _clear_dungeon_entry(session):
+    """Invalidate only this session's entrance records, never another input owner."""
+    session.transition = None
+    session.entry_wait = None
+    session.follow_attempts.clear()
+    for member in session.members:
+        entry = getattr(member, '_quest_party_entry', None)
+        if isinstance(entry, dict) and entry.get('session') is session:
+            member._quest_party_entry = None
+        approach = getattr(member, '_quest_door_approach', None)
+        if isinstance(approach, dict) and approach.get('session') is session:
+            approach['ended'] = True
 
 
 def clear_dungeon_session(client):
     session = getattr(client, 'quest_party_dungeon', None)
     if not isinstance(session, DungeonSession):
         return
+    _clear_dungeon_entry(session)
     for member in session.members:
         if getattr(member, 'quest_party_dungeon', None) is session:
             member.quest_party_dungeon = None
@@ -88,6 +104,100 @@ def dungeon_session_for(client):
         clear_dungeon_session(client)
         return None
     return session
+
+
+async def dungeon_entry_waiting(client):
+    """Keep shared X's loading/countdown phase separate from bounded friend recovery."""
+    from loguru import logger
+    from src.paths import team_up_wait_path
+    from src.utils import is_visible_by_path, clients_share_live_area, observe_party_area, _party_area_token
+    session = dungeon_session_for(client)
+    wait = session.entry_wait if session else None
+    if wait is None:
+        return False
+    if session.transition is not wait['source']:
+        session.entry_wait = None
+        return False
+    try:
+        tokens = []
+        members = tuple(m for m in session.members if id(m) in wait['source']['source_tokens'])
+        busy_error = None
+        for member in members:
+            try:
+                if (await member.is_loading()
+                        or await is_visible_by_path(member, team_up_wait_path)):
+                    wait['stable'] = None
+                    return True
+            except Exception as exc:
+                busy_error = exc  # Still check every peer's real loading/countdown.
+        if busy_error is not None:
+            raise busy_error
+        for member in members:
+            await observe_party_area(member)
+            token = await _party_area_token(member)
+            tokens.append(token)
+            if (token[0] != wait['source']['source_zone']
+                    and all(type(v) is int and v > 0 for v in token[1:3])):
+                wait['source'].setdefault('arrivals', {})[id(member)] = token
+        if (dungeon_session_for(client) is not session or session.entry_wait is not wait):
+            return False
+        source = wait['source']
+        arrived = all(token[0] != source['source_zone'] for token in tokens)
+        if (arrived and len({token[0] for token in tokens}) == 1
+                and all([await clients_share_live_area(session.quester, m)
+                         for m in members if m is not session.quester])
+                and all([not await m.is_loading() and await _party_area_token(m) == token
+                         for m, token in zip(members, tokens)])):
+            session.entry_wait = None
+            for member in session.members:
+                entry = getattr(member, '_quest_party_entry', None)
+                if isinstance(entry, dict) and entry.get('source') is source:
+                    member._quest_party_entry = None
+            logger.debug(f"[dungeon_entry] {session.quester.title}: phase=arrived "
+                         f"members={[m.title for m in session.members]} same_instance=True")
+            return False
+        now = time.monotonic()
+        evidence = tuple(tokens)
+        stable = wait.get('stable')
+        if stable is None or stable[0] != evidence:
+            wait['stable'] = (evidence, now)
+            return True
+        if now < wait['deadline'] or now - stable[1] < .75:
+            return True
+        # The input operation has ended; no old entrance replay is authorized.
+        # The existing follower alone may now evaluate actual friend arrival.
+        end_dungeon_entry(session, source, 'partial-arrival' if any(
+            token[0] != source['source_zone'] for token in tokens) else 'no-arrival')
+        logger.debug(f"[dungeon_entry] {session.quester.title}: phase=entry-unconfirmed "
+                     f"members={[m.title for m in session.members]} areas={evidence}; "
+                     "old entrance replay disabled, release to bounded friend recovery")
+        return False
+    except Exception as exc:
+        if wait.get('read_error') != type(exc).__name__:
+            logger.debug(f"[dungeon_entry] {session.quester.title}: phase=wait-unreadable "
+                         f"error={type(exc).__name__}: {exc}")
+            wait['read_error'] = type(exc).__name__
+        if time.monotonic() >= wait['deadline']:
+            end_dungeon_entry(session, wait['source'], 'wait-unreadable')
+            return False
+        return True  # Missing countdown/area evidence cannot permit overlapping input.
+
+
+def end_dungeon_entry(session, source, reason):
+    """End this input round; retain sent intent so it never authorizes another X."""
+    from loguru import logger
+    if session.transition is not source:
+        return
+    if session.entry_wait and session.entry_wait['source'] is source:
+        session.entry_wait = None
+    for member in session.members:
+        entry = getattr(member, '_quest_party_entry', None)
+        if isinstance(entry, dict) and entry.get('source') is source:
+            member._quest_party_entry = None
+    if source.get('entry_ended') != reason:
+        source['entry_ended'] = reason
+        logger.debug(f"[dungeon_entry] {session.quester.title}: phase=ended reason={reason}; "
+                     "shared X will not be replayed")
 
 
 async def begin_dungeon_entry(quester, entry_clients, *, evidence=False):
@@ -142,6 +252,7 @@ async def observe_dungeon_session(client):
         if not session.entry_evidence:
             return session
         zones, areas = {}, {}
+        incomplete = False
         for member in session.members:
             if (await member.is_loading() or await member.in_battle()
                     or getattr(member, 'refilling_potions', False)):
@@ -151,7 +262,8 @@ async def observe_dungeon_session(client):
                 if member is session.quester and id(member) in session.entry_zones:
                     clear_dungeon_session(client)  # Aborted, never confirmed entry.
                     return None
-                return session
+                incomplete = True
+                continue
             session.entry_zones.setdefault(id(member), zone)
             zones[id(member)] = zone
             await observe_party_area(member)
@@ -159,7 +271,7 @@ async def observe_dungeon_session(client):
                 areas[id(member)] = await _party_area_token(member)
             except Exception:
                 areas[id(member)] = None  # Live entity evidence is still usable.
-        if len(set(zones.values())) != 1:
+        if incomplete or len(set(zones.values())) != 1:
             return session
         for member in session.members[1:]:
             if not await clients_share_live_area(session.quester, member):
@@ -185,6 +297,7 @@ async def observe_dungeon_session(client):
     if zone == session.source_zones[id(client)]:
         session.exited.add(id(client))
         session.exit_evidence[id(client)] = ('source-zone', session.last_zones[id(client)], zone)
+        _clear_dungeon_entry(session)
     elif zone and zone != session.last_zones[id(client)] and id(client) not in session.exited:
         before = session.last_zones[id(client)]
         if same_dungeon_room_series(before, zone):
@@ -217,6 +330,7 @@ def record_dungeon_exit(client, before, after, *, evidence='GUI_InstanceExit'):
             or id(client) in session.potion_areas or getattr(client, 'refilling_potions', False)):
         return
     session.exited.add(id(client))
+    _clear_dungeon_entry(session)
     session.exit_evidence[id(client)] = (evidence, before, after)
     session.last_zones[id(client)] = after
     session.room_evidence.pop(id(client), None)
@@ -330,7 +444,7 @@ async def remember_dungeon_transition(quester, target):
             tasks[id(member)] = (await member.quest_id(), await member.goal_id())
             tokens[id(member)] = await _party_area_token(member)
             task, token = tasks[id(member)], tokens[id(member)]
-            if (type(task[0]) is not int or task[0] <= 0 or type(task[1]) is not int
+            if (type(task[0]) is not int or task[0] < (1 if member is quester else 0) or type(task[1]) is not int
                     or token[0] != zone
                     or any(type(value) is not int or value <= 0 for value in token[1:3])):
                 return False

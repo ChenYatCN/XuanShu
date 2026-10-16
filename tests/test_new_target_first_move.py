@@ -299,7 +299,8 @@ class SharedFirstMoveTests(PartyTransitionFixture, unittest.IsolatedAsyncioTestC
         super().setUp()
         self.reader.teleport_to_quest_target = Quester.teleport_to_quest_target.__get__(self.reader)
         self.reader._npc_dialogue_visible = AsyncMock(return_value=False)
-        self.reader._quest_interaction_signature = AsyncMock(return_value=None)
+        self.reader._quest_interaction_signature = AsyncMock(return_value=('Door', '进入'))
+        self.reader.read_quest_txt = AsyncMock(return_value='Enter Door')
         self.stack.enter_context(patch.object(movement, 'is_free', AsyncMock(return_value=True)))
         self.stack.enter_context(patch.object(movement, 'is_visible_by_path', AsyncMock(
             side_effect=lambda _client, path: path == npc_range_path)))

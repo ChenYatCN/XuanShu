@@ -141,6 +141,8 @@ async def log_mainline_progress(client):
         return  # Keep the separate external last-success record intact.
     recovery = getattr(client, '_xuanshu_mainline_recovery', None)
     navigating = isinstance(recovery, dict) and recovery.get('phase') == 'navigation'
+    read_failed = (isinstance(recovery, dict) and recovery.get('phase') == 'cooldown'
+                   and bool(getattr(client, '_xuanshu_mainline_book_read_error', '')))
     if identity is None:
         client._xuanshu_mainline_progress = f'{client.title} · 当前主线暂不可读'
         return  # Never erase the separate last-success record.
@@ -162,12 +164,16 @@ async def log_mainline_progress(client):
         world = world.split('(')[0].strip()
         world = {'wizard city': '魔法城', 'celestia': '天国'}.get(world.casefold(), world)
         client._xuanshu_mainline_progress = f'{client.title} · {world} 主线 {row["number"]}/{total}'
+    elif read_failed:
+        client._xuanshu_mainline_progress = f'{client.title} · 任务簿信息读取失败，待重试'
     else:
         client._xuanshu_mainline_progress = f'{client.title} · 当前主线未匹配'
-    diagnostic = (identity['quest_id'], identity['code'], matched, navigating)
+    diagnostic = (identity['quest_id'], identity['code'], matched, navigating, read_failed)
     if getattr(client, '_xuanshu_mainline_log_state', None) != diagnostic:
         if matched and not navigating:
             logger.info('{} 当前主线：{} 第 {}/{} 个 | {}', client.title, world, row['number'], total, identity['title'])
+        elif read_failed:
+            logger.info('{} 当前主线：任务簿信息读取失败，待重试 | {}', client.title, identity['title'])
         else:
             logger.info('{} 当前主线：未匹配或待恢复确认 | {}', client.title, identity['title'])
             logger.debug('{} 主线诊断 Quest ID {}，状态={}', client.title, identity['quest_id'], diagnostic)

@@ -146,8 +146,12 @@ class PetTaskTPTests(unittest.IsolatedAsyncioTestCase):
         self.player_position = self.target
         self.position = self.origin
         task = await movement._movement_task_snapshot(self.client)
+        from src.paths import npc_range_path
         self.assertFalse(await movement._movement_interaction_handoff(
-            self.client, self.target, task, range_visible=True))
+            self.client, self.target, task, range_visible=True, signature=('Task Lever', 'Use'),
+            read_objective=AsyncMock(return_value='Use Task Lever'),
+            read_title=AsyncMock(return_value='Task Lever'), read_popup=AsyncMock(return_value='Use'),
+            visible=AsyncMock(side_effect=lambda _, path: path == npc_range_path)))
         self.assertTrue(self.client._quest_tp_rejected['rejected'])
 
     async def test_mode_change_clears_old_landing_and_wait_state(self):

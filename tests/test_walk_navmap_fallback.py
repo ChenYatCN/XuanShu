@@ -196,11 +196,13 @@ class WalkNavmapFallbackTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_repeated_failure_has_a_finite_walk_budget_and_no_new_tp(self):
         self.path = None
-        for _ in range(10):
-            await movement.collision_tp(self.client, self.target)
+        with patch('src.teleport_math.navmap_tp', AsyncMock(return_value=None)) as nav:
+            for _ in range(10):
+                await movement.collision_tp(self.client, self.target)
+            self.assertEqual(nav.await_count, 3)
         self.assertEqual(self.events, [('tp', self.target), ('tp', self.safe)])
-        self.assertLessEqual(sum('no on-foot path' in m for m in self.messages), 3)
-        self.assertTrue(any('suppressed' in m for m in self.messages))
+        self.assertLessEqual(sum('no on-foot path' in m for m in self.messages), 4)
+        self.assertTrue(any('3/3 exhausted' in m for m in self.messages))
 
     async def test_task_or_zone_change_during_walk_stops_before_next_step(self):
         self.avoid = []
@@ -265,13 +267,17 @@ class WalkNavmapFallbackTests(unittest.IsolatedAsyncioTestCase):
             await movement.navmap_tp(self.client, self.target)
         self.assertEqual([e[1].x for e in self.events if e[0] == 'tp'], [1000, 650, 300])
         self.assertEqual(movement.calc_Distance(self.position, self.target), 0)
-        self.assertGreater(len([e for e in self.events if e[0] == 'walk']), 3)
+        walked = [e[1] for e in self.events if e[0] == 'walk']
+        self.assertTrue(walked)
+        self.assertEqual(walked[-1], (self.target.x, self.target.y))
 
     async def test_interaction_prompt_stops_walk_for_existing_handler(self):
         self.avoid = []
         self.position = XYZ(self.target.x - 100, self.target.y, self.target.z)
         from src.paths import npc_range_path
-        with patch('src.teleport_math.is_visible_by_path', AsyncMock(side_effect=lambda _, path: path == npc_range_path)):
+        with patch('src.teleport_math.is_visible_by_path', AsyncMock(side_effect=lambda _, path: path == npc_range_path)), patch(
+                'src.teleport_math._movement_objective', AsyncMock(return_value='Use Task Lever')), patch(
+                'src.teleport_math._movement_interaction_signature', AsyncMock(return_value=('Task Lever', 'Use'))):
             self.assertFalse(await movement._walk_remaining_to_target(self.client, self.target, object(), self.zone, 55))
         self.assertFalse(self.events)
 
@@ -288,24 +294,20 @@ class WalkNavmapFallbackTests(unittest.IsolatedAsyncioTestCase):
                                                  task_client=leader)
         self.assertEqual(len(self.events), 1)
 
-    async def test_cancellation_drains_only_the_current_short_walk(self):
+    async def test_cancellation_releases_current_waypoint_input(self):
         self.avoid = []
         self.position = self.safe
-        started, release, drained = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        started, drained = asyncio.Event(), asyncio.Event()
         async def goto(x, y):
-            from wizwalker.constants import WIZARD_SPEED
-            self.assertLessEqual(((x-self.position.x)**2 + (y-self.position.y)**2)**.5,
-                                 WIZARD_SPEED * .1 + .001)
             started.set()
-            await release.wait()
-            drained.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                drained.set()
         self.client.goto = goto
         task = asyncio.create_task(movement._walk_remaining_to_target(self.client, self.target, object(), self.zone, 55))
         await asyncio.wait_for(started.wait(), 1)
         task.cancel()
-        await REAL_SLEEP(0)
-        self.assertFalse(task.done())
-        release.set()
         with self.assertRaises(asyncio.CancelledError):
             await task
         self.assertTrue(drained.is_set())
@@ -351,8 +353,6 @@ class RealWalkGridApproachTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(movement.calc_Distance(position[0], target), 300)
         self.assertNotEqual(movement.calc_Distance(position[0], target), 0)
         for segment in segments:
-            from wizwalker.constants import WIZARD_SPEED
-            self.assertLessEqual(segment.length, WIZARD_SPEED * .1 + .001)
             self.assertFalse(any(segment.intersects(s.buffer(25)) for s in shapes))
 
 
