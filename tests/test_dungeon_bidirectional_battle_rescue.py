@@ -56,6 +56,23 @@ class BidirectionalBattleTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.q1.battle)
         self.assertEqual({title for title,_,_ in self.events},{'p1'})
         self.assertTrue(any('joined' in m for m in self.messages()))
+        self.assertTrue(any(
+            'anchor=p2' in m and 'direction=p1->p2' in m and 'source=p1' in m and 'target=p2' in m
+            for m in self.messages()), '\n'.join(self.messages()))
+
+    async def test_confirmed_dungeon_probe_pending_is_superseded_by_reverse_evidence(self):
+        self.dungeon(self.q1,self.h1)
+        self.q1.battle,self.h1.battle=False,True
+        self.q1.quest_party_probe_pending=True
+        self.q1.quest_party_battle_started_at=None
+        await self.rescue(self.q1)
+        self.assertFalse(self.events)
+        self.assertFalse(any('reason=probe-pending' in m for m in self.messages()))
+        self.assertTrue(any('normal-join-grace' in m for m in self.messages()))
+        self.clock+=4
+        await self.rescue(self.q1)
+        self.assertTrue(self.q1.battle)
+        self.assertTrue(any('direction=p1->p2' in m for m in self.messages()))
 
     async def test_outside_hitter_first_does_not_pull_quester(self):
         self.q1.battle,self.h1.battle=False,True

@@ -167,12 +167,12 @@ class SharedGoalTests(PartyTransitionFixture, unittest.IsolatedAsyncioTestCase):
 
 
 class SourceEntranceTests(PartyTransitionFixture, unittest.IsolatedAsyncioTestCase):
-    async def test_valid_source_room_never_replays_recorded_entrance_or_x(self):
+    async def test_retired_source_room_never_replays_recorded_entrance_or_x(self):
         session = await self.split_after_capture()
+        party.retire_dungeon_session(session)
         self.assertFalse(await self.reader.recover_dungeon_transition())
         self.assert_no_replay()
-        self.assertIs(party.dungeon_session_for(self.h), session)
-        self.assertNotIn(id(self.h), session.exited)
+        self.assertIsNone(party.dungeon_session_for(self.h))
 
     async def test_source_quest_goal_area_or_session_changes_reject_replay(self):
         for change in ('source_area', 'source_room', 'hitter_quest', 'hitter_goal',
@@ -275,7 +275,12 @@ class SourceEntranceTests(PartyTransitionFixture, unittest.IsolatedAsyncioTestCa
         self.assert_no_replay()
 
     async def test_worker_restart_and_old_cooldown_never_reauthorize_source_x(self):
-        await self.split_after_capture()
+        old = await self.split_after_capture()
+        party.retire_dungeon_session(old)
+        self.q.zone = self.h.zone = 'Outside'
+        self.q.area_id = self.h.area_id = 100
+        new = await self.enter()
+        self.assertGreater(new.generation, old.generation)
         for _ in range(4):
             self.assertFalse(await self.reader.recover_dungeon_transition())
             self.clock += 2
@@ -442,6 +447,7 @@ class ActualCallerTests(PartyTransitionFixture, unittest.IsolatedAsyncioTestCase
             await entered(self.q, key, seconds)
         async def h_entered(key, seconds):
             await entered(self.h, key, seconds)
+        self.h.position = self.q.quest_position.position.return_value
         self.q.send_key.side_effect, self.h.send_key.side_effect = q_entered, h_entered
         started = self.clock
         await asyncio.wait_for(self.caller.auto_quest_solo(), timeout=1)

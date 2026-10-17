@@ -2010,10 +2010,30 @@ async def _cycle_friends_list(
 
 
 # TODO: add error if friend is busy message pops up
-async def _request_friend_teleport(client, character_window):
+async def _request_friend_teleport(client, character_window, *, before_request=None, on_request_sent=None):
     """Request only: the follower still must prove loading ended and the same live instance."""
     try:
-        await _teleport_to_friend(client, character_window)
+        if on_request_sent is None:
+            await _teleport_to_friend(client, character_window)
+        else:
+            # Same installed request/confirmation protocol, with notification at
+            # the actual GoToFriend input boundary (not at friend lookup start).
+            teleport_button = await _maybe_get_named_window(character_window, 'btnGoToFriend')
+            if before_request is not None:
+                await before_request()
+            await client.mouse_handler.click_window(
+                teleport_button, on_dispatched=on_request_sent)
+            await asyncio.sleep(1)
+            confirmation_window = await _maybe_get_named_window(client.root_window, 'MessageBoxModalWindow')
+            yes_button = await _maybe_get_named_window(confirmation_window, 'centerButton')
+            if (not await yes_button.is_visible()
+                    or not all([await parent.is_visible() for parent in await yes_button.get_parents()])
+                    or WindowFlags.disabled in await yes_button.flags()
+                    or await yes_button.is_control_grayed()):
+                return False  # A Busy result's hidden Yes button is not confirmation input.
+            close_button = await _maybe_get_named_window(character_window, 'btnCharacterClose')
+            await client.mouse_handler.click_window(yes_button)
+            await client.mouse_handler.click_window(close_button)
     except ValueError as exc:
         # The installed helper already clicked GoToFriend before these lookups.
         # It also already waited finitely for the modal. Never repeat the friend
@@ -2031,7 +2051,7 @@ async def _request_friend_teleport(client, character_window):
 
 async def teleport_to_friend_from_list(
     client, *, icon_list: int = None, icon_index: int = None, name: str = None,
-    strict_identity: bool = False
+    strict_identity: bool = False, before_request=None, on_request_sent=None
 ):
     """
     Teleport to a friend from the client's friend list
@@ -2161,7 +2181,11 @@ async def teleport_to_friend_from_list(
                     or WindowFlags.disabled in await go.flags()):
                 raise FriendLookupError(stage)
             stage = 'friend-tp-click-failed'
-            await _request_friend_teleport(client, character_window)
+            if on_request_sent is None:
+                await _request_friend_teleport(client, character_window)
+            else:
+                await _request_friend_teleport(client, character_window,
+                    before_request=before_request, on_request_sent=on_request_sent)
         elif automatic:
             await _request_friend_teleport(client, character_window)
         else:

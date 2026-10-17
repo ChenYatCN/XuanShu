@@ -197,6 +197,48 @@ class ExitDeadlockTests(transitions.PartyTransitionFixture, unittest.IsolatedAsy
                 self.caller.teleport_to_quest_target.assert_not_awaited()
                 self.q.send_key.assert_not_awaited()
 
+    async def test_confirmed_room_handoff_still_requires_peer_crossing(self):
+        await self.capture()
+        self.assertFalse(await self.reader.recover_dungeon_transition())
+        self.reader.teleport_to_quest_target.assert_not_awaited()
+        self.h.send_key.assert_not_awaited()
+
+    async def test_recovery_reject_stale_probe_does_not_block_quester_movement(self):
+        await self.capture()
+        self.q.quest_party_quest_worker_zone = 'Dungeon/Room1'
+        self.q.quest_party_probe_pending = True
+        self.assertFalse(await self.caller._quest_party_probe_blocks_movement())
+
+    async def test_real_active_follower_probe_still_blocks_quester_movement(self):
+        await self.capture()
+        self.q.quest_party_probe_pending = True
+        self.h.is_loading.return_value = True
+        self.assertTrue(await self.caller._quest_party_probe_blocks_movement())
+
+    async def test_inflight_transition_still_blocks_quester_movement(self):
+        session = await self.capture()
+        session.transition['entry_sent'] = True
+        self.q.quest_party_probe_pending = True
+        self.assertTrue(await self.caller._quest_party_probe_blocks_movement())
+
+    async def test_loading_or_battle_still_blocks_quester_movement(self):
+        await self.capture()
+        self.q.is_loading.return_value = True
+        self.assertTrue(await self.caller._quest_party_probe_blocks_movement())
+
+    async def test_stale_probe_pending_does_not_starve_multiple_ticks(self):
+        await self.capture()
+        self.q.quest_party_probe_pending = True
+        for _ in range(3):
+            self.assertFalse(await self.caller._quest_party_probe_blocks_movement())
+
+    async def test_normal_zone_change_probe_not_broken(self):
+        await self.capture()
+        self.q.quest_party_quest_worker_zone = 'Dungeon/Previous'
+        self.q.quest_party_probe_pending = True
+        self.assertTrue(await self.caller._quest_party_probe_blocks_movement())
+        self.assertFalse(await self.caller._quest_party_probe_blocks_movement())
+
     async def test_hitter_first_attempts_are_bounded_without_false_success_or_group_release(self):
         session = await self.capture()
         self.h.zone, self.h.area_id = 'Dungeon/Room2', 201
@@ -324,6 +366,69 @@ class ExitDeadlockTests(transitions.PartyTransitionFixture, unittest.IsolatedAsy
         finally:
             worker.cancel()
             await asyncio.gather(worker, return_exceptions=True)
+
+    async def test_retired_session_transition_is_never_replayed(self):
+        session = await self.capture()
+        party.retire_dungeon_session(session)
+        self.assertFalse(await self.reader.recover_dungeon_transition())
+        self.reader.teleport_to_quest_target.assert_not_awaited()
+        self.h.send_key.assert_not_awaited()
+        self.assertEqual(session.phase, 'retired')
+
+    async def test_transition_replaced_during_recovery_stops_old_replay(self):
+        session = await self.capture()
+        self.q.zone, self.q.area_id = 'Dungeon/Room2', 201
+        await party.observe_dungeon_session(self.q)
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def pending(*args, **kwargs):
+            entered.set()
+            await release.wait()
+        self.reader.teleport_to_quest_target.side_effect = pending
+        worker = asyncio.create_task(self.reader.recover_dungeon_transition())
+        try:
+            await asyncio.wait_for(entered.wait(), 1)
+            session.transition = dict(session.transition)
+            release.set()
+            self.assertFalse(await asyncio.wait_for(worker, 1))
+            self.h.send_key.assert_not_awaited()
+        finally:
+            release.set()
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+
+    async def test_session_retired_during_recovery_stops_old_replay(self):
+        session = await self.capture()
+        self.q.zone, self.q.area_id = 'Dungeon/Room2', 201
+        await party.observe_dungeon_session(self.q)
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def pending(*args, **kwargs):
+            entered.set()
+            await release.wait()
+        self.reader.teleport_to_quest_target.side_effect = pending
+        worker = asyncio.create_task(self.reader.recover_dungeon_transition())
+        try:
+            await asyncio.wait_for(entered.wait(), 1)
+            party.retire_dungeon_session(session)
+            release.set()
+            self.assertFalse(await asyncio.wait_for(worker, 1))
+            self.h.send_key.assert_not_awaited()
+        finally:
+            release.set()
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+
+    async def test_future_generation_gets_its_own_transition(self):
+        old = await self.capture()
+        party.retire_dungeon_session(old)
+        self.q.zone = self.h.zone = 'Outside'
+        self.q.area_id = self.h.area_id = 100
+        new = await self.enter()
+        self.assertGreater(new.generation, old.generation)
+        await party.remember_dungeon_transition(self.q, XYZ(500, 600, 0))
+        self.q.zone, self.q.area_id = 'Dungeon/Room2', 201
+        await party.observe_dungeon_session(self.q)
+        self.assertTrue(await self.reader.recover_dungeon_transition())
+        self.assertEqual(new.generation, old.generation + 1)
 
 
 if __name__ == '__main__':

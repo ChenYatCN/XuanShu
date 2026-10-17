@@ -79,6 +79,7 @@ from src.quest_party import (
     clear_dungeon_session, dungeon_session_for, observe_dungeon_session,
     dungeon_member_inside, dungeon_quester_away_for_potions, resume_dungeon_member,
     record_dungeon_exit,
+    mark_dungeon_party_releasing,
     quest_party_members_ready, capture_dungeon_return, dungeon_return_is_current,
     dungeon_entry_waiting,
 )
@@ -1973,7 +1974,7 @@ async def main():
                             await asyncio.sleep(0.5)
                         else:
                             await client.send_key(key=Keycode.SPACEBAR)
-                            await asyncio.sleep(0.8)
+                            await asyncio.sleep(0.4)
                         continue
                 await asyncio.sleep(0.05)
 
@@ -2092,6 +2093,9 @@ async def main():
             """Follow this group's quester; share targets only in a proven instance."""
             from src.logging_utils import log_blocked, log_recovered, log_exception, log_following
             log_following(hitter, quester)
+            class StaleProbeReference(RuntimeError):
+                """A changed input snapshot is cancellation, not a failed friend request."""
+
             loop = asyncio.get_running_loop()
             last_quester_zone = getattr(quester, "quest_party_observed_zone", None)
             quester_zone_stable_since = None
@@ -2103,6 +2107,8 @@ async def main():
             next_retry_at = 0.0
             next_dungeon_exit_at = 0.0
             dungeon_exit_from_zone = None
+            dungeon_exit_complete = False
+            dungeon_exit_expected = None
             quest_reader = Quester(quester, [quester], None)
             hitter_reader = Quester(hitter, [hitter], None)
             assigned_probe_hitter = is_probe_hitter
@@ -2114,12 +2120,61 @@ async def main():
             session = None
             arrival_details = {}
             quester_zone, hitter_zone = None, None
+            resync_anchor = None
 
-            def log_probe(decision, reason, *, pending_transition=False, owner_client=None):
+            async def refresh_probe_reference():
+                nonlocal quester_zone, hitter_zone, next_retry_at
+                nonlocal blocked_instance_zone, blocked_instance_retry_at
+                arrival_details.clear()
+                quester_zone = hitter_zone = None
+                try:
+                    zones = (await quester.zone_name(), await hitter.zone_name())
+                    q_session, h_session = dungeon_session_for(quester), dungeon_session_for(hitter)
+                    identities = (id(q_session), id(h_session),
+                        id(q_session.transition) if q_session else None,
+                        id(h_session.transition) if h_session else None)
+                    tokens = (await _party_area_token(quester), await _party_area_token(hitter))
+                    quester_zone, hitter_zone = await quester.zone_name(), await hitter.zone_name()
+                    q_now, h_now = dungeon_session_for(quester), dungeon_session_for(hitter)
+                    current_ids = (id(q_now), id(h_now), id(q_now.transition) if q_now else None,
+                                   id(h_now.transition) if h_now else None)
+                    reference = (quester_zone, hitter_zone, *current_ids, *tokens)
+                    if (zones != (quester_zone, hitter_zone) or identities != current_ids
+                            or tokens[0][0] != quester_zone or tokens[1][0] != hitter_zone):
+                        reference = None  # Reads straddled a transition/session replacement.
+                except (ValueError, AttributeError, wizwalker.WizWalkerMemoryError):
+                    reference = None
+                previous = probe_state.get('reference') or probe_state.get('last_reference')
+                if reference is None or previous != reference:
+                    probe_state.update(reference=reference, pending=True, verified=False)
+                    probe_state.pop('completion_reference', None)
+                    probe_state['source_zone'] = hitter_zone
+                    if reference is not None and previous is not None:
+                        # Only a proven new reference invalidates the old retry budget.
+                        next_retry_at = blocked_instance_retry_at = 0.0
+                        blocked_instance_zone = None
+                        probe_state['retry_at'] = 0.0
+                    if previous is not None:
+                        for observer, peer in ((hitter, quester), (quester, hitter)):
+                            proofs = getattr(observer, '_party_area_peers', None)
+                            if isinstance(proofs, dict):
+                                proofs.pop(id(peer), None)
+                if reference is not None:
+                    probe_state.update(reference=reference, last_reference=reference)
+                if quester_zone is not None and hitter_zone is not None:
+                    arrival_details['same_zone'] = bool(quester_zone and quester_zone == hitter_zone)
+                return reference
+
+            def log_probe(decision, reason, *, pending_transition=False, owner_client=None, extra=None):
+                if quester_zone is not None and hitter_zone is not None and quester_zone != hitter_zone:
+                    arrival_details.clear()
+                    arrival_details['same_zone'] = False
                 owner = get_client_automation_ownership(owner_client or hitter).owner_label
                 diagnostic = getattr(owner_client or hitter, '_friend_lookup_diagnostic', {})
                 count = diagnostic.get('candidate_count')
-                key = (decision, reason, quester_zone, hitter_zone, id(session), pending_transition, owner)
+                extra = dict(extra or {})
+                key = (decision, reason, quester_zone, hitter_zone, id(session), pending_transition, owner,
+                       probe_state.get('reference'), tuple(sorted(extra.items())))
                 if getattr(hitter, '_quest_follower_probe_log', None) == key:
                     return
                 hitter._quest_follower_probe_log = key
@@ -2134,7 +2189,74 @@ async def main():
                     f"arrival_evidence={arrival_details.get('evidence', 'unavailable')} "
                     f"distance_to_quester={arrival_details.get('distance', 'unavailable')} "
                     f"same_zone={arrival_details.get('same_zone', 'unavailable')} "
-                    f"same_instance={arrival_details.get('same_instance', 'unavailable')}")
+                    f"same_instance={arrival_details.get('same_instance', 'unavailable')} "
+                    f"state={extra}")
+
+            async def cancel_stale_probe(request_client):
+                current = await refresh_probe_reference()
+                arrival_details.clear()
+                if quester_zone is not None and hitter_zone is not None:
+                    arrival_details['same_zone'] = bool(quester_zone and quester_zone == hitter_zone)
+                probe_state.update(pending=True, verified=False)
+                probe_state.pop('completion_reference', None)
+                log_probe('cancel', 'stale-probe-reference' if current is not None
+                          else 'probe-reference-unavailable', owner_client=request_client)
+                update_party_status(hitter, quester, "区域参照已更新，等待稳定后重新探测")
+
+            async def fresh_follow_state(expected=None):
+                """Retire the first zone observation, then validate one fresh read batch."""
+                import math
+
+                async def safe():
+                    for member in (quester, hitter):
+                        owner = get_client_automation_ownership(member)
+                        if (member not in walker.clients or not member.questing_status
+                                or await member.is_loading() or await member.in_battle()
+                                or owner.locked and owner._owner_task is not asyncio.current_task()
+                                or any(getattr(member, flag, False) for flag in (
+                                    'entity_detect_combat_status', 'quest_recovery_owner',
+                                    'refilling_potions', 'quest_party_entry_active',
+                                    'quest_party_safe_return_active', 'post_combat_movement_active',
+                                    'quest_party_battle_rescue_active', 'feeding_pet_status'))
+                                or await is_visible_by_path(member, ['MessageBoxModalWindow'])):
+                            return False
+                    return True
+
+                try:
+                    async with asyncio.timeout(2.0):
+                        before = await refresh_probe_reference()
+                        bodies = (quester.body, hitter.body)
+                        controls = tuple([(id(body), await body.read_base_address()) for body in bodies])
+                        positions = (await bodies[0].position(), await bodies[1].position())
+                        valid = bool(before and all(address for _, address in controls)
+                            and all(math.isfinite(v) for point in positions for v in point)
+                            and await safe())
+                        after = await refresh_probe_reference()
+                        current_bodies = (quester.body, hitter.body)
+                        current_controls = tuple([(id(body), await body.read_base_address())
+                                                  for body in current_bodies])
+                        # Address reads yield too: do not authorize coordinates
+                        # with the zone/loading snapshot from before those reads.
+                        valid = valid and await safe()
+                        final = await refresh_probe_reference()
+                        q_now, h_now = dungeon_session_for(quester), dungeon_session_for(hitter)
+                        identities = (id(q_now), id(h_now), id(q_now.transition) if q_now else None,
+                                      id(h_now.transition) if h_now else None)
+                        state = (final, current_controls, positions)
+                        if (valid and before == after == final and controls == current_controls
+                                and current_bodies[0] is quester.body and current_bodies[1] is hitter.body
+                                and quester.questing_status and hitter.questing_status
+                                and final[2:6] == identities
+                                and (expected is None or state[:2] == expected[:2])):
+                            return state
+                except (ValueError, AttributeError, wizwalker.WizWalkerMemoryError, asyncio.TimeoutError):
+                    pass  # An unreadable preflight cannot authorize either kind of teleport.
+                probe_state.update(pending=True, verified=False)
+                probe_state.pop('completion_reference', None)
+                arrival_details.clear()
+                log_probe('cancel', 'stale-resync-reference')
+                update_party_status(hitter, quester, "预同步参照已变化，等待稳定后重新跟随")
+                return None
 
             async def complete_zone_probe(solo_zone: bool, context=None):
                 expected_zone, expected_session, expected_task = context or (
@@ -2146,16 +2268,19 @@ async def main():
 
                 if not solo_zone:
                     # Personal arrival is independent of the whole-party release.
+                    completion_reference = probe_state.get('reference')
                     if (not hitter.questing_status or not quester.questing_status
                             or await hitter.is_loading() or await quester.is_loading()
                             or await hitter.zone_name() != expected_zone
                             or await quester.zone_name() != expected_zone
                             or dungeon_session_for(quester) is not expected_session
                             or (await quester.quest_id(), await quester.goal_id()) != expected_task
-                            or not await follower_arrival_confirmed(hitter, quester)):
+                            or not await follower_arrival_confirmed(hitter, quester)
+                            or completion_reference != probe_state.get('reference')):
                         return False
                     was_pending = probe_state['pending']
-                    probe_state.update(pending=False, failures=0, retry_at=0.0)
+                    probe_state.update(pending=False, verified=True, failures=0, retry_at=0.0,
+                        completion_reference=probe_state.get('reference'))
                     if was_pending:
                         log_probe('complete', 'own-live-area-confirmed')
 
@@ -2222,7 +2347,7 @@ async def main():
 
             async def follower_arrival_confirmed(first, second):
                 """A live instance proof plus actual proximity, never zone alone."""
-                arrival_details.clear()
+                before = await refresh_probe_reference()
                 async def safe():
                     for member in (first, second):
                         owner = get_client_automation_ownership(member)
@@ -2234,25 +2359,36 @@ async def main():
                             return False
                     return True
                 try:
-                    if not await safe():
+                    if before is None or not await safe():
                         return False
                     zones = (await first.zone_name(), await second.zone_name())
-                    arrival_details['same_zone'] = bool(zones[0] and zones[0] == zones[1])
-                    if not arrival_details['same_zone']:
+                    if not zones[0] or zones[0] != zones[1]:
                         return False
                     tokens = (await _party_area_token(first), await _party_area_token(second))
                     same_instance = await clients_share_live_area(first, second)
-                    arrival_details['same_instance'] = same_instance
                     if not same_instance:
                         return False
                     gap = calc_Distance(await first.body.position(), await second.body.position())
-                    arrival_details['distance'] = gap
                     if not 0 <= gap <= 900:  # Reuse the existing follow-distance threshold.
                         return False
-                    if (not await safe() or tokens != (
-                            await _party_area_token(first), await _party_area_token(second))):
+                    if not await safe():
                         return False
-                    arrival_details['evidence'] = 'live-instance-and-proximity'
+                    after_tokens = (await _party_area_token(first), await _party_area_token(second))
+                    after = await refresh_probe_reference()
+                    if before != after or tokens != after_tokens:
+                        probe_state.update(pending=True, verified=False)
+                        probe_state.pop('completion_reference', None)
+                        return False
+                    if resync_anchor is not None:
+                        fresh = await fresh_follow_state(resync_anchor)
+                        if fresh is None:
+                            return False
+                        gap = calc_Distance(*fresh[2])
+                        if not 0 <= gap <= 900:
+                            return False
+                    # No await between the final reference check and publication.
+                    arrival_details.update(same_zone=True, same_instance=True, distance=gap,
+                        evidence='live-instance-and-proximity')
                     return True
                 except (ValueError, AttributeError, wizwalker.WizWalkerMemoryError) as exc:
                     logger.debug(f'跟随归队证据暂不可读：{first.title}->{second.title}：{exc}')
@@ -2395,9 +2531,8 @@ async def main():
             async def bounded_probe_cleanup(client=None, reference=None):
                 client = client or hitter
                 async def cleanup():
-                    if not await client.is_loading() and await is_friend_teleport_error(client):
-                        async with probe_mouse(client):
-                            await click_window_by_path(client, friend_is_busy_and_dungeon_reset_path)
+                    if probe_state.get('friend_failure'):
+                        return  # Do not clean panels behind an unresolved failure modal.
                     await close_stale_friend_ui(client, reference)
                 try:
                     await asyncio.wait_for(cleanup(), timeout=5.0)
@@ -2406,14 +2541,231 @@ async def main():
                 except Exception as exc:
                     logger.debug(f"打手 {hitter.title} 探测窗口清理未完成：{exc}")
 
+            def log_friend_cleanup(operation, decision, **fields):
+                details = ' '.join(f'{key}={value}' for key, value in fields.items())
+                logger.debug(f"[friend_busy_cleanup] follower={operation['client'].title} "
+                    f"quester={operation['quester'].title} token={operation['token']} "
+                    f"decision={decision} {details}")
+
+            def retire_friend_failure(operation, *, disappeared=False):
+                client = operation['client']
+                operation['state'] = 'retired'
+                if disappeared:
+                    log_friend_cleanup(operation, 'modal-disappeared', clicked=operation['clicked'])
+                    operation['busy_until'] = loop.time() + 60.0
+                    client._friend_follow_busy_backoff = operation
+                    log_friend_cleanup(operation, 'backoff-start', seconds=60)
+                if getattr(client, '_friend_follow_failure', None) is operation:
+                    del client._friend_follow_failure
+                if probe_state.get('friend_failure') is operation:
+                    probe_state.pop('friend_failure')
+
+            def friend_failure_current(operation):
+                client = operation.get('client')
+                generation = operation.get('generation')
+                return (client is not None and type(generation) is int and generation > 0
+                    and getattr(client, '_friend_follow_failure', None) is operation
+                    and getattr(client, '_friend_request_generation', 0) == generation
+                    and operation.get('token') == f'{id(client):x}-{generation}')
+
+            def friend_request_blocked(client):
+                operation = getattr(client, '_friend_follow_failure', None)
+                reason = 'cleanup-active'
+                if operation is None:
+                    operation = getattr(client, '_friend_follow_busy_backoff', None)
+                    reason = 'busy-backoff'
+                    if not operation or loop.time() >= operation['busy_until']:
+                        return False
+                if operation.get('last_block') != reason:
+                    log_friend_cleanup(operation, 'request-blocked', reason=reason)
+                    operation['last_block'] = reason
+                return True
+
+            async def friend_failure_modal(client):
+                """Read this client's live modal, including its exact caption/button shape."""
+                from src.interaction_prompts import plain_text
+                from src.window_text import read_control_text
+                modals = []
+                for window in await client.root_window.get_windows_with_name('MessageBoxModalWindow'):
+                    if (await window.is_visible()
+                            and all([await parent.is_visible() for parent in await window.get_parents()])):
+                        modals.append(window)
+                if not modals:
+                    return 'absent', None, None
+                if len(modals) != 1:
+                    return 'unrelated', None, None
+                modal = modals[0]
+                button = await get_window_from_path(modal, friend_is_busy_and_dungeon_reset_path[1:])
+                if not button:
+                    return 'unrelated', None, None
+                # Resolve addresses before reading the caption/button shape: a
+                # replaced window must not authorize input using an older caption.
+                button_address = await button.read_base_address()
+                modal_address = await modal.read_base_address()
+                if not (isinstance(modal_address, int) and modal_address > 0
+                        and isinstance(button_address, int) and button_address > 0):
+                    return 'unrelated', None, None
+                captions = [c for c in await modal.get_windows_with_name('CaptionText')
+                            if await c.is_visible()
+                            and all([await parent.is_visible() for parent in await c.get_parents()])]
+                if len(captions) != 1:
+                    return 'unrelated', None, None
+                raw = await read_control_text(captions[0]) or ''
+                caption = plain_text(raw).casefold().rstrip('。.!！ ')
+                # GUI_00006574: verified Root.wad + locale overlay; last form
+                # is the complete caption supplied with this live failure report.
+                if (raw.strip().casefold() != '<string;gui_00006574>' and caption not in (
+                        'your friend is busy right now', '你的好友当前正忙', '你的好友现在很忙')):
+                    return 'unrelated', None, None
+                buttons = {}
+                for name in ('leftButton', 'centerButton', 'rightButton'):
+                    button = await get_window_from_path(modal, [*friend_is_busy_and_dungeon_reset_path[1:-1], name])
+                    if (button and await button.is_visible()
+                            and all([await parent.is_visible() for parent in await button.get_parents()])):
+                        buttons[name] = button
+                if (set(buttons) != {'rightButton'}
+                        or WindowFlags.disabled in await buttons['rightButton'].flags()
+                        or await buttons['rightButton'].is_control_grayed()):
+                    return 'unrelated', None, None
+                if not await modal.is_visible():
+                    return 'absent', None, None
+                return 'failure', (modal_address, button_address, raw), button
+
+            async def settle_friend_failure(operation):
+                """Receipt owns only this sent request's Busy acknowledgement, never arrival."""
+                client = operation['client']
+                if not friend_failure_current(operation):
+                    if probe_state.get('friend_failure') is operation:
+                        probe_state.pop('friend_failure')
+                    operation['state'] = 'retired'
+                    log_friend_cleanup(operation, 'receipt-replaced')
+                    return True
+
+                async def safe_input():
+                    return (getattr(client, '_friend_follow_failure', None) is operation
+                        and client in walker.clients and client.questing_status
+                        and not await client.is_loading() and not await client.in_battle()
+                        and not any(getattr(client, flag, False) for flag in (
+                            'entity_detect_combat_status', 'refilling_potions', 'quest_recovery_owner',
+                            'quest_party_entry_active', 'quest_party_safe_return_active',
+                            'post_combat_movement_active', 'quest_party_battle_rescue_active', 'feeding_pet_status')))
+
+                try:
+                    async with asyncio.timeout(4.0):
+                        async with automation_owner(client, 'friend-follow'):
+                            deadline = loop.time() + 3.0
+                            while loop.time() < deadline:
+                                if not friend_failure_current(operation):
+                                    if probe_state.get('friend_failure') is operation:
+                                        probe_state.pop('friend_failure')
+                                    operation['state'] = 'retired'
+                                    log_friend_cleanup(operation, 'receipt-replaced')
+                                    return True
+                                kind, signature, _ = await friend_failure_modal(client)
+                                if kind == 'absent' and operation['modal'] is not None:
+                                    retire_friend_failure(operation, disappeared=True)
+                                    return True
+                                if (operation.get('invalidated')
+                                        and loop.time() > operation['deadline']):
+                                    log_friend_cleanup(operation, 'invalidated-expired')
+                                    retire_friend_failure(operation)
+                                    return True
+                                if operation['modal'] is None and loop.time() > operation['deadline']:
+                                    log_friend_cleanup(operation, 'correlation-expired')
+                                    retire_friend_failure(operation)
+                                    return True
+                                if kind == 'failure' and operation['modal'] is None:
+                                    operation.update(modal=signature, state='detected')
+                                    log_friend_cleanup(operation, 'modal-detected', text=repr(signature[2]))
+                                if operation['modal'] is None:
+                                    # No verified result in this frame. Keep the receipt for the
+                                    # next poll without holding same-zone follow for a 3s window.
+                                    friend_request_blocked(client)
+                                    return False
+                                if operation['modal'] is not None:
+                                    if kind != 'failure' or signature != operation['modal']:
+                                        if not operation.get('invalidated'):
+                                            operation['invalidated'] = True
+                                            log_friend_cleanup(operation, 'modal-invalidated')
+                                    if operation['clicked']:
+                                        if not operation.get('visible_logged'):
+                                            log_friend_cleanup(operation, 'modal-still-visible')
+                                            operation['visible_logged'] = True
+                                    elif (not operation.get('invalidated')
+                                            and await safe_input()):
+                                        async with probe_mouse(client):
+                                            if not await safe_input():
+                                                return False
+                                            fresh_kind, fresh_signature, button = await friend_failure_modal(client)
+                                            if fresh_kind == 'absent':
+                                                retire_friend_failure(operation, disappeared=True)
+                                                return True  # A user may dismiss it between detection and input.
+                                            if fresh_kind != 'failure' or fresh_signature != operation['modal']:
+                                                if not operation.get('invalidated'):
+                                                    operation['invalidated'] = True
+                                                    log_friend_cleanup(operation, 'modal-invalidated')
+                                                return False
+                                            if (not await safe_input()
+                                                    or get_client_automation_ownership(client)._owner_task is not asyncio.current_task()):
+                                                return False
+                                            # Safety reads can yield after the previous UI snapshot.
+                                            # Finish with another UI read, then a synchronous receipt/owner gate.
+                                            fresh_kind, fresh_signature, button = await friend_failure_modal(client)
+                                            if fresh_kind == 'absent':
+                                                retire_friend_failure(operation, disappeared=True)
+                                                return True
+                                            if fresh_kind != 'failure' or fresh_signature != operation['modal']:
+                                                if not operation.get('invalidated'):
+                                                    operation['invalidated'] = True
+                                                    log_friend_cleanup(operation, 'modal-invalidated')
+                                                return False
+                                            if (not friend_failure_current(operation)
+                                                    or operation.get('modal') != fresh_signature
+                                                    or operation.get('clicked')
+                                                    or client not in walker.clients or not client.questing_status
+                                                    or any(getattr(client, flag, False) for flag in (
+                                                        'entity_detect_combat_status', 'refilling_potions', 'quest_recovery_owner',
+                                                        'quest_party_entry_active', 'quest_party_safe_return_active',
+                                                        'post_combat_movement_active', 'quest_party_battle_rescue_active', 'feeding_pet_status'))
+                                                    or get_client_automation_ownership(client)._owner_task is not asyncio.current_task()):
+                                                return False
+                                            operation.update(clicked=True, state='waiting-disappearance')
+                                            await client.mouse_handler.click_window(button)
+                                            log_friend_cleanup(operation, 'click-ok', attempt='1/1')
+                                await asyncio.sleep(.1)
+                except asyncio.CancelledError:
+                    raise  # Preserve receipt/consumed input across worker cancellation.
+                except (ValueError, AttributeError, RuntimeError, wizwalker.WizWalkerMemoryError, asyncio.TimeoutError) as exc:
+                    logger.debug(f'{client.title} 好友结果弹窗尚未确认消失：{exc}')
+                friend_request_blocked(client)
+                return False
+
+            async def retire_confirmed_friend_failure(client):
+                """A confirmed arrival ends the sent request without inventing Busy."""
+                operation = getattr(client, '_friend_follow_failure', None)
+                if not isinstance(operation, dict) or not friend_failure_current(operation):
+                    return False
+                if operation.get('modal') is not None:
+                    return False  # A verified Busy stays with its click/disappear lifecycle.
+                try:
+                    kind, _, _ = await friend_failure_modal(client)
+                except (ValueError, AttributeError, RuntimeError, wizwalker.WizWalkerMemoryError, asyncio.TimeoutError):
+                    return False
+                if kind == 'failure':
+                    return False
+                log_friend_cleanup(operation, 'arrival-confirmed')
+                retire_friend_failure(operation)
+                return True
+
             async def teleport_to_quester_from_friend_list(
-                client: Client, wizard_name, friend_icon
+                client: Client, wizard_name, friend_icon, *, before_request=None, on_request_sent=None
             ):
                 # Full-name failure cannot authorize another person with the
                 # same first name or cosmetic icon. Keep one request pipeline.
                 if not wizard_name or not wizard_name.strip():
                     raise FriendLookupError('quester-name-unavailable')
-                await teleport_to_friend_from_list(client, name=wizard_name, strict_identity=True)
+                await teleport_to_friend_from_list(client, name=wizard_name, strict_identity=True,
+                    before_request=before_request, on_request_sent=on_request_sent)
 
             async def refill_hitter_if_needed():
                 if use_potions and await is_free(hitter):
@@ -2430,7 +2782,7 @@ async def main():
                 return False
 
             async def exit_hitter_to_hub():
-                nonlocal next_dungeon_exit_at, dungeon_exit_from_zone
+                nonlocal next_dungeon_exit_at, dungeon_exit_from_zone, dungeon_exit_expected
                 current = dungeon_session_for(hitter)
                 if (not current or not current.confirmed or id(quester) not in current.exited
                         or not dungeon_member_inside(hitter)
@@ -2439,22 +2791,37 @@ async def main():
                         or hitter.entity_detect_combat_status
                         or getattr(hitter, 'quest_party_battle_rescue_active', False)
                         or not await is_free(hitter) or loop.time() < next_dungeon_exit_at):
-                    return
+                    return False
+                expected_generation = current.generation
+
+                def session_current():
+                    now = dungeon_session_for(hitter)
+                    return (now is current and now.generation == expected_generation
+                            and now.phase != 'retired' and id(quester) in now.exited)
+
+                if not session_current():
+                    return False
                 next_dungeon_exit_at = loop.time() + 5.0
                 before = await hitter.zone_name()
                 dungeon_exit_from_zone = before
-                update_party_status(hitter, quester, "好友归队不可用，按现有回城方式退出地牢")
+                dungeon_exit_expected = (current, expected_generation)
+                update_party_status(hitter, quester, "任务端已退出，按现有回城方式退出地牢")
                 try:
                     # zone_recorrect_hub skips a singleton list as already
                     # grouped. Reuse its END steps only for this exiting hitter.
                     await hitter.send_key(Keycode.END)
+                    if not session_current():
+                        return False
                     await hitter.send_key(Keycode.END)
                     await asyncio.sleep(3)
+                    if not session_current():
+                        return False
                     await asyncio.wait_for(hitter_reader.handle_questing_zone_change(), timeout=15.0)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
                     logger.debug(f"打手 {hitter.title} 地牢回城退出尚未完成，稍后重试：{exc}")
+                return True
 
             update_party_status(hitter, quester, "准备跟随")
             try:
@@ -2462,18 +2829,48 @@ async def main():
                     members is not None or questing_status
                 ) and hitter.questing_status and quester.questing_status:
                     await asyncio.sleep(0.5)
+                    resync_anchor = None
                     if hitter not in walker.clients or quester not in walker.clients:
                         log_probe('skip', 'member-unavailable')
                         clear_dungeon_session(hitter)
                         return
+                    failure = probe_state.get('friend_failure') or getattr(hitter, '_friend_follow_failure', None)
+                    if failure:
+                        await settle_friend_failure(failure)
+                        current = getattr(hitter, '_friend_follow_failure', None)
+                        if isinstance(current, dict) and current.get('modal') is not None:
+                            continue  # A verified result modal owns the client UI.
                     session = await observe_dungeon_session(hitter)
                     await observe_dungeon_session(quester)
                     if dungeon_exit_from_zone is not None and not await hitter.is_loading():
                         after = await hitter.zone_name()
                         if after != dungeon_exit_from_zone:
+                            if dungeon_exit_expected is not None:
+                                expected_session, expected_generation = dungeon_exit_expected
+                                now = dungeon_session_for(hitter)
+                                if (now is not None and (now is not expected_session
+                                        or now.generation != expected_generation)):
+                                    log_probe('cancel', 'own-dungeon-exit-stale-session')
+                                    dungeon_exit_from_zone = None
+                                    dungeon_exit_expected = None
+                                    return
                             record_dungeon_exit(hitter, dungeon_exit_from_zone, after, evidence='hub-return')
+                            dungeon_exit_complete = True
+                            dungeon_exit_expected = None
                         dungeon_exit_from_zone = None
+                    if dungeon_exit_complete:
+                        log_probe('complete', 'own-dungeon-exit-confirmed')
+                        # The old dungeon's probe has no authority after the
+                        # member's exit was recorded for this expected session.
+                        quester.quest_party_probe_pending = False
+                        update_party_status(hitter, quester, "已归队")
+                        return
                     session = dungeon_session_for(hitter)
+                    iteration_reference = await refresh_probe_reference()
+                    if iteration_reference is None:
+                        log_probe('skip', 'probe-reference-unavailable')
+                        update_party_status(hitter, quester, "等待区域参照读取")
+                        continue
                     if probe_state.get('session') is not session:
                         probe_state.update(session=session, pending=True)
                     if await dungeon_entry_waiting(hitter):
@@ -2578,13 +2975,16 @@ async def main():
                     elif quester_zone_stable_since is None:
                         quester_zone_stable_since = now
 
-                    if (
-                        await hitter.is_loading()
-                        or await hitter.in_battle()
-                        or hitter.entity_detect_combat_status
-                        or getattr(hitter, "quest_party_battle_rescue_active", False)
-                    ):
-                        log_probe('skip', 'own-loading-or-battle')
+                    loading = await hitter.is_loading()
+                    battle = await hitter.in_battle()
+                    entity_combat = bool(hitter.entity_detect_combat_status)
+                    rescue_active = bool(getattr(hitter, "quest_party_battle_rescue_active", False))
+                    if loading or battle or entity_combat or rescue_active:
+                        log_probe('skip', 'own-loading-or-battle', extra={
+                            'loading': loading, 'battle': battle,
+                            'entity_detect_combat_status': entity_combat,
+                            'battle_rescue_active': rescue_active,
+                        })
                         update_party_status(hitter, quester, "等待战斗或加载")
                         continue
 
@@ -2620,9 +3020,15 @@ async def main():
                     exit_handoff = bool(session and session.confirmed
                                         and id(quester) in session.exited
                                         and dungeon_member_inside(hitter))
+                    if exit_handoff:
+                        mark_dungeon_party_releasing(session)
                     if exit_handoff and await hitter_reader.move_dungeon_member(require_local_goal=True):
                         log_probe('skip', 'own-dungeon-goal-active')
                         update_party_status(hitter, quester, "任务端已退出，继续自身有效地牢任务")
+                        continue
+                    if exit_handoff and await exit_hitter_to_hub():
+                        log_probe('skip', 'own-dungeon-hub-exit')
+                        update_party_status(hitter, quester, "任务端已退出，按现有回城方式退出地牢")
                         continue
                     probe_pending = bool(probe_state['pending'])
 
@@ -2638,6 +3044,50 @@ async def main():
 
                     returning = bool(session and (
                         id(hitter) in session.potion_areas or id(quester) in session.potion_areas))
+
+                    if hitter_zone != quester_zone:
+                        provenance = getattr(quester, '_quest_transition_provenance', None)
+                        if (isinstance(provenance, dict)
+                                and provenance.get('phase') == 'confirmed'
+                                and provenance.get('source_zone') == hitter_zone
+                                and provenance.get('target_zone') == quester_zone
+                                and time.monotonic() < provenance.get('deadline', 0)
+                                and not (session and session.transition)):
+                            result = await hitter_reader._replay_quest_transition(provenance)
+                            member_key = getattr(hitter, 'process_id', None)
+                            if member_key is None:
+                                member_key = id(hitter)
+                            logger.debug(f"[quest_follower_transition] follower={hitter.title} "
+                                f"quester={quester.title} epoch={provenance.get('epoch')} "
+                                f"decision=local-replay attempt={provenance.get('attempts', {}).get(member_key, 0)} "
+                                f"result={result} source={hitter_zone} target={quester_zone}")
+                            if result == 'arrived':
+                                update_party_status(hitter, quester, "已跟随进入当前任务房间")
+                                continue
+                            if result in ('busy',):
+                                update_party_status(hitter, quester, "等待本地区域切换完成")
+                                continue
+                            if result in ('identity-mismatch', 'unconfirmed', 'too-far') and (
+                                    provenance.get('attempts', {}).get(member_key, 0) < 2):
+                                update_party_status(hitter, quester, "正在重试当前任务入口")
+                                continue
+                            if result not in ('exhausted', 'expired', 'wrong-source'):
+                                log_probe('skip', 'local-transition-unavailable')
+                                update_party_status(hitter, quester, "当前任务入口不可重放，改用好友归队")
+                        # A stale mismatch must not start a friend request. The first
+                        # fresh batch may legitimately replace the old follower zone.
+                        fresh = await fresh_follow_state()
+                        if fresh is None:
+                            continue
+                        if (quester_zone != last_quester_zone or session is not dungeon_session_for(hitter)
+                                or fresh[0] != iteration_reference and (
+                                    hitter_zone != quester_zone or entry_reverse)):
+                            log_probe('cancel', 'stale-resync-reference')
+                            continue  # Let existing lifecycle handling observe the new context.
+                        iteration_reference = fresh[0]
+                        probe_pending = bool(probe_state['pending'])
+                        if hitter_zone == quester_zone:
+                            resync_anchor = fresh
 
                     same_live_area = False
                     if hitter_zone == quester_zone:
@@ -2657,10 +3107,20 @@ async def main():
                             else:
                                 record_dungeon_exit(hitter, hitter_zone, quester_zone, evidence='live-rejoin')
                     if same_live_area:
+                        if resync_anchor is not None and await fresh_follow_state(resync_anchor) is None:
+                            continue
+                        if iteration_reference != await refresh_probe_reference():
+                            log_probe('skip', 'stale-probe-reference')
+                            continue
                         if session:
                             session.follow_attempts.pop(id(hitter), None)
                         if probe_pending or getattr(quester, 'quest_party_probe_pending', False):
                             await complete_zone_probe(False)
+                        if iteration_reference != probe_state.get('reference'):
+                            log_probe('skip', 'stale-probe-reference')
+                            continue
+                        await retire_confirmed_friend_failure(hitter)
+                        await retire_confirmed_friend_failure(quester)
                         log_probe('skip', 'already-in-own-verified-area')
                         if returning:
                             resume_dungeon_member(hitter)
@@ -2677,6 +3137,11 @@ async def main():
                             continue
                         hitter_pos = await hitter.body.position()
                         quester_pos = await quester.body.position()
+                        if resync_anchor is not None:
+                            fresh = await fresh_follow_state(resync_anchor)
+                            if fresh is None:
+                                continue
+                            quester_pos, hitter_pos = fresh[2]
                         if calc_Distance(hitter_pos, quester_pos) > 900:
                             update_party_status(hitter, quester, "正在跟随")
                             try:
@@ -2749,6 +3214,10 @@ async def main():
 
                     request_client, reference = (quester, hitter) if entry_reverse else (hitter, quester)
                     reference_zone = hitter_zone if entry_reverse else quester_zone
+                    if friend_request_blocked(request_client):
+                        log_probe('skip', 'friend-result-cleanup-active', owner_client=request_client)
+                        update_party_status(hitter, quester, "等待好友结果清理或 Busy 退避")
+                        continue
                     if (get_client_automation_ownership(request_client).locked
                             or any(getattr(c, flag, False) for c in (request_client, reference)
                                 for flag in ('quest_recovery_owner', 'refilling_potions', 'quest_party_entry_active',
@@ -2807,42 +3276,133 @@ async def main():
                         f"打手 {hitter.title} 尝试好友传送跟随/探测 {quester.title}。"
                     )
                     update_party_status(hitter, quester, "正在好友传送")
+                    reference_current = None
+                    friend_request_started = False
+                    capture_friend_failure = None
                     try:
+                        resync_anchor = None  # Friend TP intentionally replaces the source area.
                         hitter_zone_before_probe = hitter_zone
                         probe_context = (reference_zone, dungeon_session_for(reference),
                                          (await reference.quest_id(), await reference.goal_id()))
                         reference_token = await _party_area_token(reference)
                         request_task = (await request_client.quest_id(), await request_client.goal_id())
+                        request_source_token = await _party_area_token(request_client)
+                        probe_reference = probe_state.get('reference')
+                        source_reference = probe_context[1].transition if probe_context[1] else None
                         request_client._logging_follow_task = (*request_task, None, (reference.title, reference_zone))
 
-                        async def reference_current():
-                            return (request_client.questing_status and reference.questing_status
-                                and dungeon_session_for(reference) is probe_context[1]
+                        def reference_identity_current():
+                            return (dungeon_session_for(reference) is probe_context[1]
                                 and dungeon_session_for(request_client) is probe_context[1]
+                                and (probe_context[1] is None or probe_context[1].transition is source_reference))
+
+                        async def reference_current(*, before_request=False):
+                            return (request_client.questing_status and reference.questing_status
+                                and reference_identity_current()
+                                and (not before_request or (
+                                    probe_reference == await refresh_probe_reference()
+                                    and await _party_area_token(request_client) == request_source_token))
                                 and not await reference.is_loading() and not await reference.in_battle()
                                 and await reference.zone_name() == probe_context[0]
                                 and (await reference.quest_id(), await reference.goal_id()) == probe_context[2]
-                                and await _party_area_token(reference) == reference_token)
+                                and await _party_area_token(reference) == reference_token
+                                and reference_identity_current())
+
+                        async def probe_became_stale():
+                            current = await refresh_probe_reference()
+                            if current is None:
+                                return False  # Unreadable evidence cannot erase a real failure.
+                            try:
+                                valid = await reference_current(before_request=not friend_request_started)
+                            except (ValueError, AttributeError, wizwalker.WizWalkerMemoryError):
+                                return False  # Keep the real failure and its normal retry budget.
+                            return not valid and probe_state.get('reference') is not None
+
+                        request_baseline = None
+
+                        async def prepare_friend_request():
+                            nonlocal request_baseline
+                            if friend_request_blocked(request_client):
+                                raise StaleProbeReference('好友结果清理或 Busy 退避尚未结束')
+                            if not await reference_current(before_request=True):
+                                raise StaleProbeReference('好友实际请求前参照已变化')
+                            kind, signature, _ = await friend_failure_modal(request_client)
+                            if kind != 'absent':
+                                raise StaleProbeReference('好友实际请求前已有确认窗口')
+                            request_baseline = ()  # Fresh enumeration proved no visible modal.
+
+                        def record_friend_request():
+                            generation = getattr(request_client, '_friend_request_generation', 0) + 1
+                            request_client._friend_request_generation = generation
+                            operation = dict(client=request_client, quester=reference,
+                                token=f'{id(request_client):x}-{generation}', generation=generation,
+                                sent_at=loop.time(), baseline=request_baseline, deadline=loop.time()+30.0,
+                                modal=None, clicked=False, state='request-sent', busy_until=0.0)
+                            request_client._friend_follow_failure = operation
+                            probe_state['friend_failure'] = operation  # Index only; reference is not its owner.
+                            log_friend_cleanup(operation, 'request-sent')
+
+                        async def capture_friend_failure():
+                            operation = getattr(request_client, '_friend_follow_failure', None)
+                            if operation:
+                                return await settle_friend_failure(operation)
+                            return True
+
+                        @asynccontextmanager
+                        async def friend_failure_lifecycle():
+                            try:
+                                yield
+                            except asyncio.CancelledError:
+                                operation = getattr(request_client, '_friend_follow_failure', None)
+                                if operation:
+                                    log_friend_cleanup(operation, 'probe-ended', reason='CancelledError')
+                                raise  # The receipt survives for the next worker; no await under cancellation.
+                            except StaleProbeReference:
+                                operation = getattr(request_client, '_friend_follow_failure', None)
+                                if operation:
+                                    log_friend_cleanup(operation, 'probe-ended', reason='StaleProbeReference')
+                                    try:
+                                        # The inner probe/mouse context has unwound here. Keep
+                                        # the sent request's own result owned without a second receipt.
+                                        await capture_friend_failure()
+                                    except asyncio.CancelledError:
+                                        raise
+                                    except Exception as exc:
+                                        logger.debug(f'{request_client.title} 好友结果清理暂时失败：{exc}')
+                                raise
+                            except Exception as exc:
+                                operation = getattr(request_client, '_friend_follow_failure', None)
+                                if operation:
+                                    log_friend_cleanup(operation, 'probe-ended', reason=type(exc).__name__, detail=repr(str(exc)))
+                                await capture_friend_failure()
+                                raise
 
                         async def attempt_probe():
+                            nonlocal friend_request_started
                             # Both directions reuse this one request/arrival pipeline.
-                            async with automation_owner(request_client, 'friend-follow'):
+                            async with automation_owner(request_client, 'friend-follow'), friend_failure_lifecycle():
+                                if not await reference_current(before_request=True) or await dungeon_entry_waiting(request_client):
+                                    raise StaleProbeReference("入场参照已变化，停止旧好友归队")
                                 log_probe('start', 'own-probe-required', owner_client=request_client)
-                                if not await reference_current() or await dungeon_entry_waiting(request_client):
-                                    raise RuntimeError("入场参照已变化，停止旧好友归队")
                                 if await follower_arrival_confirmed(request_client, reference):
+                                    await retire_confirmed_friend_failure(request_client)
                                     return True
                                 if (entry_reverse and await request_client.zone_name() != entry_source['source_zone']):
-                                    raise RuntimeError("漏进成员已离开来源区域，停止旧归队输入")
+                                    raise StaleProbeReference("漏进成员已离开来源区域，停止旧归队输入")
                                 await close_stale_friend_ui(request_client, reference)
                                 async with probe_mouse(request_client):
-                                    if (not await reference_current() or await request_client.is_loading()
+                                    if (not await reference_current(before_request=True) or await request_client.is_loading()
                                             or await request_client.in_battle()
                                             or (await request_client.quest_id(), await request_client.goal_id()) != request_task
                                             or entry_reverse and (
                                                 (await request_client.quest_id(), await request_client.goal_id()) != entry_source['source_tasks'].get(id(request_client))
                                                 or await _party_area_token(request_client) != entry_source['source_tokens'].get(id(request_client)))):
-                                        raise RuntimeError("好友归队输入前上下文已变化")
+                                        raise StaleProbeReference("好友归队输入前上下文已变化")
+                                    if not reference_identity_current():
+                                        raise StaleProbeReference("好友归队输入前会话已变化")
+                                    if (friend_request_blocked(request_client)
+                                            or (await friend_failure_modal(request_client))[0] != 'absent'):
+                                        raise StaleProbeReference('好友请求前已有确认窗口或失败清理尚未结束')
                                     if bounded_dungeon_follow:
                                         used = session.follow_attempts.get(id(request_client), 0)
                                         if used >= 2:
@@ -2850,8 +3410,11 @@ async def main():
                                         session.follow_attempts[id(request_client)] = used + 1
                                     logger.debug(f"[dungeon_entry] direction={request_client.title}->{reference.title} "
                                                  f"phase=friend-request reverse={entry_reverse}")
+                                    friend_request_started = True
                                     await asyncio.wait_for(teleport_to_quester_from_friend_list(
-                                        request_client, reference.wizard_name, friend_icon), timeout=15.0)
+                                        request_client, reference.wizard_name, friend_icon,
+                                        before_request=prepare_friend_request,
+                                        on_request_sent=record_friend_request), timeout=15.0)
                                 same_zone_probe = bool(not entry_reverse and (probe_pending or returning)
                                                        and hitter_zone_before_probe == reference_zone)
                                 await asyncio.sleep(6.0 if same_zone_probe else 1.0)
@@ -2860,13 +3423,16 @@ async def main():
                                     if await is_friend_teleport_error(request_client):
                                         raise FriendBusyOrInstanceClosed()
                                     if not await reference_current():
-                                        raise RuntimeError("入场参照已改变，停止旧探测")
+                                        raise StaleProbeReference("入场参照已改变，停止旧探测")
                                     if await follower_arrival_confirmed(request_client, reference):
                                         break
                                     await asyncio.sleep(0.25)
                                 else:
                                     raise RuntimeError("好友探测未确认加载结束及同实例归队")
                                 await observe_dungeon_session(quester)
+                                if not await reference_current() or not await follower_arrival_confirmed(request_client, reference):
+                                    raise StaleProbeReference("归队确认期间参照已变化")
+                                await retire_confirmed_friend_failure(request_client)
                                 if returning:
                                     resume_dungeon_member(hitter)
                                 if exit_handoff:
@@ -2879,7 +3445,10 @@ async def main():
                                     await complete_zone_probe(False, context)
                                 if session:
                                     session.follow_attempts.pop(id(request_client), None)
-                                probe_state.update(pending=False, failures=0, retry_at=0.0)
+                                if not await follower_arrival_confirmed(request_client, reference):
+                                    raise StaleProbeReference("归队发布前参照已变化")
+                                probe_state.update(pending=False, verified=True, failures=0, retry_at=0.0,
+                                    completion_reference=probe_state.get('reference'))
                                 log_probe('complete', 'friend-arrival-confirmed', owner_client=request_client)
                                 return True
 
@@ -2892,12 +3461,23 @@ async def main():
                     except asyncio.CancelledError:
                         logger.debug(f"打手 {hitter.title} 好友探测已取消。")
                         raise
+                    except StaleProbeReference:
+                        # The child has released its owner. Never clean obsolete UI.
+                        await cancel_stale_probe(request_client)
+                        continue
                     except FriendBusyOrInstanceClosed as exc:
+                        if friend_request_blocked(request_client):
+                            continue
+                        if await probe_became_stale():
+                            await cancel_stale_probe(request_client)
+                            continue
                         await bounded_probe_cleanup(request_client, reference)
                         blocked_instance_zone = quester_zone
                         blocked_instance_retry_at = loop.time() + 60.0
                         probe_state['retry_at'] = blocked_instance_retry_at
                         log_probe('retry', 'own-friend-instance-unavailable', owner_client=request_client)
+                        if probe_state.get('friend_failure'):
+                            continue
                         solo_confirmed = False if entry_reverse else await complete_zone_probe(True, probe_context)
                         if exit_handoff:
                             await exit_hitter_to_hub()
@@ -2910,12 +3490,25 @@ async def main():
                         log_blocked(hitter, getattr(hitter, '_logging_follow_task', None),
                             f'好友传送暂不可用：{type(exc).__name__}: {exc}', delay=60, channel='follow')
                     except Exception as exc:
+                        if friend_request_blocked(request_client):
+                            continue
+                        if reference_current is not None and await probe_became_stale():
+                            await cancel_stale_probe(request_client)
+                            continue
                         if not isinstance(exc, FriendLookupError) and await is_friend_teleport_error(request_client):
+                            if friend_request_started and capture_friend_failure is not None:
+                                try:
+                                    await capture_friend_failure()
+                                except StaleProbeReference:
+                                    await cancel_stale_probe(request_client)
+                                    continue
                             await bounded_probe_cleanup(request_client, reference)
                             blocked_instance_zone = quester_zone
                             blocked_instance_retry_at = loop.time() + 60.0
                             probe_state['retry_at'] = blocked_instance_retry_at
                             log_probe('retry', 'own-friend-instance-unavailable', owner_client=request_client)
+                            if probe_state.get('friend_failure'):
+                                continue
                             solo_confirmed = False if entry_reverse else await complete_zone_probe(True, probe_context)
                             if exit_handoff:
                                 await exit_hitter_to_hub()
@@ -2950,6 +3543,7 @@ async def main():
                         log_blocked(hitter, getattr(hitter, '_logging_follow_task', None),
                             f'好友探测未确认归队：{type(exc).__name__}: {exc}', delay=delay, channel='follow')
             finally:
+                # Sent cleanup receipts and Busy backoff survive worker recreation.
                 remove_party_status(hitter)
 
         async def follow_quester(
@@ -3345,8 +3939,15 @@ async def main():
             if previous and previous[0] == signature and now - previous[1] < 30:
                 return
             cache[member] = (signature, now)
-            logger.info(f"[battle_rescue] quester={quester.title} hitter={getattr(hitter, 'title', '-')} "
-                        f"reason={reason} group={group} questers={roles} assigned={assigned} "
+            decision = ('complete' if reason == 'joined' else
+                        'send' if str(reason).startswith('entered-') else
+                        'wait' if reason in ('normal-join-grace', 'cooldown') else 'reject')
+            logger.info(f"[battle_rescue] group={group} anchor={details.get('anchor', '-')} "
+                        f"direction={details.get('direction', '-')} "
+                        f"source={details.get('source', getattr(hitter, 'title', '-'))} "
+                        f"target={details.get('target', details.get('anchor', '-'))} "
+                        f"authority={quester.title} candidate={getattr(hitter, 'title', '-')} "
+                        f"decision={decision} reason={reason} "
                         f"cached_hitters={[h.title for h in getattr(quester, 'quest_party_hitters', ())]} "
                         f"solo={getattr(quester, 'in_solo_zone', False)} "
                         f"probe_pending={getattr(quester, 'quest_party_probe_pending', False)} "
@@ -3392,17 +3993,25 @@ async def main():
                     (c for c in fighting if party_battle_pair_mode(c, quester, party) == 'dungeon'), None)
                 if anchor is None:
                     report('outside-direction-kept', quester, anchor=fighting[0].title,
-                           direction=f'{fighting[0].title}->{quester.title}', dungeon=False)
+                           direction=f'{fighting[0].title}->{quester.title}', dungeon=False,
+                           source=fighting[0].title, target=quester.title)
                     return
                 loop = asyncio.get_running_loop()
                 candidates = [c for c in members if not any(c is f for f in fighting)
                               and party_battle_pair_mode(anchor, c, party)]
                 for hitter in candidates:
                     mode = party_battle_pair_mode(anchor, hitter, party)
+                    if hitter is anchor:
+                        report('self-rescue', hitter, anchor=anchor.title,
+                               direction=f'{hitter.title}->{anchor.title}', dungeon=mode == 'dungeon',
+                               source=hitter.title, target=anchor.title)
+                        continue
                     session = dungeon_session_for(quester) if mode == 'dungeon' else None
-                    details = dict(anchor=anchor.title, direction=f'{anchor.title}->{hitter.title}',
-                                   dungeon=mode == 'dungeon')
+                    details = dict(anchor=anchor.title, direction=f'{hitter.title}->{anchor.title}',
+                                   source=hitter.title, target=anchor.title, dungeon=mode == 'dungeon')
                     async def guard(*, owned=False, expected=None):
+                        if hitter is anchor:
+                            return 'self-rescue'
                         if not quest_party_enabled:
                             return 'party-disabled'
                         current = current_quest_party(combat_group_for(quester))
@@ -3430,11 +4039,28 @@ async def main():
                             return 'loading'
                         details['zone'] = (await anchor.zone_name(), await hitter.zone_name())
                         details['instance_confirmed'] = await clients_share_live_area(anchor, hitter)
+                        details['instance_evidence'] = ('pairwise' if details['instance_confirmed']
+                            else None)
                         details['session_confirmed'] = bool(session and session.confirmed)
+                        if (not details['instance_confirmed'] and mode == 'dungeon'
+                                and session is not None and session.confirmed
+                                and session.phase == 'active'
+                                and dungeon_session_for(quester) is session
+                                and all(dungeon_session_for(c) is session
+                                        for c in (anchor, hitter))
+                                and all(c in session.members
+                                        for c in (quester, anchor, hitter))
+                                and all(id(c) not in session.exited
+                                        for c in (quester, anchor, hitter))
+                                and all(dungeon_member_inside(c)
+                                        for c in (quester, anchor, hitter))
+                                and details['zone'][0] == details['zone'][1]):
+                            # A live pairwise probe can be temporarily unavailable
+                            # while all three are still the same confirmed session.
+                            details['instance_confirmed'] = True
+                            details['instance_evidence'] = 'confirmed-dungeon-session-membership'
                         if any(getattr(c, 'in_solo_zone', False) for c in (quester, anchor, hitter)):
                             return 'solo-zone'
-                        if getattr(quester, 'quest_party_probe_pending', False):
-                            return 'probe-pending'
                         if details['zone'][0] != details['zone'][1]:
                             return 'zone-mismatch'
                         if not details['instance_confirmed']:
@@ -3463,6 +4089,16 @@ async def main():
                                 DuelPhase.starting, DuelPhase.pre_planning, DuelPhase.planning,
                                 DuelPhase.pre_execution, DuelPhase.execution, DuelPhase.resolution)):
                             return 'circle-not-joinable'
+                        strong_dungeon = (mode == 'dungeon' and session is not None
+                            and session.confirmed and details['instance_confirmed']
+                            and details['zone'][0] == details['zone'][1]
+                            and type(duel) is int and duel > 0
+                            and dungeon_session_for(quester) is session
+                            and all(dungeon_session_for(c) is session and dungeon_member_inside(c)
+                                    for c in (anchor, hitter)))
+                        if (getattr(quester, 'quest_party_probe_pending', False)
+                                and not strong_dungeon):
+                            return 'probe-pending'
                         details['recovery_owner'] = tuple(bool(getattr(c, 'quest_recovery_owner', None))
                                                           for c in (quester, anchor, hitter))
                         details['busy_flags'] = [(c.title, flag) for c in (quester, anchor, hitter)
@@ -3657,6 +4293,12 @@ async def main():
                                             + "Duel circle not joinable - teleports halted."
                                         )
                                         p.client_being_helped = None
+
+                                # The seven-second join window expired without a
+                                # live battle. Retire the timestamp even when this
+                                # client was the battle anchor and has no helper.
+                                p.just_entered_combat = None
+                                p.entity_detect_combat_status = False
 
                     if p.just_entered_combat is None:
                         if True:

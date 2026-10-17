@@ -12,6 +12,11 @@ class EnterArrivalTests(Fixture):
         self.objective, self.title, self.prompt = 'Go to Task Route', 'Cabin', '点击 进入'
         self.nearby(800)
         self.client.teleport = AsyncMock(side_effect=lambda point: setattr(self, 'position', point))
+        self.prompt_visible = True
+        from src.paths import npc_range_path
+        visible = AsyncMock(side_effect=lambda _client, path: path == npc_range_path and self.prompt_visible)
+        self.stack.enter_context(patch('src.questing.is_visible_by_path', visible))
+        self.stack.enter_context(patch.object(movement, 'is_visible_by_path', visible))
 
     async def verified_arrival(self, gap=0):
         task = await movement._movement_task_snapshot(self.client)
@@ -19,9 +24,15 @@ class EnterArrivalTests(Fixture):
         state = dict(key=(task[3], (task[0], task[1], tuple(task[2]), task[3]), tuple(self.target)),
                      control=None, origin=origin, anchor=origin, walks=0,
                      rejected=False, confirmed=False, ready=False)
-        self.assertTrue(await movement._teleport_once_verified(self.client, self.target, origin,
-            task[3], validation_state=state))
-        self.position = XYZ(self.target.x-gap, self.target.y, self.target.z)
+        self.prompt_visible = False
+        async def transport(*_args, **_kwargs):
+            self.assertTrue(await movement._teleport_once_verified(self.client, self.target, origin,
+                task[3], validation_state=state))
+            self.position = XYZ(self.target.x-gap, self.target.y, self.target.z)
+            self.prompt_visible = True
+            return 'ready'
+        with patch('src.questing.collision_tp', AsyncMock(side_effect=transport)):
+            await self.quester.move_until_quest_interaction(self.client, self.target)
 
     async def test_cabin_and_gatehouse_aliases_after_verified_target_arrival_send_one_x(self):
         for title, gap in [('Cabin', 0), ('Gatehouse', 46)]:
@@ -52,7 +63,9 @@ class EnterArrivalTests(Fixture):
         from unittest.mock import patch
         async def walk(*_a, **_kw):
             self.position = XYZ(self.target.x-46, self.target.y, self.target.z)
+            self.prompt_visible = True
             return 'ready'
+        self.prompt_visible = False
         with patch('src.questing.collision_tp', AsyncMock(side_effect=walk)):
             self.assertEqual(await self.quester.move_until_quest_interaction(self.client, self.target), 'ready')
         self.assertTrue(await self.quester.quest_interaction_ready(self.client, self.target))
@@ -63,12 +76,13 @@ class EnterArrivalTests(Fixture):
             self.prompt = action
             self.assertFalse((await self.quester._interaction_eligibility(self.client, self.target)).accepted)
 
-    async def test_fallback_distance_is_150u_and_noop_navigation_is_not_provenance(self):
-        await self.verified_arrival(150)
+    async def test_transition_distance_is_250u_and_noop_navigation_is_not_provenance(self):
+        await self.verified_arrival(250)
         self.assertTrue((await self.quester._interaction_eligibility(self.client, self.target)).accepted)
-        self.position = XYZ(self.target.x-151, self.target.y, self.target.z)
+        self.position = XYZ(self.target.x-251, self.target.y, self.target.z)
         self.assertFalse((await self.quester._interaction_eligibility(self.client, self.target)).accepted)
         self.client._quest_tp_landing = None
+        self.client._quest_target_approach = None
         self.position = self.target
         with patch('src.questing.collision_tp', AsyncMock(return_value='ready')):
             await self.quester.move_until_quest_interaction(self.client, self.target)

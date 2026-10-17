@@ -50,6 +50,27 @@ def check_capabilities(provider_class, combat_class):
         raise RuntimeError('战斗执行器缺少 second_enchant，无法执行融合后的第二次附魔。')
 
 
+def check_mouse_handler_source():
+    """Check the explicit .venv file, never a cwd-imported wizwalker copy."""
+    target = (VENV_PACKAGES / 'wizwalker' / 'mouse_handler.py').resolve()
+    if not target.is_file():
+        raise RuntimeError(f'缺少 .venv wizwalker mouse_handler：{target}')
+    spec = importlib.util.spec_from_file_location('_xuanshu_runtime_mouse_handler', target)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f'无法加载 .venv wizwalker mouse_handler：{target}')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    for method, kind in ((module.MouseHandler.click, 'click'),
+                         (module.MouseHandler.click_window, 'click_window')):
+        parameter = inspect.signature(method).parameters.get('on_dispatched')
+        if parameter is None:
+            raise RuntimeError(f'.venv MouseHandler.{kind} 缺少 on_dispatched')
+        if parameter.kind is not inspect.Parameter.KEYWORD_ONLY:
+            raise RuntimeError(f'.venv MouseHandler.{kind}.on_dispatched 必须是 keyword-only')
+    print(f'[运行库来源] wizwalker mouse_handler：{target}')
+    print('[检测通过] MouseHandler.click/click_window 均包含 on_dispatched。')
+
+
 def load_source_backend():
     if Path(sys.prefix).resolve() != (ROOT / '.venv').resolve():
         raise RuntimeError('请使用项目 .venv/Scripts/python.exe 运行检测。')
@@ -64,6 +85,7 @@ def load_source_backend():
     provider = modules[BACKEND_MODULES[-1]].CombatConfigProvider
     runtime_combat = modules[BACKEND_MODULES[2]].SprintyCombat
     check_capabilities(provider, runtime_combat)
+    check_mouse_handler_source()
     print(f'[后端来源] 解析器：{modules[BACKEND_MODULES[1]].__file__}')
     print(f'[后端来源] 源码启动执行器：{inspect.getfile(runtime_combat)}')
     # PyInstaller intentionally replaces only SprintyCombat with this local

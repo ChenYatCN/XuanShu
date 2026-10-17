@@ -29,6 +29,7 @@ class EntryWaitTests(Base):
         session = await self.send()
         self.q.zone, self.q.area_id = 'Dungeon/Room1', 200
         await party.observe_dungeon_session(self.q)
+        party.retire_dungeon_session(session)
         self.clock += 1
         self.h.send_key.reset_mock()
         other = Quester(self.h, [self.h], None)

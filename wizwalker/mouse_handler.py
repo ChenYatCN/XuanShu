@@ -78,7 +78,7 @@ class MouseHandler:
         await self.set_mouse_position(*center, **kwargs)
 
     async def click_window(
-        self, window: "wizwalker.memory.window.DynamicWindow", **kwargs
+        self, window: "wizwalker.memory.window.DynamicWindow", *, on_dispatched=None, **kwargs
     ):
         """
         Click a window
@@ -86,11 +86,13 @@ class MouseHandler:
 
         Args:
             window: The window to click
+            on_dispatched: Optional synchronous callback invoked after the mouse
+                down/up pair is sent and before the mouse reset.
         """
         scaled_rect = await window.scale_to_client()
         center = scaled_rect.center()
 
-        await self.click(*center, **kwargs)
+        await self.click(*center, on_dispatched=on_dispatched, **kwargs)
 
     async def click_window_with_name(self, name: str, **kwargs):
         """
@@ -122,6 +124,7 @@ class MouseHandler:
         right_click: bool = False,
         sleep_duration: float = 0.0,
         use_post: bool = False,
+        on_dispatched=None,
     ):
         """
         Send a click to a certain x and y
@@ -133,6 +136,8 @@ class MouseHandler:
             right_click: If the click should be a right click
             sleep_duration: How long to sleep between messages
             use_post: If PostMessage should be used instead of SendMessage
+            on_dispatched: Optional synchronous callback invoked exactly once
+                after the mouse down/up pair is sent, before the mouse reset.
         """
         # We don't have to check if the hook is active since it will just error
         if right_click:
@@ -160,8 +165,14 @@ class MouseHandler:
                 await asyncio.sleep(sleep_duration)
             # mouse button up
             send_method(self.client.window_handle, button_down_message + 1, 0, 0)
-            # move mouse outside of client area
-            await self.set_mouse_position(-100, -100)
+            try:
+                if on_dispatched is not None:
+                    # The request is already sent at this point. Keep the callback
+                    # before the mouse reset so a later cancel/error cannot erase it.
+                    on_dispatched()
+            finally:
+                # move mouse outside of client area
+                await self.set_mouse_position(-100, -100)
 
     async def set_mouse_position(
         self,

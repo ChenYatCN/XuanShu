@@ -1439,6 +1439,9 @@ class PyQtSink:
         self.console_widget = console_widget
         self.buffer = []
         self.daily_buffer = []
+        # Full current-session history for Copy Logs. The GUI keeps its bounded
+        # display buffers; only the clipboard source is unbounded.
+        self.copy_buffer = []
         self.max_lines = 1000
         self.show_expanded_logs = False
         self._lock = RLock()
@@ -1446,11 +1449,12 @@ class PyQtSink:
 
     def copy(self):
         with self._lock:
-            log_str = "```\n" + ''.join(line for line, _, _ in self.buffer) + "```"
+            log_str = "```\n" + ''.join(line for line, _, _ in self.copy_buffer) + "```"
+            copied = len(self.copy_buffer)
         pyperclip.copy(log_str)
         from loguru import logger
 
-        logger.info("已复制详细日志缓存（全部级别，最近 {} 条）", self.max_lines)
+        logger.info("已复制详细日志缓存（全部级别，全部 {} 条）", copied)
 
     def toggle_show_expanded_logs(self, override: bool | None = None):
         with self._lock:
@@ -1513,6 +1517,7 @@ class PyQtSink:
             daily = level not in ('DEBUG', 'TRACE')
             first_visible = not (self.buffer if self.show_expanded_logs else self.daily_buffer)
             entry = (clean_message, truncated_message, level)
+            self.copy_buffer.append(entry)
             self.buffer.append(entry)
             del self.buffer[:-self.max_lines]
             if daily:

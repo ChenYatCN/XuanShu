@@ -153,8 +153,12 @@ class ConsoleCacheTests(unittest.TestCase):
         self.assertEqual(self.posts[-1][-1], 'WARNING - final failure\n')
         with patch('src.gui.widgets.pyperclip.copy') as copy:
             self.sink.copy()
-        self.assertEqual(copy.call_args.args[0], '```\n' + ''.join(line for line, _, _ in self.sink.buffer) + '```')
-        self.assertNotIn('final failure', copy.call_args.args[0])
+        copied = copy.call_args.args[0]
+        self.assertIn('final failure', copied)
+        self.assertIn('detail 0\n', copied)
+        self.assertIn('detail 1000\n', copied)
+        self.assertEqual(len(self.sink.buffer), 1000)
+        self.assertEqual(len(self.sink.copy_buffer), 1002)
 
     def test_daily_cache_is_independently_bounded(self):
         for number in range(1002):

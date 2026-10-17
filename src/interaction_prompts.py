@@ -48,7 +48,7 @@ def _prompt_form(value) -> str:
 _INTERACTION_IDS = {}
 for _id, (_english, _translation) in TEXT_RECORDS.items():
     if _english.startswith("Press &InputBindings_NPCInteract&"):
-        _match = re.search(r"\bto (Talk|Open|Collect|Enter|Ride|Teleport|Use Magic Raft)\b", _english)
+        _match = re.search(r"\bto (Talk|Open|Collect|Enter|Ride|Teleport|Climb|Use Magic Raft)\b", _english)
         if _match:
             _kind = _match[1].lower().replace("use magic raft", "ride")
             _INTERACTION_IDS.setdefault(_kind, []).append(_id)
@@ -77,12 +77,39 @@ def is_dungeon_entry_prompt(value) -> bool:
     return interaction_kind(value) == "enter"
 
 
+def photomancy_action(value, *, require_z=False) -> bool:
+    """Read the photo instruction prefix, preserving an explicitly rendered Z key."""
+    ids = ("WizardQuestGoals_00000670", "WizardQuestGoals_00000672")
+    if not require_z:
+        ids += ("WizardQuestGoals_00000671", "WizardQuestGoals_00000748")
+    if matches_text(value, *ids):
+        return True
+
+    def form(raw):
+        raw = html.unescape(str(raw or ''))
+        raw = re.sub(r"<(?:icon|image);Z>", "Z", raw, flags=re.I)
+        raw = re.sub(r"&Icons_ZKey&", "Z", raw, flags=re.I)
+        text = plain_text(raw).casefold().replace('鍵', '键')
+        # Chinese HUD markup often leaves no spaces around the key or target.
+        return re.sub(r"(?<=[\u3400-\u9fff])\s+|\s+(?=[\u3400-\u9fff])", "", text)
+
+    text = form(value)
+    for text_id in ids:
+        for label in TEXT_RECORDS[text_id]:
+            label = form(label)
+            if label and re.match(re.escape(label) + (r"(?![a-z])" if label[-1].isascii() else ''), text):
+                return True
+    press = r"press\s+z(?:\s+key)?\s+to\s+"
+    return bool(re.match(r"^(?:" + press + (r")" if require_z else r")?")
+        + r"take\s+(?:a\s+)?(?:picture|photo)\b", text))
+
+
 def quest_has_action(value, action) -> bool:
+    if action == 'photomance':
+        return photomancy_action(value)
     ids = {
         "defeat": ("WizardQuestGoals_Kill", "WizardQuestGoals_KillCollect"),
         "pet_mode": ("WizardQuestGoals_00000667",),
-        "photomance": ("WizardQuestGoals_00000670", "WizardQuestGoals_00000671",
-                       "WizardQuestGoals_00000672", "WizardQuestGoals_00000748"),
     }[action]
     text = plain_text(value).casefold()
     for text_id in ids:
@@ -164,3 +191,74 @@ def quest_interaction_matches(objective, title):
     if not name or quest_has_action(objective, "defeat"):
         return False
     return bool(re.search(r"(?<![a-z0-9])" + re.escape(name) + r"(?![a-z0-9])", goal))
+
+
+def quest_interaction_correlates(objective, title, action):
+    """Specific objective words may corroborate an ordinary current-target approach.
+
+    This is weaker than a name match and never grants input on its own.
+    Resource names, location labels and generic UI verbs are not task semantics.
+    """
+    kind = interaction_kind(action)
+    if kind not in ('talk', 'open') and not re.fullmatch(
+            r'press(?:or|或)?(?:to)?(?:use|使用)', _prompt_form(action)):
+        return False
+    if any(quest_has_action(objective, value) for value in ('defeat', 'photomance', 'pet_mode')):
+        return False
+    text = html.unescape(str(objective or ''))
+    text = re.sub(r'<[^>]*>|&[^&]*\.dds&|\b[\w_]+\.dds\b', ' ', text, flags=re.I)
+    goal, _ = split_quest_location(text)
+    generic = {'使用', '点击', '點擊', '交谈', '交談', '对话', '對話', '进入', '進入',
+               '按下', '打开', '打開', '地点', '地點', '任务', '目标',
+               'use', 'click', 'talk', 'enter', 'press', 'open', 'to', 'in', 'at',
+               'the', 'a', 'an', 'or', 'with', 'task', 'npc'}
+    words = re.findall(r'[\u3400-\u9fff]+|[a-z]+', goal.casefold())
+    name = _normal(title)
+    for word in words:
+        word = re.sub(r'^(?:使用|点击|點擊|交谈|交談|进入|進入|按下|在)', '', word)
+        if word in generic or len(word) < (4 if word.isascii() else 2):
+            continue
+        pattern = re.escape(word)
+        if word.isascii():
+            pattern = r'(?<![a-z])' + pattern + r'(?![a-z])'
+            # Preserve English word boundaries instead of removing spaces.
+            if re.search(pattern, plain_text(title).casefold()):
+                return True
+        elif re.search(pattern, name):
+            return True
+    return False
+
+
+def task_transition_prompt(title, action):
+    """Classify transport instructions, without a map/door-name allowlist.
+
+    Generic Use alone describes ordinary objects too. It additionally needs a
+    destination-shaped title; Enter/Interact/transport instructions do not.
+    """
+    if interaction_kind(action) in ('enter', 'ride', 'teleport', 'climb'):
+        return True
+    form = _prompt_form(action)
+    if re.fullmatch(r'press(?:or|或)?(?:to)?(?:interact|互动|交互)', form):
+        return True
+    return bool(re.fullmatch(r'press(?:or|或)?(?:to)?(?:use|使用)', form)
+        and re.match(r'^(?:去|前往|前去|传送至|傳送至)\s*\S|'
+                     r'^(?:go\s+to|travel\s+to|teleport\s+to|to)\s+\S',
+                     plain_text(title), flags=re.I))
+
+
+_OBJECT_ACTION_IDS = tuple(text_id for text_id, (english, _) in TEXT_RECORDS.items()
+    if re.match(r'^Press &InputBindings_NPCInteract&(?: or &Icons_LeftMouseClick&)? to '
+                r'(?:Take|Use|Open|Pull|Read|Place(?!/))\b', english, flags=re.I))
+_OBJECT_ACTION_FORMS = {_prompt_form(text) for text_id in _OBJECT_ACTION_IDS
+                        for text in TEXT_RECORDS[text_id] if text}
+
+
+def task_object_prompt(title, action):
+    """Known object instructions only; transport and NPC/collect remain separate."""
+    if (task_transition_prompt(title, action) or portal_kind(title)
+            or interaction_kind(action) in ('talk', 'collect', 'enter', 'ride', 'teleport')):
+        return False
+    return (matches_text(action, *_OBJECT_ACTION_IDS)
+            or _prompt_form(action) in _OBJECT_ACTION_FORMS
+            or bool(re.fullmatch(r'press(?:or|或)?(?:to)?(?:take|use|open|pull|read|拿走|使用|打开|拖动|阅读)',
+                                 _prompt_form(action))))

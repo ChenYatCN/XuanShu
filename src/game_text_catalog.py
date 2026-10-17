@@ -640,6 +640,18 @@ WORLD_RECORDS = {
 }
 
 TEXT_RECORDS = {
+    # Reuse verified archive forms for current-target climbing transitions.
+    "GUI_00005414": INTERACTION_RECORDS["GUI_00005414"],
+    "GUI_00006133": INTERACTION_RECORDS["GUI_00006133"],
+    "GUI_00006671": INTERACTION_RECORDS["GUI_00006671"],
+    # Verified ordinary object placement actions; Place/Collect stays excluded
+    # from the generic object grammar by interaction_prompts.
+    "GUI_00003197": INTERACTION_RECORDS["GUI_00003197"],
+    "GUI_00006029": INTERACTION_RECORDS["GUI_00006029"],
+    "GUI_00006677": INTERACTION_RECORDS["GUI_00006677"],
+    "GUI_00007023": INTERACTION_RECORDS["GUI_00007023"],
+    "GUI_00009841": INTERACTION_RECORDS["GUI_00009841"],
+    "GUI_00011011": INTERACTION_RECORDS["GUI_00011011"],
     # Installed GUI.lang / Chinese overlay checked 2026-10-12.
     "GUI_InstanceExit": [
         "If you leave a Dungeon you will lose all your progress in the Dungeon and will have to start over at the beginning.<br>Are you sure you want to leave now?",

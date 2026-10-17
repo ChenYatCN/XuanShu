@@ -178,7 +178,7 @@ class MainlineRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.client.tracked,43)
         self.assertEqual(self.client._xuanshu_mainline_last_success['number'],6)
 
-    async def test_left_page_then_finder_hands_off_to_existing_quest_flow(self):
+    async def test_left_page_then_finder_keeps_auto_quest_paused_until_match(self):
         await self.initialize()
         self.client.tracked = 77
         self.client.pages = [['Other Mainline'],['任务搜寻']]
@@ -188,7 +188,7 @@ class MainlineRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.client.book_open)
         opened = sum(e==('key',Keycode.Q) for e in self.client.events)
         for _ in range(3):
-            self.assertFalse(await self.recover(times=1))
+            self.assertTrue(await self.recover(times=1))
         self.assertEqual(sum(e==('key',Keycode.Q) for e in self.client.events),opened)
         self.assertEqual(self.client._xuanshu_mainline_last_success['number'],5)
 

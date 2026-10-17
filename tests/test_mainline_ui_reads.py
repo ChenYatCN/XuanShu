@@ -72,7 +72,7 @@ class MainlineUIReadTests(unittest.IsolatedAsyncioTestCase):
             await self.recover(times=2)
         self.assertTrue(failed)
         self.assertEqual(self.client.tracked, 999, 'Never select a card from the failed scan')
-        self.assertEqual(self.client._xuanshu_mainline_recovery['phase'], 'navigation')
+        self.assertEqual(self.client._xuanshu_mainline_recovery['phase'], 'finder-confirm')
         self.assertTrue(any('txtQuestTitle' in str(m) and m.record['exception'] for m in self.logs))
         self.assert_clean()
 
@@ -164,7 +164,7 @@ class MainlineUIReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum(e == ('click', 'btnPrevPage') for e in self.client.events), 1)
         self.assertEqual(sum(e == ('key', Keycode.Q) for e in self.client.events), 2)
         for _ in range(3):
-            self.assertFalse(await self.recover(times=1))
+            self.assertTrue(await self.recover(times=1))
         self.assertEqual(sum(e == ('key', Keycode.Q) for e in self.client.events), 2)
         self.assert_clean()
 

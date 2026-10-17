@@ -38,7 +38,8 @@ class PerFollowerProbeTests(unittest.IsolatedAsyncioTestCase):
             return self.pending.get(id(reader.client), False)
         self.stack.enter_context(patch.object(Quester, 'handle_pending_dungeon_confirmation', pending))
 
-    async def run_pair(self, *, p2_fails=False, already_p2=False, valid_p3_pending=False):
+    async def run_pair(self, *, p2_fails=False, already_p2=False, valid_p3_pending=False,
+                       p2_blocked=False):
         if already_p2:
             self.p2.zone, self.p2.area_id = self.q.zone, self.q.area_id
         self.pending[id(self.p3)] = valid_p3_pending
@@ -52,7 +53,9 @@ class PerFollowerProbeTests(unittest.IsolatedAsyncioTestCase):
             c.zone, c.area_id = self.q.zone, self.q.area_id
         def status(h, q, text):
             self.statuses.append((h.title, text))
-            p2_done = self.counts[id(self.p2)] > 0 or already_p2
+            p2_done = self.counts[id(self.p2)] > 0 or already_p2 or (p2_blocked and any(
+                title == self.p2.title and message in ("等待战斗或加载", "等待好友归队输入所有权")
+                for title, message in self.statuses))
             p3_done = self.counts[id(self.p3)] > 0 or valid_p3_pending
             if p2_done and p3_done or self.clock > 100:
                 self.done.set()
@@ -114,10 +117,10 @@ class PerFollowerProbeTests(unittest.IsolatedAsyncioTestCase):
                 if cause == 'battle': self.p2.in_battle.return_value = True
                 if cause == 'owner':
                     async with automation_owner(self.p2, 'combat'):
-                        await self.run_pair()
+                        await self.run_pair(p2_blocked=True)
                         self.assertTrue(get_client_automation_ownership(self.p2).locked)
                 else:
-                    await self.run_pair()
+                    await self.run_pair(p2_blocked=True)
                 self.assertEqual(list(self.counts.values()), [0, 1])
                 self.assertFalse(get_client_automation_ownership(self.p3).locked)
                 self.stack.close()

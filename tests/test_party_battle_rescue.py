@@ -109,6 +109,32 @@ class BattleRescueTests(unittest.IsolatedAsyncioTestCase):
         exec(compile(ast.Module(body=[fn], type_ignores=[]), 'XuanShu.py', 'exec'), self.ns)
         await self.ns['detect_combat'](client)
 
+    async def test_anchor_join_timeout_retires_stale_just_entered_combat(self):
+        p = self.h1
+        p.just_entered_combat = self.clock - 8
+        p.in_battle = AsyncMock(return_value=False)
+        p.client_being_helped = None
+        p.entity_detect_combat_status = True
+        p.just_left_combat = False
+        calls = []
+        async def sleep(_seconds):
+            calls.append(1)
+            if len(calls) >= 2:
+                raise StopAsyncIteration
+            await REAL_SLEEP(0)
+        ns = dict(self.ns)
+        ns.update(
+            asyncio=SimpleNamespace(sleep=sleep, gather=asyncio.gather),
+            rescue_missing_party_hitters=AsyncMock(),
+            nearest_duel_circle_distance_and_xyz=AsyncMock(return_value=(None, None)),
+            is_free=AsyncMock(return_value=False),
+        )
+        detect = load_function('detect_combat', ns)
+        with self.assertRaises(StopAsyncIteration):
+            await detect(p)
+        self.assertIsNone(p.just_entered_combat)
+        self.assertFalse(p.entity_detect_combat_status)
+
     async def test_scope_difference_alone_does_not_remove_p1_quester_identity(self):
         global_party = self.ns['current_quest_party']()
         local_party = self.ns['current_quest_party']([self.q1, self.h1])
@@ -134,6 +160,105 @@ class BattleRescueTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.events)
         self.assertTrue(any('instance-unconfirmed' in m for m in self.messages()))
 
+    def confirmed_session(self, members, *, confirmed=True, phase='active', exited=()):
+        return SimpleNamespace(quester=self.q1, confirmed=confirmed, phase=phase,
+            generation=1, members=tuple(members), exited=set(exited))
+
+    async def test_confirmed_dungeon_session_member_does_not_require_pairwise_instance_refresh(self):
+        self.q1.battle = False
+        self.h1.battle = True
+        session = self.confirmed_session((self.q1, self.h1))
+        self.q1.quest_party_hitters = [self.h1]
+        self.q1.quest_party_battle_started_at = 0
+        self.ns['dungeon_session_for'] = lambda c: session if c in (self.q1, self.h1) else None
+        self.ns['dungeon_member_inside'] = lambda c: True
+        self.ns['clients_share_live_area'] = AsyncMock(return_value=False)
+        await self.rescue(self.q1)
+        self.assertTrue(any('confirmed-dungeon-session-membership' in m for m in self.messages()))
+        self.assertTrue(any(c[0] == 'p1' and c[1] == 'tp' for c in self.events))
+
+    async def test_all_missing_confirmed_session_members_get_independent_rescue_candidates(self):
+        self.q1.battle = False
+        self.h1.battle = True
+        self.q1.quest_party_hitters = [self.h1, self.h2]
+        self.h2.quest_party_quester = self.q1
+        self.h2.hotkey_quest_clients = [self.q1, self.h1, self.h2]
+        self.q2.quest_party_hitters = []
+        self.q1.quest_party_battle_started_at = 0
+        self.ns['current_quest_party'] = lambda *_: SimpleNamespace(
+            questers=(self.q1,),
+            hitter_assignments=((self.h1, self.q1), (self.h2, self.q1)))
+        session = self.confirmed_session((self.q1, self.h1, self.h2))
+        self.ns['dungeon_session_for'] = lambda c: session if c in (self.q1, self.h1, self.h2) else None
+        self.ns['dungeon_member_inside'] = lambda c: True
+        self.ns['clients_share_live_area'] = AsyncMock(return_value=False)
+        await self.rescue(self.q1)
+        moved = {title for title, kind, _ in self.events if kind == 'tp'}
+        self.assertIn('p1', moved)
+        self.assertIn('p4', moved)
+        self.assertTrue(any('confirmed-dungeon-session-membership' in m for m in self.messages()))
+
+    async def test_unconfirmed_dungeon_session_still_rejects_without_instance_evidence(self):
+        self.q1.battle = False
+        self.h1.battle = True
+        session = self.confirmed_session((self.q1, self.h1), confirmed=False)
+        self.q1.quest_party_battle_started_at = 0
+        self.ns['dungeon_session_for'] = lambda c: session if c in (self.q1, self.h1) else None
+        self.ns['dungeon_member_inside'] = lambda c: True
+        self.ns['clients_share_live_area'] = AsyncMock(return_value=False)
+        await self.rescue(self.q1)
+        self.assertFalse(self.events)
+        self.assertTrue(any('instance-unconfirmed' in m for m in self.messages()))
+
+    async def test_exited_member_cannot_use_confirmed_session_fallback(self):
+        self.q1.battle = False
+        self.h1.battle = True
+        session = self.confirmed_session((self.q1, self.h1), exited={id(self.q1)})
+        self.q1.quest_party_battle_started_at = 0
+        self.ns['dungeon_session_for'] = lambda c: session if c in (self.q1, self.h1) else None
+        self.ns['dungeon_member_inside'] = lambda c: True
+        self.ns['clients_share_live_area'] = AsyncMock(return_value=False)
+        await self.rescue(self.q1)
+        self.assertFalse(self.events)
+        self.assertTrue(any('instance-unconfirmed' in m for m in self.messages()))
+
+    async def test_retired_session_cannot_use_confirmed_session_fallback(self):
+        self.q1.battle = False
+        self.h1.battle = True
+        session = self.confirmed_session((self.q1, self.h1), phase='retired')
+        self.q1.quest_party_battle_started_at = 0
+        self.ns['dungeon_session_for'] = lambda c: session if c in (self.q1, self.h1) else None
+        self.ns['dungeon_member_inside'] = lambda c: True
+        self.ns['clients_share_live_area'] = AsyncMock(return_value=False)
+        await self.rescue(self.q1)
+        self.assertFalse(self.events)
+        self.assertTrue(any('instance-unconfirmed' in m for m in self.messages()))
+
+    async def test_cross_zone_confirmed_session_member_still_rejects(self):
+        self.q1.battle = False
+        self.h1.battle = True
+        self.h1.zone = 'Dungeon/Other'
+        session = self.confirmed_session((self.q1, self.h1))
+        self.q1.quest_party_battle_started_at = 0
+        self.ns['dungeon_session_for'] = lambda c: session if c in (self.q1, self.h1) else None
+        self.ns['dungeon_member_inside'] = lambda c: True
+        self.ns['clients_share_live_area'] = AsyncMock(return_value=False)
+        await self.rescue(self.q1)
+        self.assertFalse(self.events)
+        self.assertTrue(any('zone-mismatch' in m for m in self.messages()))
+
+    async def test_other_session_same_zone_cannot_use_confirmed_session_fallback(self):
+        self.q1.battle = False
+        self.h1.battle = True
+        session = self.confirmed_session((self.q1, self.h1))
+        other = self.confirmed_session((self.q1, self.h1))
+        self.q1.quest_party_battle_started_at = 0
+        self.ns['dungeon_session_for'] = lambda c: session if c is self.q1 else other
+        self.ns['dungeon_member_inside'] = lambda c: True
+        self.ns['clients_share_live_area'] = AsyncMock(return_value=False)
+        await self.rescue(self.q1)
+        self.assertFalse(self.events)
+
     async def test_joined_hitter_does_not_emit_unrelated_role_diagnostics(self):
         self.h1.battle = True
         await self.rescue(self.h1)
@@ -157,7 +282,7 @@ class BattleRescueTests(unittest.IsolatedAsyncioTestCase):
         self.clock += 1
         await self.rescue(self.q1)
         self.assertEqual(len(self.messages()), 3)
-        self.assertIn('quester=p1 hitter=p2', self.messages()[-1])
+        self.assertIn('source=p2 target=p1', self.messages()[-1])
 
     async def test_solo_and_probe_skip_have_limited_diagnostics_and_can_recover(self):
         for flag, reason in (('in_solo_zone', 'solo-zone'), ('quest_party_probe_pending', 'probe-pending')):

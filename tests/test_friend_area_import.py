@@ -43,7 +43,8 @@ class FriendAreaImportTests(DungeonFixture, unittest.IsolatedAsyncioTestCase):
             is_friend_teleport_error=AsyncMock(return_value=False),
             teleport_to_friend_from_list=self.friend,
             asyncio=SimpleNamespace(sleep=tick, get_running_loop=lambda: SimpleNamespace(time=lambda: clock[0]),
-                wait_for=asyncio.wait_for, CancelledError=asyncio.CancelledError, TimeoutError=TimeoutError)),
+                wait_for=asyncio.wait_for, CancelledError=asyncio.CancelledError, TimeoutError=TimeoutError,
+                timeout=asyncio.timeout, current_task=asyncio.current_task)),
             members=[self.q, self.h], change_party_equipment=AsyncMock(return_value=True),
             prepare_quester_name=AsyncMock(), remove_party_status=Mock(),
             restart_quest_worker_after_probe=Mock(), update_party_status=Mock())

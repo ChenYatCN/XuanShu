@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 import argparse
 import hashlib
+import types
 from pathlib import Path
 
 from verify_combat_backend import check_bundle_sources, check_compiled_backend, load_source_backend
@@ -52,6 +53,49 @@ def _load_entries(toc_path: Path):
 
     visit(tree)
     return entries
+
+
+def check_mouse_handler_source(entries):
+    expected = (VENV_PACKAGES / "wizwalker" / "mouse_handler.py").resolve()
+    matches = [
+        Path(source).resolve()
+        for name, source, kind in entries
+        if name == "wizwalker.mouse_handler" and kind.startswith("PYMODULE")
+    ]
+    if not matches or any(source != expected for source in matches):
+        raise RuntimeError(
+            f"wizwalker.mouse_handler 来源不正确；期望 {expected}，实际 {matches}"
+        )
+    print(f"[验证通过] wizwalker.mouse_handler 来源：{expected}")
+
+
+def check_compiled_mouse_handler(exe: Path):
+    from PyInstaller.archive.readers import CArchiveReader
+
+    archive = CArchiveReader(str(exe))
+    pyz_names = [name for name in archive.toc if name.endswith(".pyz")]
+    if len(pyz_names) != 1:
+        raise RuntimeError("成品没有唯一的 PYZ 模块归档，无法确认 MouseHandler 接口。")
+    pyz = archive.open_embedded_archive(pyz_names[0])
+    code = pyz.extract("wizwalker.mouse_handler")
+    if not isinstance(code, types.CodeType):
+        raise RuntimeError("成品缺少编译后的 wizwalker.mouse_handler。")
+    class_code = next(
+        (item for item in code.co_consts
+         if isinstance(item, types.CodeType) and item.co_name == "MouseHandler"),
+        None,
+    )
+    if class_code is None:
+        raise RuntimeError("成品 wizwalker.mouse_handler 缺少 MouseHandler 类。")
+    for method in ("click", "click_window"):
+        method_code = next(
+            (item for item in class_code.co_consts
+             if isinstance(item, types.CodeType) and item.co_name == method),
+            None,
+        )
+        if method_code is None or "on_dispatched" not in method_code.co_varnames:
+            raise RuntimeError(f"成品 MouseHandler.{method} 缺少 on_dispatched 参数。")
+    print("[验证通过] 成品 MouseHandler.click/click_window 均包含 on_dispatched")
 
 
 def main() -> None:
@@ -151,6 +195,8 @@ def main() -> None:
     if not args.exe.exists() or args.exe.stat().st_size < 1_000_000:
         raise RuntimeError(f"成品 EXE 不存在或大小异常：{args.exe}")
 
+    check_mouse_handler_source(entries)
+    check_compiled_mouse_handler(args.exe)
     load_source_backend()
     check_compiled_backend(args.exe)
     compat_hash = hashlib.sha256(COMBAT_COMPAT.read_bytes()).hexdigest().upper()

@@ -11,7 +11,10 @@ from src.utils import is_free, is_visible_by_path, get_popup_title, get_window_f
 from src.paths import (dialog_text_path, npc_range_path, popup_msgtext_path,
                        advance_dialog_path, decline_quest_path, cancel_multiple_quest_menu_path,
                        team_up_button_path, quest_name_path)
-from src.interaction_prompts import plain_text, quest_interaction_matches, is_dungeon_entry_prompt
+from src.interaction_prompts import (plain_text, quest_interaction_matches, is_dungeon_entry_prompt,
+                                     quest_interaction_correlates, task_transition_prompt, quest_has_action,
+                                     split_quest_location, task_object_prompt)
+from src.collect_matching import parse_collect_goal
 from dataclasses import dataclass
 from src.automation_ownership import get_client_automation_ownership
 from copy import copy
@@ -26,7 +29,7 @@ def _invalidate_movement_control(client, control):
     previous = getattr(client, '_quest_movement_control', None)
     client._quest_movement_control = control
     if previous != control:
-        for attr in ('_quest_tp_rejected', '_quest_tp_landing', '_quest_target_arrival',
+        for attr in ('_quest_tp_rejected', '_quest_tp_landing', '_quest_target_arrival', '_quest_target_approach',
                      '_quest_internal_failure_wait', '_quest_door_approach'):
             setattr(client, attr, None)
         first = getattr(client, '_quest_target_first_move', None)
@@ -367,41 +370,133 @@ async def _movement_objective(client):
     return await window.maybe_text() if window is not None else ''
 
 
-_QUEST_ENTER_ARRIVAL_GAP = 150.0  # Existing final walks can stop within 120u.
+_QUEST_TARGET_TRANSITION_GAP = 250.0  # Current-target transitions observed at 88-175u.
+_QUEST_TARGET_INTERACTION_GAP = 300.0  # Only semantically correlated ordinary target approaches.
+_QUEST_TARGET_APPROACH_TTL = 5.0  # Preserve confirmed movement while the HUD catches up.
+CURRENT_TARGET_OBJECT_FALLBACK_DISTANCE = 5.0  # Exact-target arrival, without any name evidence.
 
 
-async def _movement_enter_arrival(client, target, task, control, position, identity):
-    """An alias Enter needs this client's verified navigation to this exact task."""
+def _target_approach_context(client, source):
+    """Bind movement evidence to the same bodies and released party reference."""
+    from src.quest_party import dungeon_session_for
+    def reference(member):
+        session = dungeon_session_for(member)
+        release = session.transition if session is not None else None
+        shared = release.get('movement_task') if release else None
+        shared = (shared[0], shared[1], tuple(shared[2]), shared[3]) if shared is not None else None
+        return id(session), id(release), shared
+    return id(client.body), id(source.body), reference(client), reference(source)
+
+
+def _current_target_approach(client, source, target, task, control):
+    approach = getattr(client, '_quest_target_approach', None)
+    if not isinstance(approach, dict):
+        return None
+    retry = getattr(client, '_quest_interaction_retry', None)
+    now = asyncio.get_running_loop().time()
+    entry_pending = (isinstance(retry, dict) and retry.get('entry_approach') is approach
+        and 0 < retry.get('entry_attempts', 0) <= 2 and not retry.get('entry_acknowledged')
+        and now <= retry.get('entry_deadline', -math.inf))
+    if not (task is not None and approach.get('source') is source
+            and approach.get('control') == control and approach.get('zone') == task[3]
+            and _same_movement_task(approach.get('task'), task)
+            and ('context' not in approach or approach['context'] == _target_approach_context(client, source))
+            and 0 <= now - approach.get('confirmed_at', -math.inf)
+            and (now - approach.get('confirmed_at', -math.inf) <= _QUEST_TARGET_APPROACH_TTL or entry_pending)):
+        client._quest_target_approach = None
+        return None
+    if (calc_Distance(approach['target'], target) <= 1
+            and calc_Distance(approach['origin'], approach['position']) > 5
+            and calc_Distance(approach['position'], target) < calc_Distance(approach['origin'], target) - 5):
+        return approach
+
+
+def _dedicated_collect_objective(objective):
+    goal = parse_collect_goal(objective)
+    if goal is None:
+        return False
+    text, _ = split_quest_location(objective)
+    action = text[:-len(goal.target)].strip().casefold()
+    # The collector also parses uncounted Use/Open instructions. With a valid
+    # task target those are ordinary interactions, unless collection counts exist.
+    return goal.total is not None or action not in {'use', 'open', '使用', '打开', '打開'}
+
+
+async def _movement_transition_arrival(client, source, target, task, control, position, identity):
+    """Bind a fresh transition popup to measured movement toward this same target."""
     if (task is None or calc_Distance(task[2], target) > 1
             or not all(math.isfinite(v) for v in (*task[2], *target))
             or calc_Distance(target, XYZ(0, 0, 0)) <= 1
-            or calc_Distance(position, target) > _QUEST_ENTER_ARRIVAL_GAP):
+            or calc_Distance(position, target) > _QUEST_TARGET_TRANSITION_GAP):
         return False
-    saved = getattr(client, '_quest_tp_landing', None)
-    landing = (_movement_failure_for_target(client, target, task, task[3], record=saved)
-               if isinstance(saved, dict) else None)
-    verified_tp = bool(landing and landing.get('confirmed') and landing.get('attempted')
-                       and not landing.get('pending') and not landing.get('rejected'))
-    arrival = getattr(client, '_quest_target_arrival', None)
-    verified_walk = bool(isinstance(arrival, dict) and arrival.get('control') == control
-        and arrival.get('zone') == task[3] and _same_movement_task(arrival.get('task'), task)
-        and calc_Distance(arrival['target'], target) <= 1)
-    return bool((verified_tp or verified_walk) and not await _movement_failure_blocks_interaction(
+    approach = _current_target_approach(client, source, target, task, control)
+    # A readable transition can remain visible throughout this measured approach.
+    # Fresh task/identity checks below still bind its promotion to this operation.
+    # Ordinary object prompts retain the original new/absent-popup requirement.
+    delayed_prompt = bool(approach and approach.get('prompt_absent'))
+    new_prompt = bool(approach and (delayed_prompt or approach.get('initial_observed')
+        and approach.get('identity') == identity
+        and (approach.get('initial_identity') != identity or task_transition_prompt(*identity))))
+    return bool(new_prompt and not await _movement_failure_blocks_interaction(
         client, target, task, pos=position, signature=identity))
+
+
+async def _movement_target_interaction(client, source, target, task, control, position, objective, identity):
+    """A nearby alias needs observed movement towards this task AND specific words."""
+    if (task is None or not all(math.isfinite(v) for v in (*task[2], *target, *position))
+            or calc_Distance(task[2], target) > 1 or calc_Distance(target, XYZ(0, 0, 0)) <= 1):
+        return 'interaction-not-related-to-current-task'
+    if calc_Distance(position, target) > _QUEST_TARGET_INTERACTION_GAP:
+        return 'task-target-interaction-too-far'
+    approach = _current_target_approach(client, source, target, task, control)
+    if (approach is None
+            or await _movement_failure_blocks_interaction(client, target, task,
+                pos=position, signature=identity)):
+        return 'task-target-interaction-no-provenance'
+    # Reuse the collector's existing action parser; never recruit its goals
+    # into the weaker ordinary alias path. Strict name matches stay unchanged.
+    if _dedicated_collect_objective(objective) or not quest_interaction_correlates(objective, *identity):
+        return 'task-target-interaction-no-semantic-correlation'
+    return 'accepted-task-target-interaction'
+
+
+async def _movement_target_object(client, source, target, task, control, position, objective, identity):
+    """Last resort: an object action at a genuinely approached current target."""
+    if not task_object_prompt(*identity):
+        return 'object-not-object-prompt'
+    if (task is None or type(task[1]) is not int or task[1] <= 0
+            or not all(math.isfinite(v) for v in (*task[2], *target, *position))
+            or calc_Distance(task[2], target) > 1 or calc_Distance(target, XYZ(0, 0, 0)) <= 1):
+        return 'object-stale-task'
+    if calc_Distance(position, target) > CURRENT_TARGET_OBJECT_FALLBACK_DISTANCE:
+        return 'object-too-far'
+    # Reuse the established proof/new-popup checks, with the stricter object
+    # distance already enforced above. No movement record is created here.
+    if not await _movement_transition_arrival(client, source, target, task, control, position, identity):
+        return 'object-no-provenance'
+    retry = getattr(client, '_quest_interaction_retry', None)
+    if (isinstance(retry, dict) and _same_movement_task(retry.get('task'), task)
+            and calc_Distance(retry['target'], target) <= 1
+            and retry.get('object_sent') == (objective, identity, control)):
+        return 'object-awaiting-update'
+    return 'accepted-current-target-object'
 
 
 async def _quest_interaction_eligibility(client, target, task=None, *, task_client=None,
         expected=None, read_objective=None, read_popup=None, read_title=None, visible=None):
     """One current-task proof, shared by movement and the last input check."""
     source = task_client or client
+    context = _target_approach_context(client, source)
     visible = visible or is_visible_by_path
     read_objective = read_objective or _movement_objective
     position, current, zone, control, identity, objective = None, None, None, None, None, ''
 
     async def safety():
         if await client.is_loading():
+            client._quest_target_approach = None
             return 'unsafe-loading'
         if await client.in_battle() or getattr(client, 'entity_detect_combat_status', False):
+            client._quest_target_approach = None
             return 'unsafe-battle'
         owner = get_client_automation_ownership(client)
         if (owner.locked and owner._owner_task is not asyncio.current_task()
@@ -417,7 +512,9 @@ async def _quest_interaction_eligibility(client, target, task=None, *, task_clie
             return 'input-owner-conflict'
 
     def result(reason):
-        accepted = reason in ('accepted-current-task', 'accepted-task-target-enter')
+        accepted = reason in ('accepted-current-task', 'accepted-task-target-enter',
+                              'accepted-task-target-interaction', 'accepted-task-target-transition',
+                              'accepted-current-target-gateway', 'accepted-current-target-object')
         frozen_task = ((current[0], current[1], tuple(current[2]), current[3])
                        if current is not None else None)
         value = QuestInteractionEligibility(accepted, reason, frozen_task, tuple(target),
@@ -441,33 +538,80 @@ async def _quest_interaction_eligibility(client, target, task=None, *, task_clie
         _, control = await _movement_body(client)
         zone = await client.zone_name()
         current = await _movement_task_snapshot(source)
+        _current_target_approach(client, source, target, current, control)
         if current is not None and current[3] != zone:
+            client._quest_target_approach = None
             return result('zone-changed')
         if (current is None or type(current[0]) is not int or current[0] <= 0
                 or type(current[1]) is not int
                 or task is not None and not _same_movement_task(task, current)):
             return result('zone-changed' if task and task[3] != zone else 'task-changed')
         if not await visible(client, npc_range_path):
+            retry = getattr(client, '_quest_interaction_retry', None)
+            if isinstance(retry, dict):
+                retry.pop('object_sent', None)  # A disappeared object ends its pending X.
             return result('no-visible-prompt')
         identity = await _movement_interaction_signature(client, read_popup=read_popup,
             read_title=read_title, visible=visible)
-        objective = plain_text(await read_objective(source) or '').strip()
+        raw_objective = await read_objective(source) or ''
+        objective = plain_text(raw_objective).strip()
         position = await _movement_position(client)
         if identity is None:
             return result('no-visible-prompt')
         if not math.isfinite(calc_Distance(position, target)) or calc_Distance(position, target) >= 750:
             return result('too-far-from-task')
         matched = quest_interaction_matches(objective, identity[0])
-        enter_arrival = (not matched and is_dungeon_entry_prompt(identity[1])
-            and await _movement_enter_arrival(client, target, current, control, position, identity))
-        if not matched and not enter_arrival:
-            return result('interaction-not-related-to-current-task')
+        transition_arrival = False
+        if (not matched and task_transition_prompt(*identity)
+                and not _dedicated_collect_objective(raw_objective)
+                and not any(quest_has_action(objective, action) for action in ('defeat', 'photomance', 'pet_mode'))):
+            if calc_Distance(position, target) > _QUEST_TARGET_TRANSITION_GAP:
+                return result('task-target-transition-too-far')
+            transition_arrival = await _movement_transition_arrival(
+                client, source, target, current, control, position, identity)
+            if not transition_arrival:
+                return result('task-target-transition-no-provenance')
+        ordinary_arrival = False
+        gateway_arrival = False
+        object_arrival = False
+        if not matched and not transition_arrival:
+            reason = await _movement_target_interaction(client, source, target, current, control,
+                position, raw_objective, identity)
+            if reason != 'accepted-task-target-interaction':
+                # QuestData can point to a required gateway before the actual
+                # Defeat/Talk/Collect objective. The existing movement proof
+                # supplies that link; only the existing transition classifier
+                # may use it without objective/title correlation.
+                if not task_transition_prompt(*identity):
+                    object_reason = await _movement_target_object(client, source, target, current, control,
+                        position, objective, identity)
+                    if object_reason != 'accepted-current-target-object':
+                        return result(reason if object_reason == 'object-not-object-prompt' else object_reason)
+                    object_arrival = True
+                else:
+                    if calc_Distance(position, target) > _QUEST_TARGET_TRANSITION_GAP:
+                        return result('gateway-too-far')
+                    if not await _movement_transition_arrival(
+                            client, source, target, current, control, position, identity):
+                        return result('gateway-no-provenance')
+                    gateway_arrival = True
+            else:
+                ordinary_arrival = True
+        fallback_approach = getattr(client, '_quest_target_approach', None)
         if expected is not None and (not expected.accepted or expected.task != (
                 current[0], current[1], tuple(current[2]), current[3])
                 or expected.target != tuple(target) or expected.zone != zone
                 or expected.objective != objective or expected.identity != identity
                 or expected.control != control):
             return result('zone-changed' if expected.zone != zone else 'task-changed')
+        if ordinary_arrival or transition_arrival or gateway_arrival or object_arrival:
+            # This read must precede the final task/popup/safety/control reads.
+            position = await _movement_position(client)
+            limit = (CURRENT_TARGET_OBJECT_FALLBACK_DISTANCE if object_arrival else
+                     _QUEST_TARGET_TRANSITION_GAP if transition_arrival or gateway_arrival else _QUEST_TARGET_INTERACTION_GAP)
+            if not all(math.isfinite(v) for v in position) or calc_Distance(position, target) > limit:
+                return result('object-too-far' if object_arrival else 'gateway-too-far' if gateway_arrival else
+                              'task-target-transition-too-far' if transition_arrival else 'task-target-interaction-too-far')
         # Async reads may have observed different frames. Do not grant old input.
         if await client.zone_name() != zone:
             return result('zone-changed')
@@ -481,7 +625,21 @@ async def _quest_interaction_eligibility(client, target, task=None, *, task_clie
             return result(blocked)
         if await _movement_control_changed(client, control):
             return result('input-owner-conflict')
-        return result('accepted-task-target-enter' if enter_arrival else 'accepted-current-task')
+        if context != _target_approach_context(client, source):
+            client._quest_target_approach = None
+            return result('task-target-interaction-no-provenance')
+        if (ordinary_arrival or transition_arrival or gateway_arrival or object_arrival) and getattr(client, '_quest_target_approach', None) is not fallback_approach:
+            return result('task-target-interaction-no-provenance')
+        retry = getattr(client, '_quest_interaction_retry', None)
+        if (isinstance(retry, dict) and _same_movement_task(retry.get('task'), current)
+                and calc_Distance(retry['target'], target) <= 1
+                and retry.get('transition_sent') == (objective, control)):
+            return result('transition-awaiting-update')
+        return result('accepted-current-target-object' if object_arrival else
+                      'accepted-current-target-gateway' if gateway_arrival else
+                      ('accepted-task-target-enter' if is_dungeon_entry_prompt(identity[1]) else
+                       'accepted-task-target-transition') if transition_arrival else
+                      'accepted-task-target-interaction' if ordinary_arrival else 'accepted-current-task')
     except (HookNotActive, MemoryReadError, ValueError, AttributeError):
         return result('task-changed')  # Unreadable state cannot authorize input.
 
@@ -686,12 +844,27 @@ async def _movement_stop_reason(client, target, zone, task_before, task_client=N
     return None
 
 
+_MANUAL_QUEST_APPROACH_LIMIT = 500.0  # Existing manual context is require_questing=False.
+
+
+def _quest_approach_walk_allowed(client, position, target, *, require_questing):
+    if require_questing:
+        return True  # Automatic callers retain their existing approach policy.
+    remaining = calc_Distance(position, target)
+    if math.isfinite(remaining) and remaining <= _MANUAL_QUEST_APPROACH_LIMIT:
+        return True
+    logger.debug(f"[navmap_tp] client={client.title} decision=reject-approach-walk "
+                 f"reason=remaining-distance-too-large remaining_distance={remaining:.2f} "
+                 f"walk_limit={_MANUAL_QUEST_APPROACH_LIMIT} source=manual")
+    return False
+
+
 async def navmap_tp(client: Client, xyz: XYZ = None, leader_client: Client = None, *, validation_state=None,
                     stop=None, require_questing=True):
     # TODO: What is leader_client meant to be for?
     if not await is_free(client):
         logger.debug(f"[navmap_tp] {client.title}: stopped: loading, battle or dialogue")
-        return
+        return False if not require_questing else None
 
     logger.debug(f"[navmap_tp] {client.title}: using navmap teleport (direct -> nav data -> spiral)")
     starting_zone = await client.zone_name() # for loading the correct wad and to walk to target as a last resort
@@ -721,6 +894,9 @@ async def navmap_tp(client: Client, xyz: XYZ = None, leader_client: Client = Non
     async def walk_from_landing():
         if await stopped():
             return
+        if not _quest_approach_walk_allowed(client, await _movement_position(client), target_xyz,
+                                            require_questing=require_questing):
+            return False  # Reject before loading collision data or planning A*.
         logger.debug(f"[navmap_tp] {client.title}: landing not at target; trying a guarded approach walk")
         try:
             from src.collision import CollisionWorld, get_collision_data
@@ -754,18 +930,22 @@ async def navmap_tp(client: Client, xyz: XYZ = None, leader_client: Client = Non
         if await stopped():
             return True
         # Automatic recovery must first reach the existing ordinary 3D X range.
-        # Manual TP (no validation state) retains its original approach behavior.
+        # Manual requests have their own short final-approach budget.
         if validation_state is not None and calc_Distance(pos, target_xyz) >= 750:
             if failed_landings is not None:
                 failed_landings.append(copy(dest))
             return False
+        if not _quest_approach_walk_allowed(client, pos, target_xyz, require_questing=require_questing):
+            if failed_landings is not None:
+                failed_landings.append(copy(dest))
+            return False  # Keep searching nav/spiral candidates instead of walking remotely.
         if math.hypot(pos.x - target_xyz.x, pos.y - target_xyz.y) <= 60 and landed:
             return True  # Physical arrival only; never a quest-progress signal.
         if landed or not _sent_back(pos, origin):
             walked = await walk_from_landing()
             if not walked and not await stopped() and failed_landings is not None:
                 failed_landings.append(copy(dest))
-            return True
+            return True if require_questing else bool(walked or await stopped())
         if failed_landings is not None:
             failed_landings.append(copy(dest))
         return False
@@ -775,14 +955,17 @@ async def navmap_tp(client: Client, xyz: XYZ = None, leader_client: Client = Non
         for i in range(5):
             adjusted = calc_PointOn3DLine(starting_xyz, target_xyz, 50 + 100 * i)
             if await try_landing(rotate_point(target_xyz, adjusted, 92 * i)):
-                return
+                return True
         logger.debug(f"[navmap_tp] {client.title}: finite landing attempts exhausted; quest progress unconfirmed")
+        if not require_questing:
+            logger.debug(f"[navmap_tp] client={client.title} decision=fail reason=no-suitable-landing source=manual")
+        return False
 
     if check_sigma(starting_xyz, target_xyz):
-        return # save some work
+        return True if not require_questing else None # save some work
 
     if await try_landing(target_xyz):
-        return # trivial tp, no point using a more complex method if this one works
+        return True if not require_questing else None # trivial tp
 
     try:
         # attempt to use the nav data
@@ -790,8 +973,8 @@ async def navmap_tp(client: Client, xyz: XYZ = None, leader_client: Client = Non
         nav_file = await wad.get_file("zone.nav")
         vertices, edges = parse_nav_data(nav_file)
     except Exception:
-        await try_spiral()
-        return
+        outcome = await try_spiral()
+        return outcome if not require_questing else None
 
     # continuation of nav data tp, don't want to swallow potential exceptions in this section
     closest_vertex = vertices[0]
@@ -829,10 +1012,11 @@ async def navmap_tp(client: Client, xyz: XYZ = None, leader_client: Client = Non
     # midpoint of line from average point to target
     ap2 = XYZ(avg_xyz.x + av.x / 2, avg_xyz.y + av.y / 2, avg_xyz.z + av.z / 2)
     if await try_landing(ap2):
-        return
+        return True if not require_questing else None
     if await try_landing(avg_xyz):
-        return
-    await try_spiral()
+        return True if not require_questing else None
+    outcome = await try_spiral()
+    return outcome if not require_questing else None
 
 
 # The player's wall-clearance radius, clamped to a small collision-capsule range.
@@ -1064,6 +1248,7 @@ async def _walk_remaining_to_target(client: Client, target_xyz: XYZ, world, zone
     A physical arrival is not quest progress. Interaction/state changes stop the walk
     for the existing handler. Rejected solids are routed around, never refined into.
     """
+    short_probe = False
     try:
         from src.ibao_runtime import complete_before_cancel
         from src.collision_math import get_walk_grid, _ZoneWalkGrid, _hex_ring, straight_path_walkable, GRID_SPACING
@@ -1094,6 +1279,9 @@ async def _walk_remaining_to_target(client: Client, target_xyz: XYZ, world, zone
             else:
                 reason = await _movement_stop_reason(client, target_xyz, zone_name, task_before, task_client,
                     control=control, require_questing=require_questing)
+            if not reason and not require_questing and not _quest_approach_walk_allowed(
+                    client, await _movement_position(client), target_xyz, require_questing=False):
+                reason = 'remaining-distance-too-large'
             if reason:
                 logger.debug(f"[collision_tp] {client.title}: final walk stopped: {reason}")
             return reason
@@ -1101,9 +1289,21 @@ async def _walk_remaining_to_target(client: Client, target_xyz: XYZ, world, zone
         if await stopped():
             return False
         pos = await _movement_position(client)
+        if not _quest_approach_walk_allowed(client, pos, target_xyz, require_questing=require_questing):
+            return False
         gap = math.hypot(pos.x - target_xyz.x, pos.y - target_xyz.y)
-        if gap <= _WALK_GAP_MIN:
-            return True
+        short_probe = gap <= _WALK_GAP_MIN
+        if short_probe:
+            nav = getattr(client, '_quest_probe_navigation', None)
+            if not (require_questing and isinstance(nav, dict) and nav.get('active')):
+                return True
+            from src.current_target_probe import object_candidate
+            signature = await _movement_interaction_signature(client)
+            objective = await _movement_objective(task_client or client)
+            if (signature is None or not object_candidate(objective, *signature)
+                    or quest_interaction_matches(objective, signature[0])
+                    or quest_interaction_correlates(objective, *signature)):
+                return True
         extra = await asyncio.to_thread(entity_collision.build_zone_static_shapes, zone_name, None)
         # blocking_volumes_at already includes the player clearance. Use a local
         # instance of the existing grid so failed solids don't pollute the zone cache.
@@ -1183,7 +1383,33 @@ async def _walk_remaining_to_target(client: Client, target_xyz: XYZ, world, zone
                 anchor, first = points[last], last + 1
             return walk, refine, len(path)
 
+        async def record_final_endpoint(position, endpoint_tolerance=3.0):
+            nav = getattr(client, '_quest_probe_navigation', None)
+            if not (require_questing and isinstance(nav, dict) and nav.get('active')):
+                return
+            from src.current_target_probe import record_endpoint
+            if refine and calc_Distance(position, target_xyz) <= 3:
+                await record_endpoint(client, target_xyz, task_before, control, target_xyz, 'target')
+            elif not refine and (
+                    calc_Distance(position, walk[-1]) <= 3
+                    or (calc_Distance(position, walk[-1]) <= endpoint_tolerance
+                        and calc_Distance(position, target_xyz)
+                        <= calc_Distance(walk[-1], target_xyz) + 3)):
+                distance = calc_Distance(position, target_xyz)
+                step = min(5.0, distance)
+                closer = XYZ(position.x+(target_xyz.x-position.x)*step/distance,
+                             position.y+(target_xyz.y-position.y)*step/distance,
+                             position.z) if distance > 0 else position
+                if distance > 3 and not await asyncio.to_thread(clear_edge, position, closer):
+                    await record_endpoint(client, target_xyz, task_before, control, position, 'approach-limit')
+
         walk, refine, planned_nodes = await asyncio.to_thread(_plan)
+        if short_probe:
+            # Keep the original short-gap return/input behaviour. Only a completed
+            # safe plan whose endpoint is here can add optional probe evidence.
+            if walk:
+                await record_final_endpoint(await _movement_position(client))
+            return True
         if not walk:
             logger.debug(
                 f"[collision_tp] {client.title}: {gap:.0f}u short of target but no on-foot path; "
@@ -1292,10 +1518,11 @@ async def _walk_remaining_to_target(client: Client, target_xyz: XYZ, world, zone
             return False
         if not refine:
             logger.debug(f"[collision_tp] {client.title}: approach endpoint within node tolerance; quest progress unconfirmed")
+        await record_final_endpoint(pos, node_tolerance)
         return refine and math.hypot(pos.x - target_xyz.x, pos.y - target_xyz.y) <= _WALK_GAP_MIN
     except Exception as e:
         logger.debug(f"[collision_tp] {client.title}: final walk skipped ({e!r})")
-        return False
+        return bool(short_probe)  # Optional short-gap evidence must not change its original True return.
 
 
 # Zones whose collision/walkability caches are built or being built, so the background
@@ -1428,6 +1655,10 @@ async def collision_tp(client: Client, xyz: XYZ = None, leader_client: Client = 
             return 'changed'
         if reason and reason != 'target interaction ready; returning to existing handler':
             return 'blocked'
+        probe_navigation = getattr(client, '_quest_probe_navigation', None)
+        if isinstance(probe_navigation, dict) and probe_navigation.get('active'):
+            from src.current_target_probe import record_endpoint
+            await record_endpoint(client, target_xyz, quest_before, control, target_xyz, 'target')
         if recovery is not None and recovery['attempts'] >= 3:
             return 'exhausted'  # Near XYZ or a completed call cannot renew the search.
         if await _movement_interaction_handoff(client, target_xyz, quest_before, task_client=leader_client):

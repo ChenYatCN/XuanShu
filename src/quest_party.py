@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import count
 import math
 import re
 import time
@@ -11,6 +12,11 @@ from typing import Iterable, Mapping, Sequence, TypeVar
 
 ClientT = TypeVar("ClientT")
 FOLLOW_RETRY_DELAYS = (2.0, 5.0, 10.0, 20.0, 30.0)
+_DUNGEON_GENERATIONS = count(1)
+
+
+def _next_dungeon_generation():
+    return next(_DUNGEON_GENERATIONS)
 FRIEND_ICON_PRESETS = {
     # The selector starts at frame 42 of icon sheet 1. Button7 and Button8
     # therefore map to frames 49 and 50; Button9 is frame 0 on sheet 2.
@@ -63,6 +69,10 @@ class DungeonSession:
     transition: dict | None = None
     follow_attempts: dict = field(default_factory=dict)
     entry_wait: dict | None = None
+    generation: int = field(default_factory=_next_dungeon_generation)
+    phase: str = 'active'
+    quester_out: bool = False
+    retire_reason: str | None = None
 
 
 def _clear_dungeon_entry(session):
@@ -79,19 +89,51 @@ def _clear_dungeon_entry(session):
             approach['ended'] = True
 
 
-def clear_dungeon_session(client):
-    session = getattr(client, 'quest_party_dungeon', None)
+def retire_dungeon_session(session, *, reason='retired'):
+    """Retire exactly this session and only state that is proven to belong to it."""
     if not isinstance(session, DungeonSession):
-        return
+        return False
+    already_retired = session.phase == 'retired'
+    session.phase = 'retired'
+    session.retire_reason = reason
+    session.transition = None
+    session.entry_wait = None
+    session.follow_attempts.clear()
     _clear_dungeon_entry(session)
     for member in session.members:
         if getattr(member, 'quest_party_dungeon', None) is session:
             member.quest_party_dungeon = None
+        # Battle rescue/probe/worker state has no session generation yet. 2B
+        # consumers must clear it with this expected session after their own
+        # fresh validation, not unconditionally here.
+    return not already_retired
+
+
+def mark_dungeon_party_releasing(session, *, reason='quester-out'):
+    """Authorize active follower release only after the quester is confirmed out."""
+    if (not isinstance(session, DungeonSession) or session.phase == 'retired'
+            or not session.quester_out):
+        return False
+    session.phase = 'party-releasing'
+    return True
+
+
+def clear_dungeon_session(client, expected=None, *, reason='clear'):
+    """Clear the current session, except when a stale caller names another one."""
+    session = getattr(client, 'quest_party_dungeon', None)
+    if not isinstance(session, DungeonSession):
+        return False
+    if expected is not None and session is not expected:
+        return False
+    return retire_dungeon_session(session, reason=reason)
 
 
 def dungeon_session_for(client):
     session = getattr(client, 'quest_party_dungeon', None)
     if not isinstance(session, DungeonSession):
+        return None
+    if session.phase == 'retired':
+        retire_dungeon_session(session, reason='retired-detected')
         return None
     current = (session.quester, *getattr(session.quester, 'quest_party_hitters', ()))
     if (set(map(id, current)) != set(map(id, session.members))
@@ -101,7 +143,7 @@ def dungeon_session_for(client):
             or any(not getattr(c, 'questing_status', False)
                    or (callable(getattr(c, 'is_running', None)) and not c.is_running())
                    for c in session.members)):
-        clear_dungeon_session(client)
+        clear_dungeon_session(client, expected=session, reason='roster-changed')
         return None
     return session
 
@@ -206,6 +248,16 @@ async def begin_dungeon_entry(quester, entry_clients, *, evidence=False):
     if session is not None:
         return session
     members = (quester, *getattr(quester, 'quest_party_hitters', ()))
+    for member in members:
+        existing = getattr(member, 'quest_party_dungeon', None)
+        if not isinstance(existing, DungeonSession) or existing is session:
+            continue
+        if existing.phase == 'retired':
+            clear_dungeon_session(member, expected=existing, reason='retired-entry')
+        elif existing.quester is quester:
+            return existing
+        else:
+            return None  # Never create a parallel session over another group's member.
     if len(members) < 2 or set(map(id, members)) != set(map(id, entry_clients)):
         return None
     zones = {}
@@ -260,7 +312,7 @@ async def observe_dungeon_session(client):
             zone = await member.zone_name()
             if not zone or zone == session.source_zones[id(member)]:
                 if member is session.quester and id(member) in session.entry_zones:
-                    clear_dungeon_session(client)  # Aborted, never confirmed entry.
+                    clear_dungeon_session(client, expected=session, reason='aborted-entry')
                     return None
                 incomplete = True
                 continue
@@ -297,6 +349,10 @@ async def observe_dungeon_session(client):
     if zone == session.source_zones[id(client)]:
         session.exited.add(id(client))
         session.exit_evidence[id(client)] = ('source-zone', session.last_zones[id(client)], zone)
+        if client is session.quester:
+            session.quester_out = True
+            if session.phase in ('active', 'exiting'):
+                session.phase = 'quester-out'
         _clear_dungeon_entry(session)
     elif zone and zone != session.last_zones[id(client)] and id(client) not in session.exited:
         before = session.last_zones[id(client)]
@@ -310,7 +366,7 @@ async def observe_dungeon_session(client):
     if zone:
         session.last_zones[id(client)] = zone
     if len(session.exited) == len(session.members):
-        clear_dungeon_session(client)
+        retire_dungeon_session(session, reason='all-members-out')
         return None
     return session
 
@@ -330,13 +386,17 @@ def record_dungeon_exit(client, before, after, *, evidence='GUI_InstanceExit'):
             or id(client) in session.potion_areas or getattr(client, 'refilling_potions', False)):
         return
     session.exited.add(id(client))
+    if client is session.quester:
+        session.quester_out = True
+        if session.phase in ('active', 'exiting'):
+            session.phase = 'quester-out'
     _clear_dungeon_entry(session)
     session.exit_evidence[id(client)] = (evidence, before, after)
     session.last_zones[id(client)] = after
     session.room_evidence.pop(id(client), None)
     session.potion_areas.pop(id(client), None)
     if len(session.exited) == len(session.members):
-        clear_dungeon_session(client)
+        retire_dungeon_session(session, reason='all-members-out')
 
 
 async def pause_dungeon_for_potions(client):

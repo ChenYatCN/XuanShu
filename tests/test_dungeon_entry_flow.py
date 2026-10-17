@@ -9,6 +9,7 @@ from src.teleport_math import _movement_task_snapshot
 from src.automation_ownership import automation_owner, get_client_automation_ownership
 from src.paths import team_up_wait_path
 from tests.test_party_dungeon_entry_sync import EntrySyncTests as Base
+from tests.test_dungeon_local_tp import client
 
 REAL_TIMEOUT = asyncio.timeout
 
@@ -43,6 +44,69 @@ class EntryFlowTests(Base):
         self.assertTrue(await self.reader._send_dungeon_entry_x(members))
         return party.dungeon_session_for(self.q)
 
+    async def test_quester_initial_entry_does_not_require_peer_crossed(self):
+        self.h.prompt = self.h.teamup = False
+        self.h.position = self.target
+        members = await self.reader.prepare_party_dungeon_entry()
+        self.assertEqual(members, [self.q])
+        self.assertTrue(await self.reader._send_dungeon_entry_x(members))
+        self.q.send_key.assert_awaited_once_with(Keycode.X, .1)
+        self.h.send_key.assert_not_awaited()
+        session = party.dungeon_session_for(self.q)
+        self.assertIsNotNone(session.entry_wait)
+        self.assertNotIn(id(self.h), session.entry_zones)
+
+    async def test_initial_entry_quester_ack_precedes_follower_join(self):
+        self.h.prompt = self.h.teamup = False
+        self.h.position = XYZ(0, 0, -10000)
+        members = await self.reader.prepare_party_dungeon_entry()
+        self.assertEqual(members, [self.q])
+        self.assertTrue(await self.reader._send_dungeon_entry_x(members))
+        session = party.dungeon_session_for(self.q)
+        self.assertFalse(session.confirmed)
+        self.assertNotIn(id(self.h), session.exited)
+        self.h.send_key.assert_not_awaited()
+
+    async def test_initial_entry_follower_loading_does_not_block_quester(self):
+        self.assertEqual(await self.reader.prepare_party_dungeon_entry(), [self.q, self.h])
+        self.h.prompt = self.h.teamup = False
+        self.h.position = self.target
+        self.h.is_loading.return_value = True
+        members = await self.reader.prepare_party_dungeon_entry()
+        self.assertEqual(members, [self.q])
+        self.assertTrue(await self.reader._send_dungeon_entry_x(members))
+        self.q.send_key.assert_awaited_once_with(Keycode.X, .1)
+        self.h.send_key.assert_not_awaited()
+
+    async def test_initial_entry_follower_unreadable_position_does_not_block_quester(self):
+        self.h.prompt = self.h.teamup = False
+        self.h.quest_position.position.side_effect = ValueError('position unavailable')
+        members = await self.reader.prepare_party_dungeon_entry()
+        self.assertEqual(members, [self.q])
+        self.assertTrue(await self.reader._send_dungeon_entry_x(members))
+        self.q.send_key.assert_awaited_once_with(Keycode.X, .1)
+        self.h.send_key.assert_not_awaited()
+
+    async def test_initial_entry_mixed_sentinel_and_valid_xyz_allows_quester_only(self):
+        h2 = client(3, XYZ(3, 4, 0))
+        h2.prompt = h2.teamup = False
+        h2.position = self.target
+        h2.quest_position.position.return_value = self.target
+        h2.quest_party_quester = self.q
+        h2.quest_party_status_session = self.h.quest_party_status_session
+        h2.hotkey_quest_clients = [self.q, self.h, h2]
+        self.q.hotkey_quest_clients = [self.q, self.h, h2]
+        self.q.quest_party_hitters = [self.h, h2]
+        self.h.prompt = self.h.teamup = False
+        self.h.position = XYZ(0, 0, -10000)
+        self.stack.enter_context(patch('src.utils.clients_share_live_area', AsyncMock(return_value=True)))
+        members = await self.reader.prepare_party_dungeon_entry()
+        self.assertEqual(members, [self.q])
+        self.assertTrue(await self.reader._send_dungeon_entry_x(members))
+        self.q.send_key.assert_awaited_once_with(Keycode.X, .1)
+        self.h.send_key.assert_not_awaited()
+        h2.send_key.assert_not_awaited()
+
     async def test_ready_cannon_caller_is_not_requalified_by_movement_cache(self):
         await self.reader.prepare_party_dungeon_entry()
         self.q.position = XYZ(self.target.x + 247, self.target.y, self.target.z)
@@ -65,7 +129,7 @@ class EntryFlowTests(Base):
 
     async def test_unreadable_snapshot_is_not_cached_as_permanent_disagreement(self):
         self.h.quest_position.position.side_effect = [ValueError('temporarily unreadable'), self.target]
-        self.assertEqual(await self.reader.prepare_party_dungeon_entry(), [])
+        self.assertEqual(await self.reader.prepare_party_dungeon_entry(), [self.q])
         self.h.quest_position.position.side_effect = None
         self.assertEqual(await self.reader.prepare_party_dungeon_entry(), [self.q, self.h])
         self.assertFalse(self.events)
@@ -183,12 +247,12 @@ class EntryFlowTests(Base):
         self.q.send_key.assert_not_awaited()
         self.h.send_key.assert_not_awaited()
 
-    async def test_generic_full_caller_does_not_forget_sent_x_when_nobody_entered(self):
+    async def test_generic_full_caller_retries_quester_only_once_when_nobody_entered(self):
         self.q.teamup = self.h.teamup = False
         self.setup_caller()
         for _ in range(2):
             await self.reader.auto_quest_solo()
-        self.assertEqual(self.q.send_key.await_count, 1)
+        self.assertEqual(self.q.send_key.await_count, 2)
         self.assertEqual(self.h.send_key.await_count, 1)
 
     async def test_failed_entry_retires_after_real_source_area_change(self):

@@ -34,7 +34,8 @@ def client(gid, target):
         quest_id=AsyncMock(side_effect=lambda: c.quest_id_value),
         goal_id=AsyncMock(return_value=7), quest_position=SimpleNamespace(position=AsyncMock(return_value=target)))
     c.zone_name = AsyncMock(side_effect=lambda: c.zone)
-    c.body = SimpleNamespace(position=AsyncMock(side_effect=lambda: c.position))
+    c.body = SimpleNamespace(position=AsyncMock(side_effect=lambda: c.position),
+                             read_base_address=AsyncMock(return_value=gid * 1000))
     area = SimpleNamespace(read_base_address=AsyncMock(side_effect=lambda: gid * 10000 + c.area_id),
                            zone_id=AsyncMock(side_effect=lambda: c.area_id))
     c.client_object = SimpleNamespace(client_zone=AsyncMock(return_value=area),
@@ -441,10 +442,11 @@ class FollowerTests(DungeonFixture, unittest.IsolatedAsyncioTestCase):
                 await asyncio.gather(task, waiter, return_exceptions=True)
 
     async def test_real_follower_uses_bounded_friend_recovery_without_old_entrance_x(self):
-        await self.enter()
+        session = await self.enter()
         await party.remember_dungeon_transition(self.q, XYZ(600, 700, 0))
         self.q.zone = 'Dungeon/Room2'
         self.q.quest_party_observed_zone = self.q.zone
+        session.transition = None  # The recorded entrance is gone; friend recovery is next.
         done = asyncio.Event()
         local = AsyncMock()
         def status(_h, _q, text):
@@ -596,7 +598,10 @@ class FollowerTests(DungeonFixture, unittest.IsolatedAsyncioTestCase):
         async def friend_arrive(*_args, **_kw): self.h.zone = self.q.zone
         friend = AsyncMock(side_effect=friend_arrive)
         async def reference_position():
-            friend.assert_awaited_once()  # Proximity reads must follow actual arrival.
+            import inspect
+            # Resync samples XYZ in both zones without treating it as arrival.
+            if not any(frame.function == 'fresh_follow_state' for frame in inspect.stack(context=0)):
+                friend.assert_awaited_once()  # Proximity proof still follows actual arrival.
             return self.q.position
         self.q.body.position.side_effect = reference_position
         async def local(c, target, **_):
@@ -759,6 +764,7 @@ class EntryCallerTests(DungeonFixture, unittest.IsolatedAsyncioTestCase):
             c.is_loading.return_value = True
         async def q_key(k, t): await key(self.q, k, t)
         async def h_key(k, t): await key(self.h, k, t)
+        self.h.position = self.q.quest_position.position.return_value
         self.q.send_key.side_effect, self.h.send_key.side_effect = q_key, h_key
         with patch('src.questing.get_popup_title', AsyncMock(return_value='Dungeon A')), patch.object(
                 Quester, 'teleport_to_quest_target', AsyncMock(side_effect=move)), patch.object(

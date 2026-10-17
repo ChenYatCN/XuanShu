@@ -48,6 +48,7 @@ class FriendTargetIdentityTests(unittest.IsolatedAsyncioTestCase):
         lookup = AsyncMock(side_effect=ValueError('target absent'))
         wrapper = entry('teleport_to_quester_from_friend_list',
                         dict(teleport_to_friend_from_list=lookup))
+        wrapper.__kwdefaults__ = dict(before_request=None, on_request_sent=None)
         with self.assertRaises(ValueError):
             await wrapper(self.client, 'Mason Flame', (2, 0))
         self.assertEqual(lookup.await_count, 1)
@@ -57,6 +58,7 @@ class FriendTargetIdentityTests(unittest.IsolatedAsyncioTestCase):
         lookup = AsyncMock()
         wrapper = entry('teleport_to_quester_from_friend_list',
                         dict(teleport_to_friend_from_list=lookup))
+        wrapper.__kwdefaults__ = dict(before_request=None, on_request_sent=None)
         await wrapper(self.client, 'Mason Flame', (2, 0))
         self.assertEqual(lookup.await_args.kwargs['name'], 'Mason Flame')
 
