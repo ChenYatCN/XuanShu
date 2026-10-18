@@ -57,6 +57,10 @@ petPowerButton = ['WorldView', 'windowHUD', 'PetSystemButton', 'PetButtonLayout'
 petPowerCooldown = ['WorldView', 'windowHUD', 'PetSystemButton', 'PetButtonLayout', 'UsePetPowerButton', 'PetPowerCooldownText']
 PET_POWER_COOLDOWN_THRESHOLD = 30
 PET_POWER_TIMEOUT = 30
+# One ESC per dismissal attempt; the shop gets this long to finish closing
+# before the caller may re-observe it and try again.
+CROWNSHOP_DISMISS_TIMEOUT = 3.0
+CROWNSHOP_DISMISS_POLL = 0.1
 quitButton = ['WorldView', 'DeckConfiguration', 'SettingPage', 'QuitButton']
 logOutConfirm = ['MessageBoxModalWindow', 'messageBoxBG', 'messageBoxLayout', 'AdjustmentWindow', 'Layout', 'centerButton']
 txtLocation = ['WorldView', 'mainWindow', 'sprSubBanner', 'txtLocation']
@@ -114,6 +118,12 @@ async def click_window_from_path(mouse_handler, base_window, path):
 async def click_window_until_gone(client, path):
     while (window := (await window_from_path(client.root_window, path))) and await is_visible_by_path(client.root_window, path):
         await asyncio.sleep(0.02)
+        if path == quitButton:
+            try:
+                title = client.title
+            except Exception:
+                title = '<unavailable>'
+            logger.info('[ibao_restart_trace] action=click-quit-inner title={!r}', title)
         await client.mouse_handler.click_window(window)
         await asyncio.sleep(0.1)
 
@@ -162,6 +172,33 @@ async def crownshopVisibilty(client):
     except Exception:
         return False
 
+async def dismiss_crownshop(client):
+    """Close the Crown Shop without ever sending an ESC into empty UI.
+
+    A single ESC is sent only while the shop is confirmed visible. The result
+    is rechecked under a per-client lock before that ESC, so concurrent owners
+    (skipDialogue and azothFarmer) cannot double-dismiss the same popup.
+
+    Returns True when this call sent an ESC. False means the shop was already
+    gone, so the caller must not send anything.
+    """
+    if not await crownshopVisibilty(client):
+        return False
+    lock = getattr(client, '_ibao_crownshop_lock', None)
+    if lock is None:
+        lock = asyncio.Lock()
+        client._ibao_crownshop_lock = lock
+    async with lock:
+        if not await crownshopVisibilty(client):
+            return False  # Another owner closed it while we waited.
+        await client.send_key(Keycode.ESC, 0.3)
+        deadline = asyncio.get_running_loop().time() + CROWNSHOP_DISMISS_TIMEOUT
+        while await crownshopVisibilty(client):
+            if asyncio.get_running_loop().time() >= deadline:
+                break
+            await asyncio.sleep(CROWNSHOP_DISMISS_POLL)
+        return True
+
 async def appearOffline(client: Client, title, wizard):
     while not await is_visible_by_path(client.root_window, settingsConfirm):
         await asyncio.sleep(0.02)
@@ -180,13 +217,8 @@ async def appearOffline(client: Client, title, wizard):
         while await client.is_loading():
             await asyncio.sleep(0.02)
             await asyncio.sleep(0.1)
-        while await crownshopVisibilty(client):
+        while await dismiss_crownshop(client):
             await asyncio.sleep(0.02)
-            await asyncio.sleep(1)
-            await client.send_key(Keycode.ESC, 0.3)
-            await asyncio.sleep(0.4)
-            await client.send_key(Keycode.ESC, 0.3)
-            await asyncio.sleep(1)
         await appearOffline(client, title, wizard)
     while await is_visible_by_path(client.root_window, settingsConfirm):
         await asyncio.sleep(0.02)
@@ -199,13 +231,8 @@ async def skipDialogue(client):
         while await client.is_in_dialog():
             await asyncio.sleep(0.15)
             await client.send_key(Keycode.SPACEBAR, 0.05)
-        while await crownshopVisibilty(client):
+        while await dismiss_crownshop(client):
             await asyncio.sleep(0.02)
-            await asyncio.sleep(1)
-            await client.send_key(Keycode.ESC, 0.3)
-            await asyncio.sleep(1)
-            await client.send_key(Keycode.ESC, 0.3)
-            await asyncio.sleep(1)
 
 async def azothCollect(client, tipAmount):
     chat = await window_from_path(client.root_window, chatWindowPath)
@@ -284,13 +311,8 @@ async def azothFarmer(p, listPosition):
             for position, wizard in enumerate(activeClients[listPosition].wizLst, 0):
                 needSwitch = False
                 if runthrough == 0:
-                    while await crownshopVisibilty(p):
+                    while await dismiss_crownshop(p):
                         await asyncio.sleep(0.02)
-                        await asyncio.sleep(1)
-                        await p.send_key(Keycode.ESC, 0.3)
-                        await asyncio.sleep(1)
-                        await p.send_key(Keycode.ESC, 0.3)
-                        await asyncio.sleep(1)
                     while not await is_visible_by_path(p.root_window, feedPet):
                         await asyncio.sleep(0.02)
                         await click_window_from_path(p.mouse_handler, p.root_window, petSystem)
@@ -321,12 +343,7 @@ async def azothFarmer(p, listPosition):
                     await appearOffline(p, activeClients[listPosition].title, wizard)
                 while not needSwitch:
                     await asyncio.sleep(0.02)
-                    if await crownshopVisibilty(p):
-                        await asyncio.sleep(1)
-                        await p.send_key(Keycode.ESC, 0.3)
-                        await asyncio.sleep(1)
-                        await p.send_key(Keycode.ESC, 0.3)
-                        await asyncio.sleep(1)
+                    await dismiss_crownshop(p)
                     print(f'[{activeClients[listPosition].title}]: {removeTags(wizard.Name)} has {wizard.Happiness} happiness')
                     print(f'[{activeClients[listPosition].title}]: {removeTags(wizard.Name)} has {wizard.Azoth} azoth')
                     keepWizard = True
@@ -346,12 +363,7 @@ async def azothFarmer(p, listPosition):
                                 await asyncio.sleep(0.02)
                                 while location == await p.zone_name():
                                     await asyncio.sleep(0.02)
-                                    if await crownshopVisibilty(p):
-                                        await asyncio.sleep(1)
-                                        await p.send_key(Keycode.ESC, 0.3)
-                                        await asyncio.sleep(1)
-                                        await p.send_key(Keycode.ESC, 0.3)
-                                        await asyncio.sleep(1)
+                                    await dismiss_crownshop(p)
                                     await p.send_key(Keycode.X, 0.1)
                                 while await p.is_loading():
                                     await asyncio.sleep(0.02)

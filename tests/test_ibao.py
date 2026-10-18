@@ -77,31 +77,40 @@ class IbaoGroupTests(unittest.IsolatedAsyncioTestCase):
         mouse.__aexit__.assert_awaited_once()
         mouse.click_window.assert_awaited_once_with('button')
 
-    async def test_restart_dismisses_title_before_character_ready(self):
+    async def test_restart_stops_at_character_select_without_play_click(self):
         from unittest.mock import AsyncMock, patch
         from src.ibao_runtime import prepare_restarted_client
-        client = SimpleNamespace(root_window=object(), activate_hooks=AsyncMock(), send_key=AsyncMock())
-        client.mouse_handler = AsyncMock()
-        client.is_loading = AsyncMock(side_effect=[True, False])
-        client.zone_name = AsyncMock(return_value='World/Zone')
-        client.body = SimpleNamespace(position=AsyncMock())
-        with patch('src.ibao_core.is_visible_by_path', AsyncMock(side_effect=[False, False, True, False, False])), \
+        client = SimpleNamespace(
+            title='p1', window_handle=1, root_window=object(),
+            activate_hooks=AsyncMock(), send_key=AsyncMock(),
+            is_loading=AsyncMock(return_value=False),
+            zone_name=AsyncMock(return_value=None), is_running=lambda: True)
+        from src import ibao_core
+        plays = [False, True]
+
+        async def visible(_root, path):
+            if path == ibao_core.playButton:
+                return plays.pop(0) if len(plays) > 1 else plays[0]
+            return False
+
+        with patch('src.ibao_core.is_visible_by_path', visible), \
              patch('src.ibao_core.click_window_until_gone', AsyncMock()) as click, \
-             patch('src.ibao_runtime.asyncio.sleep', AsyncMock()):
+             patch('src.ibao_runtime.asyncio.sleep', AsyncMock()), \
+             patch('src.ibao_runtime.ibao_restart_trace', AsyncMock()):
             await prepare_restarted_client(client)
         client.activate_hooks.assert_awaited_once_with(wait_for_ready=False)
-        from src import ibao_core
-        click.assert_awaited_once()
-        self.assertIs(click.await_args.args[0]._client, client)
-        self.assertEqual(click.await_args.args[1], ibao_core.playButton)
-        client.body.position.assert_awaited_once()
-        self.assertEqual(client.send_key.await_count, 2)
-        self.assertTrue(all(call.args[0].name == 'ESC' for call in client.send_key.call_args_list))
+        client.send_key.assert_awaited_once()
+        self.assertEqual(client.send_key.await_args.args[0].name, 'ESC')
+        click.assert_not_awaited()
 
     async def test_restart_title_wait_has_timeout(self):
         from unittest.mock import AsyncMock, patch
         from src.ibao_runtime import prepare_restarted_client
-        client = SimpleNamespace(root_window=object(), activate_hooks=AsyncMock(), send_key=AsyncMock())
+        client = SimpleNamespace(
+            title='p1', window_handle=1, root_window=object(),
+            activate_hooks=AsyncMock(), send_key=AsyncMock(),
+            is_loading=AsyncMock(return_value=False),
+            zone_name=AsyncMock(return_value=None), is_running=lambda: True)
         with patch('src.ibao_core.is_visible_by_path', AsyncMock(return_value=False)):
             with self.assertRaises(TimeoutError):
                 await prepare_restarted_client(client, timeout=.01)

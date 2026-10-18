@@ -2164,7 +2164,8 @@ class Quester():
             client._quest_target_approach = written_approach
             proof = await self._interaction_eligibility(client, xyz, task_before, task_client=leader_client)
             return (proof.accepted and task_transition_prompt(*proof.identity)
-                    or not transition_only and proof.reason == 'accepted-task-target-interaction')
+                    or not transition_only and proof.reason in (
+                        'accepted-task-target-interaction', 'accepted-current-target-object'))
 
         async def watch_movement_state():
             while True:

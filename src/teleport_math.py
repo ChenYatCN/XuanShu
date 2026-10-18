@@ -2,6 +2,7 @@ import asyncio
 from wizwalker import XYZ, Orient, Client, Keycode, MemoryReadError
 from wizwalker.file_readers.wad import Wad
 import math
+import re
 import struct
 from io import BytesIO
 from typing import Tuple, Union
@@ -374,6 +375,11 @@ _QUEST_TARGET_TRANSITION_GAP = 250.0  # Current-target transitions observed at 8
 _QUEST_TARGET_INTERACTION_GAP = 300.0  # Only semantically correlated ordinary target approaches.
 _QUEST_TARGET_APPROACH_TTL = 5.0  # Preserve confirmed movement while the HUD catches up.
 CURRENT_TARGET_OBJECT_FALLBACK_DISTANCE = 5.0  # Exact-target arrival, without any name evidence.
+_OBJECT_ACTION_OBJECTIVE = re.compile(
+    r'^(?:use|open|take|pull|read|place)\b'
+    r'|^(?:使用|打开|打開|拿走|拿取|取走|拉动|拉動|拖动|拖動|阅读|閱讀|放置|放上|放下|拾取)\s*',
+    re.I,
+)
 
 
 def _target_approach_context(client, source):
@@ -460,6 +466,38 @@ async def _movement_target_interaction(client, source, target, task, control, po
     return 'accepted-task-target-interaction'
 
 
+def _object_action_objective(objective):
+    """Only object-action instructions may use the visible-prompt fallback."""
+    goal_parsed = parse_collect_goal(objective)
+    if goal_parsed is not None and goal_parsed.total is not None:
+        return False  # Counted collection stays with its dedicated handler.
+    if any(quest_has_action(objective, action) for action in ('defeat', 'photomance', 'pet_mode')):
+        return False
+    goal, _ = split_quest_location(plain_text(objective or '').strip())
+    return bool(_OBJECT_ACTION_OBJECTIVE.match(goal.strip()))
+
+
+async def _visible_object_prompt_arrival(client, source, target, task, control, position, identity):
+    """A fresh object prompt at the end of measured movement to this task target.
+
+    interaction_position is unavailable in the current client wrapper, so the
+    QuestData anchor is not a valid hard gate for a large object. The prompt
+    still needs the exact current task/target approach, no movement failure,
+    and a current object-action identity.
+    """
+    if (task is None or not all(math.isfinite(v) for v in (*task[2], *target, *position))
+            or calc_Distance(task[2], target) > 1
+            or calc_Distance(target, XYZ(0, 0, 0)) <= 1
+            or not task_object_prompt(*identity)):
+        return False
+    if _current_target_approach(client, source, target, task, control) is None:
+        return False
+    if await _movement_failure_blocks_interaction(
+            client, target, task, pos=position, signature=identity):
+        return False
+    return True
+
+
 async def _movement_target_object(client, source, target, task, control, position, objective, identity):
     """Last resort: an object action at a genuinely approached current target."""
     if not task_object_prompt(*identity):
@@ -468,11 +506,19 @@ async def _movement_target_object(client, source, target, task, control, positio
             or not all(math.isfinite(v) for v in (*task[2], *target, *position))
             or calc_Distance(task[2], target) > 1 or calc_Distance(target, XYZ(0, 0, 0)) <= 1):
         return 'object-stale-task'
-    if calc_Distance(position, target) > CURRENT_TARGET_OBJECT_FALLBACK_DISTANCE:
-        return 'object-too-far'
-    # Reuse the established proof/new-popup checks, with the stricter object
-    # distance already enforced above. No movement record is created here.
-    if not await _movement_transition_arrival(client, source, target, task, control, position, identity):
+    distance = calc_Distance(position, target)
+    if distance > CURRENT_TARGET_OBJECT_FALLBACK_DISTANCE:
+        # QuestData target can be an object center/collider interior while the
+        # real prompt appears around its perimeter. The current-task movement
+        # plus the fresh object prompt is terminal evidence; never send an X
+        # for an unrelated nearby object or without approach provenance.
+        if not _object_action_objective(objective):
+            return 'object-too-far'
+        if not await _visible_object_prompt_arrival(
+                client, source, target, task, control, position, identity):
+            return 'object-no-provenance'
+    elif not await _movement_transition_arrival(
+            client, source, target, task, control, position, identity):
         return 'object-no-provenance'
     retry = getattr(client, '_quest_interaction_retry', None)
     if (isinstance(retry, dict) and _same_movement_task(retry.get('task'), task)
@@ -574,6 +620,7 @@ async def _quest_interaction_eligibility(client, target, task=None, *, task_clie
         ordinary_arrival = False
         gateway_arrival = False
         object_arrival = False
+        object_prompt_arrival = False
         if not matched and not transition_arrival:
             reason = await _movement_target_interaction(client, source, target, current, control,
                 position, raw_objective, identity)
@@ -588,6 +635,8 @@ async def _quest_interaction_eligibility(client, target, task=None, *, task_clie
                     if object_reason != 'accepted-current-target-object':
                         return result(reason if object_reason == 'object-not-object-prompt' else object_reason)
                     object_arrival = True
+                    object_prompt_arrival = (
+                        calc_Distance(position, target) > CURRENT_TARGET_OBJECT_FALLBACK_DISTANCE)
                 else:
                     if calc_Distance(position, target) > _QUEST_TARGET_TRANSITION_GAP:
                         return result('gateway-too-far')
@@ -609,7 +658,10 @@ async def _quest_interaction_eligibility(client, target, task=None, *, task_clie
             position = await _movement_position(client)
             limit = (CURRENT_TARGET_OBJECT_FALLBACK_DISTANCE if object_arrival else
                      _QUEST_TARGET_TRANSITION_GAP if transition_arrival or gateway_arrival else _QUEST_TARGET_INTERACTION_GAP)
-            if not all(math.isfinite(v) for v in position) or calc_Distance(position, target) > limit:
+            gap = calc_Distance(position, target)
+            if (not all(math.isfinite(v) for v in position)
+                    or (object_prompt_arrival and gap >= 750)
+                    or (not object_prompt_arrival and gap > limit)):
                 return result('object-too-far' if object_arrival else 'gateway-too-far' if gateway_arrival else
                               'task-target-transition-too-far' if transition_arrival else 'task-target-interaction-too-far')
         # Async reads may have observed different frames. Do not grant old input.

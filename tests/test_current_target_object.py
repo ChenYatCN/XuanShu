@@ -60,7 +60,101 @@ class CurrentTargetObjectTests(Fixture):
                 self.assertEqual(self.keys, [Keycode.X])
                 self.stack.close()
 
-    async def test_object_fallback_requires_five_unit_3d_arrival_not_semantic_range(self):
+    async def test_visible_use_prompt_after_current_task_approach_can_qualify_when_anchor_is_inside_object(self):
+        self.objective = '<center>使用 星辰计 地点：奥秘</center>'
+        self.client.zone_name.return_value = 'Arcanum/Interiors/AR_Z01_AstalSchool'
+        self.title, self.prompt = 'Stellarometer', '按 或 使用'
+        proof = await self.object_ready(140)
+        self.assertTrue(proof.accepted, proof.reason)
+        self.assertEqual(proof.reason, 'accepted-current-target-object')
+        self.assertTrue(await self.quester._send_quest_interaction_x(
+            self.client, self.target, proof))
+        self.assertEqual(self.keys, [Keycode.X])
+
+    async def test_visible_use_prompt_without_task_movement_provenance_is_rejected(self):
+        self.objective = '<center>使用 星辰计 地点：奥秘</center>'
+        self.title, self.prompt = 'Stellarometer', '按 或 使用'
+        self.position = XYZ(self.target.x-140, self.target.y, self.target.z)
+        self.range_visible = True
+        proof = await self.quester._interaction_eligibility(self.client, self.target)
+        self.assertFalse(proof.accepted)
+        self.assertFalse(await self.quester._send_quest_interaction_x(
+            self.client, self.target, proof))
+        self.assertEqual(self.keys, [])
+
+    async def test_talk_prompt_does_not_use_generic_object_fallback(self):
+        self.objective = 'Talk to the Guardian'
+        self.title, self.prompt = 'Stellarometer', '按 或 使用'
+        proof = await self.object_ready(140)
+        self.assertFalse(proof.accepted)
+        self.assertNotEqual(proof.reason, 'accepted-current-target-object')
+        self.assertFalse(await self.quester._send_quest_interaction_x(
+            self.client, self.target, proof))
+        self.assertEqual(self.keys, [])
+
+    async def test_enter_or_portal_prompt_does_not_use_object_fallback(self):
+        self.objective = 'Enter the Tower'
+        self.title, self.prompt = 'World Gate', 'Press X to Use'
+        proof = await self.object_ready(140)
+        self.assertFalse(proof.accepted)
+        self.assertNotEqual(proof.reason, 'accepted-current-target-object')
+        self.assertFalse(await self.quester._send_quest_interaction_x(
+            self.client, self.target, proof))
+        self.assertEqual(self.keys, [])
+
+    async def test_task_changes_before_final_x_cancels_interaction(self):
+        proof = await self.object_ready(140)
+        self.assertTrue(proof.accepted, proof.reason)
+        self.goal += 1
+        self.assertFalse(await self.quester._send_quest_interaction_x(
+            self.client, self.target, proof))
+        self.assertEqual(self.keys, [])
+
+    async def test_prompt_disappears_before_final_x_cancels_interaction(self):
+        proof = await self.object_ready(140)
+        self.assertTrue(proof.accepted, proof.reason)
+        self.range_visible = False
+        self.assertFalse(await self.quester._send_quest_interaction_x(
+            self.client, self.target, proof))
+        self.assertEqual(self.keys, [])
+
+    async def test_large_object_prompt_stops_navigation_before_navmap_recovery(self):
+        self.objective = '<center>使用 星辰计 地点：奥秘</center>'
+        self.title, self.prompt = 'Stellarometer', '按 或 使用'
+        cancelled = asyncio.Event()
+
+        async def transport(*_args, **_kwargs):
+            self.position = XYZ(self.target.x-140, self.target.y, self.target.z)
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        with patch('src.questing.collision_tp', AsyncMock(side_effect=transport)):
+            result = await asyncio.wait_for(self.quester.move_until_quest_interaction(
+                self.client, self.target), .5)
+        self.assertEqual(result, 'ready')
+        self.assertTrue(cancelled.is_set())
+        self.assertEqual(self.keys, [])
+        proof = await self.quester._interaction_eligibility(self.client, self.target)
+        self.assertTrue(proof.accepted, proof.reason)
+        self.assertTrue(await self.quester._send_quest_interaction_x(
+            self.client, self.target, proof))
+        self.assertEqual(self.keys, [Keycode.X])
+
+    async def test_interaction_position_available_still_uses_stronger_spatial_evidence(self):
+        # The current client wrapper exposes no interaction_position. Exact
+        # anchor arrival remains the strongest available spatial control and
+        # is not weakened by the new visible-prompt fallback.
+        proof = await self.object_ready(.386)
+        self.assertTrue(proof.accepted, proof.reason)
+        self.client._quest_target_approach = None
+        self.position = XYZ(self.target.x-140, self.target.y, self.target.z)
+        proof = await self.quester._interaction_eligibility(self.client, self.target)
+        self.assertFalse(proof.accepted)
+
+    async def test_non_object_action_does_not_use_far_visible_prompt_fallback(self):
+        self.objective = '休息 篝火 地点：营地'
         proof = await self.object_ready(5)
         self.assertTrue(proof.accepted, proof.reason)
         for delta in (XYZ(5.01, 0, 0), XYZ(0, 0, 5.01), XYZ(175, 0, 0), XYZ(299, 0, 0)):

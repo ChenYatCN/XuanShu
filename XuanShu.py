@@ -4958,6 +4958,10 @@ async def main():
         logger.info(
             f"Relaunched, logged in, and hooked '{nickname}' as {new_client.title}."
         )
+        from src.ibao_runtime import ibao_restart_trace
+        await ibao_restart_trace(
+            'relaunch-return', new_client,
+            walker_clients=[(id(c), c.window_handle) for c in walker.clients])
         return new_client
 
     async def _recover_ibao_client(client: Client, _settings: dict) -> Client:
@@ -5328,6 +5332,13 @@ async def main():
                     )
                 except Exception:
                     # Client process likely closed — remove dead clients, keep title gaps
+                    from src.ibao_runtime import ibao_restart_trace
+                    lost = [c for c in walker.clients
+                            if not client_available(c, walker.clients)]
+                    trace_client = lost[0] if lost else foreground_client
+                    await ibao_restart_trace(
+                        'remove-dead-before', trace_client,
+                        walker_clients=[(id(c), c.window_handle) for c in walker.clients])
                     count_before = len(walker.clients)
                     dead = walker.remove_dead_clients()
                     if dead:

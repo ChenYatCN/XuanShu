@@ -6,7 +6,7 @@ import math
 from copy import deepcopy
 from loguru import logger
 from wizwalker import XYZ
-from wizwalker.errors import HookNotActive
+from wizwalker.errors import ClientClosedError, HookAlreadyActivated, HookNotActive
 from src import ibao_core
 from src.ibao_locations import DEFAULT_LOCATIONS, expand_location_aliases
 from src.script_popups import run_with_automation_ui_guard
@@ -15,6 +15,7 @@ from src.script_popups import run_with_automation_ui_guard
 IBAO_INACTIVITY_TIMEOUT = 180.0
 IBAO_RECOVERY_BACKOFF = 5.0
 IBAO_RECOVERY_RETRY_DELAY = 30.0
+CHARACTER_SELECT_WINDOW = ibao_core.playButton[:-1]
 
 
 async def complete_before_cancel(task, on_cancel=None):
@@ -177,31 +178,116 @@ async def run_client(client, settings):
     await _run_client_session(client, settings)
 
 
+async def ibao_restart_trace(stage, client, **extra):
+    """TEMPORARY diagnostics: one client snapshot at a restart boundary."""
+    def safe(read):
+        try:
+            return read()
+        except Exception as exc:
+            return f'<{type(exc).__name__}: {exc}>'
+
+    async def safe_async(read):
+        try:
+            return await read()
+        except Exception as exc:
+            return f'<{type(exc).__name__}: {exc}>'
+
+    inner = safe(lambda: getattr(client, '_client', None))
+    root = safe(lambda: client.root_window)
+    if isinstance(root, str):
+        play_visible = quit_visible = logout_confirm_visible = '<unavailable>'
+    else:
+        play_visible = await safe_async(
+            lambda: ibao_core.is_visible_by_path(root, ibao_core.playButton))
+        quit_visible = await safe_async(
+            lambda: ibao_core.is_visible_by_path(root, ibao_core.quitButton))
+        logout_confirm_visible = await safe_async(
+            lambda: ibao_core.is_visible_by_path(root, ibao_core.logOutConfirm))
+    play_visible = extra.pop('play_visible', play_visible)
+    quit_visible = extra.pop('quit_visible', quit_visible)
+    logout_confirm_visible = extra.pop('logOutConfirm_visible', logout_confirm_visible)
+    action = extra.pop('action', None)
+    reason = extra.pop('reason', None)
+    context = ' '.join(f'{key}={value!r}' for key, value in extra.items())
+    logger.info(
+        '[ibao_restart_trace] stage={} action={} reason={} title={!r} id={} '
+        'inner_id={} window_handle={} process_id={} is_running={} zone={!r} '
+        'is_loading={} play_visible={} quit_visible={} logOutConfirm_visible={} {}',
+        stage, action, reason, safe(lambda: client.title), id(client),
+        id(inner) if inner is not None else None, safe(lambda: client.window_handle),
+        safe(lambda: client.process_id), safe(lambda: client.is_running()),
+        await safe_async(lambda: client.zone_name()),
+        await safe_async(lambda: client.is_loading()),
+        play_visible, quit_visible, logout_confirm_visible, context,
+    )
+
+
 async def prepare_restarted_client(client, timeout=60):
-    """Dismiss the title, click Play and wait for a loaded character."""
+    """Prepare a relaunched client and stop at the character-select screen.
+
+    The ibao worker (azothFarmer) rebuilds its wizard list from character
+    select, so recovery must not click Play. A bounded ESC is sent only for a
+    confirmed title/start screen: not loading, no zone, and Play not visible.
+    """
     client = _TrackedClient(client, lambda: None)
     async with asyncio.timeout(timeout):
-        await complete_before_cancel(asyncio.create_task(client.activate_hooks(wait_for_ready=False)))
+        try:
+            await complete_before_cancel(
+                asyncio.create_task(client.activate_hooks(wait_for_ready=False)))
+        except HookAlreadyActivated:
+            pass  # Hooks are already usable; still enforce character select.
         while True:
+            if not client.is_running():
+                raise ClientClosedError()
             try:
-                ready = await ibao_core.is_visible_by_path(client.root_window, ibao_core.playButton)
+                root = client.root_window
+                ready = await ibao_core.is_visible_by_path(root, ibao_core.playButton)
+            except (HookNotActive, ClientClosedError):
+                raise
             except Exception:
                 ready = False  # Root window can be unset during initial frames.
             if ready:
-                break
+                await ibao_restart_trace('prepare-return', client)
+                return
+            try:
+                loading = await client.is_loading()
+            except (HookNotActive, ClientClosedError):
+                raise
+            except Exception:
+                await asyncio.sleep(.5)
+                continue
+            if loading:
+                await asyncio.sleep(.5)
+                continue
+            try:
+                zone = await client.zone_name()
+            except (HookNotActive, ClientClosedError):
+                raise
+            except Exception:
+                await asyncio.sleep(.5)
+                continue
+            if zone:
+                # Already in-world. Never guess "not at character select" into
+                # an ESC; wait for the bounded timeout instead.
+                await asyncio.sleep(.5)
+                continue
+            try:
+                character_shell = await ibao_core.is_visible_by_path(
+                    root, CHARACTER_SELECT_WINDOW)
+            except (HookNotActive, ClientClosedError):
+                raise
+            except Exception:
+                await asyncio.sleep(.5)
+                continue
+            if character_shell:
+                # Character-select window is already present; wait for its Play
+                # control instead of sending ESC into a transitional frame.
+                await asyncio.sleep(.5)
+                continue
+            # Title/start screen evidence: hooks readable, not loading, no zone,
+            # no character-select shell. ESC dismisses it.
             await client.send_key(ibao_core.Keycode.ESC, .1)
             await asyncio.sleep(1)
-        async with client.mouse_handler:
-            await ibao_core.click_window_until_gone(client, ibao_core.playButton)
-        while True:
-            try:
-                if (not await ibao_core.is_visible_by_path(client.root_window, ibao_core.playButton)
-                        and not await client.is_loading() and await client.zone_name()):
-                    await client.body.position()
-                    return
-            except Exception:
-                pass  # Character data is transient while entering the world.
-            await asyncio.sleep(.5)
 
 
 async def _run_client_session(client, settings):
@@ -211,12 +297,19 @@ async def _run_client_session(client, settings):
         settings.get('_is_active', lambda: True))
     # Reuse exact original UI paths, but bound entry and allow cancellation.
     async with asyncio.timeout(60):
+        await ibao_restart_trace('session-first-poll', tracked_client)
         while not await scope['is_visible_by_path'](tracked_client.root_window, scope['playButton']):
             if await scope['is_visible_by_path'](tracked_client.root_window, scope['logOutConfirm']):
                 await scope['click_window_until_gone'](tracked_client, scope['logOutConfirm'])
             elif await scope['is_visible_by_path'](tracked_client.root_window, scope['quitButton']):
+                await ibao_restart_trace('click-quit', tracked_client,
+                                         action='click-quit', reason='waiting-for-play',
+                                         play_visible=False, quit_visible=True)
                 await scope['click_window_until_gone'](tracked_client, scope['quitButton'])
             else:
+                await ibao_restart_trace('send-esc', tracked_client,
+                                         action='send-esc', reason='waiting-for-play',
+                                         play_visible=False, quit_visible=False)
                 await tracked_client.send_key(ibao_core.Keycode.ESC, .1)
             await asyncio.sleep(1)
     await scope['azothFarmer'](tracked_client, 0)
@@ -340,6 +433,7 @@ class IbaoGroups:
                 self.notify()
                 self.persist()
             runtime_settings['_collection_callback'] = collected
+            await ibao_restart_trace('before-worker-create', current_client)
             worker_task = asyncio.create_task(
                 self._guarded_worker(current_client, runtime_settings)
             )
@@ -422,6 +516,7 @@ class IbaoGroups:
                             replacement = await self.recovery(old_client, deepcopy(settings))
                             if replacement is None:
                                 raise RuntimeError('自动重启没有返回新客户端')
+                            await ibao_restart_trace('recovery-return', replacement)
                             current_client = replacement
                             break
                         except asyncio.CancelledError:
