@@ -48,17 +48,19 @@ class CurrentTargetGatewayTests(Fixture):
         self.assertTrue(await self.quester._send_quest_interaction_x(self.client, self.target, proof))
         self.assertEqual(self.keys, [Keycode.X])
 
-    async def test_collect_objective_can_use_existing_transition_classifier(self):
-        for title, action in (('Unlisted Region', '点击 进入'),
-                              ('去未知地区', '按 使用'), ('世界之门', '按下 或 互动')):
+    async def test_collect_gateway_unknown_action_cannot_override_known_conflict(self):
+        for title, action, accepted in (('Unlisted Region', '点击 进入', False),
+                              ('去未知地区', '按 使用', True), ('世界之门', '按下 或 互动', True)):
             with self.subTest(action=action):
                 self.setUp()
                 self.objective = '收集 齿轮 地点：远方 (0/3)'
                 self.title, self.prompt = title, action
                 proof = await self.gateway(175)
-                self.assertEqual(proof.reason, 'accepted-current-target-gateway')
-                self.assertTrue(await self.quester._send_quest_interaction_x(self.client, self.target, proof))
-                self.assertEqual(self.keys, [Keycode.X])
+                self.assertEqual(proof.reason, 'accepted-current-target-gateway' if accepted
+                                 else 'task-target-interaction-incompatible-action')
+                self.assertEqual(await self.quester._send_quest_interaction_x(
+                    self.client, self.target, proof), accepted)
+                self.assertEqual(self.keys, [Keycode.X] if accepted else [])
                 self.stack.close()
 
     async def test_gateway_never_recruits_npc_collect_or_plain_use_prompts(self):

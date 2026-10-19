@@ -1,1 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="6" rx="0.5"/><path d="M12 8v4M5 15.25V12h14v3.25"/><g stroke-width="1.5"><rect x="2" y="16" width="6" height="6" rx="0.25"/><rect x="16" y="16" width="6" height="6" rx="0.25"/></g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <title>可用路径</title>
+  <desc>父节点向下连接两个子节点，代表 UI 控件树和控件层级路径。</desc>
+  <g id="ui-hierarchy">
+    <path id="tree-branches" d="M7 7v12h6M7 11.5h6"/>
+    <rect id="parent-node" x="3" y="2" width="8" height="5" rx="1"/>
+    <rect id="first-child" x="13" y="9" width="8" height="5" rx="1"/>
+    <rect id="second-child" x="13" y="17" width="8" height="5" rx="1"/>
+  </g>
+</svg>

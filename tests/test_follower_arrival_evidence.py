@@ -76,8 +76,10 @@ class FollowerArrivalEvidenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_same_zone_far_failed_lookup_cannot_complete_from_retained_instance(self):
         await self.scenario(far=True,p3_fails=True)
         self.assertGreater(self.counts[id(self.p3)],0)
-        self.assertTrue(self.p3._quest_follower_probe['pending'])
-        self.assertFalse(any('follower=p3 ' in s and 'decision=complete' in s for s in self.logs))
+        self.assertFalse(self.p3._quest_follower_probe['pending'])
+        self.assertEqual(self.p3._quest_follower_probe['terminal'], 'unavailable')
+        self.assertFalse(any('follower=p3 ' in s and (
+            'own-live-area-confirmed' in s or 'friend-arrival-confirmed' in s) for s in self.logs))
         self.assertFalse(self.q.in_solo_zone)
 
     async def test_same_instance_far_keeps_local_catchup_then_confirms_nearby(self):
@@ -89,7 +91,8 @@ class FollowerArrivalEvidenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_p2_complete_p3_lookup_retry_remain_independent(self):
         await self.scenario(p3_fails=True)
         self.assertFalse(self.p2._quest_follower_probe['pending'])
-        self.assertTrue(self.p3._quest_follower_probe['pending'])
+        self.assertFalse(self.p3._quest_follower_probe['pending'])
+        self.assertEqual(self.p3._quest_follower_probe['terminal'], 'unavailable')
         self.assertGreater(self.p3._quest_follower_probe['retry_at'],0)
 
     async def test_failed_lookup_then_external_real_reunion_clears_own_backoff(self):

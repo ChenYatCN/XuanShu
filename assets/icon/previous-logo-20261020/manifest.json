@@ -1,0 +1,46 @@
+{
+  "XuanShu-logo.ico": {
+    "backup": "XuanShu-logo.ico",
+    "sha256": "c60b63c38b603f31ad3a37fc18043ebfa99085329acc5daa75c36ff236876c46"
+  },
+  "XuanShu-logo.png": {
+    "backup": "XuanShu-logo.png",
+    "sha256": "c7512b770f9cf0b7d069145201cddcac423a607664facce4b516fb05bff3e026"
+  },
+  "assets\\icon\\icon\\full.png": {
+    "backup": "icon\\full.png",
+    "sha256": "c7512b770f9cf0b7d069145201cddcac423a607664facce4b516fb05bff3e026"
+  },
+  "assets\\icon\\icon\\simple.png": {
+    "backup": "icon\\simple.png",
+    "sha256": "59408cf91e02e55311d4f469948a10c40505acd0ca95dc340ce7ab593bf4f94e"
+  },
+  "assets\\icon\\icon\\icon_16.png": {
+    "backup": "icon\\icon_16.png",
+    "sha256": "798d0256332100e133248d0b87f1a76958c7b988ef91cdba4868b214ccc62145"
+  },
+  "assets\\icon\\icon\\icon_24.png": {
+    "backup": "icon\\icon_24.png",
+    "sha256": "41639651d10514f11a77152f7b671859d5800b2063e8d8913ea946270b693342"
+  },
+  "assets\\icon\\icon\\icon_32.png": {
+    "backup": "icon\\icon_32.png",
+    "sha256": "b21db8f47d2f5ae5e127a6cc7d12092f5374a598f36995fbf77e287e8e4579f1"
+  },
+  "assets\\icon\\icon\\icon_48.png": {
+    "backup": "icon\\icon_48.png",
+    "sha256": "60648fd13c183ab44606f996f200251fd0bc12cf96a2eeedf11e8d5b65bfff25"
+  },
+  "assets\\icon\\icon\\icon_64.png": {
+    "backup": "icon\\icon_64.png",
+    "sha256": "d528af87ed65b00ca2d71053257bf85856c4c1b8c2f8b807c977dc42bd0cae9c"
+  },
+  "assets\\icon\\icon\\icon_128.png": {
+    "backup": "icon\\icon_128.png",
+    "sha256": "63bbb55f9fc1fd1f72275003a1ae596758f5565595f331c70483277873c78163"
+  },
+  "assets\\icon\\icon\\icon_256.png": {
+    "backup": "icon\\icon_256.png",
+    "sha256": "6c4ec8bb7f34910ae49d7f67521e0ce3fb6136ed36fac8f3da5805244933c9a3"
+  }
+}

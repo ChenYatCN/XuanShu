@@ -101,12 +101,12 @@ class InteractionASearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(self.swept, math.tau + .4)
         self.assertFalse(self.held)
 
-    async def test_ordinary_x_no_progress_reaches_same_measured_search(self):
+    async def test_ordinary_x_no_progress_stays_one_x_without_search_spam(self):
         self.objective = 'Use Lever'
         self.prompt = 'Press X to Use'
         await self.quester.auto_quest_solo()
-        self.assertGreaterEqual(self.swept, math.tau)
-        self.assertEqual(self.keys.count(Keycode.X), 1)  # Original X only; unchanged object is skipped.
+        self.assertEqual(self.keys.count(Keycode.X), 1)
+        self.assertEqual(self.keys.count(Keycode.A), 0)
         self.assertFalse(self.held)
 
     async def search(self):
@@ -143,6 +143,7 @@ class InteractionASearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(self.clock, 1.0)
 
     async def test_initial_npc_x_advance_is_not_mistaken_for_a_new_stall(self):
+        self.objective = 'Talk to Lever'
         self.prompt = 'Press X to Talk'
         self.on_x = lambda: setattr(self, 'goal', 8)
         await self.quester.auto_quest_solo()

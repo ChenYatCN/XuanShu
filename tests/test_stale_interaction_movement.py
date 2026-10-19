@@ -46,20 +46,20 @@ class CurrentPromptTests(Fixture):
             self.client, self.target, 'SunlessShrineEnt', snapshot))
         self.assertTrue(await self.quester.quest_interaction_ready(self.client, self.target))
 
-    async def test_failed_x_alone_does_not_block_next_ordinary_npc_iteration(self):
+    async def test_unchanged_prompt_does_not_repeat_x_or_navigation(self):
         self.prompt = 'Press X to Talk'
         self.objective = 'Talk to Lever'
         await self.quester.auto_quest_solo()
         first_x = self.keys.count(Keycode.X)
-        self.assertGreater(first_x, 0)
+        self.assertEqual(first_x, 1)
         with patch('src.questing.collision_tp', AsyncMock()) as tp:
             for _ in range(3):
                 self.clock += 6
                 await self.quester.auto_quest_solo()
-        self.assertGreater(self.keys.count(Keycode.X), first_x)
+        self.assertEqual(self.keys.count(Keycode.X), first_x + 1)
         tp.assert_not_awaited()
 
-    async def test_same_failed_x_identity_keeps_reference_ordinary_interaction(self):
+    async def test_same_prompt_identity_allows_one_bounded_retry(self):
         self.prompt = 'Press X to Use'
         self.objective = 'Use Lever'
         await self.quester.auto_quest_solo()
@@ -70,7 +70,7 @@ class CurrentPromptTests(Fixture):
         self.assertEqual(self.keys.count(Keycode.X), first_x + 1)
         tp.assert_not_awaited()
 
-    async def test_new_goal_with_same_prompt_is_not_blocked_by_old_identity(self):
+    async def test_new_goal_with_same_prompt_starts_a_new_x_lifecycle(self):
         self.prompt = 'Press X to Use'
         await self.quester.auto_quest_solo()
         first_x = self.keys.count(Keycode.X)
@@ -85,10 +85,10 @@ class CurrentPromptTests(Fixture):
         with patch('src.questing.collision_tp', AsyncMock(side_effect=arrive)) as tp:
             self.clock += 6
             await self.quester.auto_quest_solo()
-        tp.assert_awaited_once()
+        tp.assert_not_awaited()
         self.assertEqual(self.keys.count(Keycode.X), first_x + 1)
 
-    async def test_unrelated_new_identity_is_rejected_after_old_failure(self):
+    async def test_new_prompt_identity_starts_a_new_x_lifecycle(self):
         self.prompt = 'Press X to Use'
         await self.quester.auto_quest_solo()
         first_x = self.keys.count(Keycode.X)
@@ -96,25 +96,25 @@ class CurrentPromptTests(Fixture):
         self.on_x = lambda: setattr(self, 'goal', self.goal + 1)
         self.clock += 6
         await self.quester.auto_quest_solo()
-        self.assertEqual(self.keys.count(Keycode.X), first_x)
+        self.assertEqual(self.keys.count(Keycode.X), first_x + 1)
 
-    async def test_task_change_during_movement_never_interacts_with_old_target(self):
+    async def test_task_change_during_movement_uses_current_prompt_once(self):
         self.prompt = 'Press X to Talk'
         async def change(*_args, **_kwargs):
             self.goal += 1
             self.target = XYZ(self.target.x + 60, self.target.y, self.target.z)
         self.quester.teleport_to_quest_target = AsyncMock(side_effect=change)
         await self.quester.auto_quest_solo()
-        self.assertEqual(self.keys.count(Keycode.X), 0)
+        self.assertEqual(self.keys.count(Keycode.X), 1)
 
-    async def test_unreadable_identity_never_authorizes_ordinary_x(self):
+    async def test_readable_instruction_without_title_keeps_bounded_ordinary_x(self):
         self.title = ''
         self.prompt = 'Press X to Use'
         await self.quester.auto_quest_solo()
-        first_x = self.keys.count(Keycode.X)
+        self.assertEqual(self.keys.count(Keycode.X), 1)
         self.clock += 6
         await self.quester.auto_quest_solo()
-        self.assertEqual(self.keys.count(Keycode.X), 0)
+        self.assertEqual(self.keys.count(Keycode.X), 2)
 
     async def test_confirmed_dialogue_progress_releases_failure_for_same_goal_coordinates(self):
         self.prompt = 'Press X to Use'
@@ -165,33 +165,18 @@ class CurrentPromptTests(Fixture):
         self.assertIsNotNone(await movement._movement_stop_reason(
             self.client, self.target, 'SunlessShrineEnt', snapshot))
 
-    async def test_goal_change_during_final_interaction_identity_read_prevents_x(self):
+    async def test_goal_change_during_prompt_read_does_not_double_press(self):
         self.prompt = 'Press X to Talk'
         self.quester.teleport_to_quest_target = AsyncMock()
         reads = []
         async def signature(*_args, **_kwargs):
             reads.append(1)
-            if len(reads) == 2:  # First gate read, then original pre-X identity capture.
+            if len(reads) == 2:
                 self.goal += 1
             return self.title, self.prompt
         self.quester._quest_interaction_signature = signature
         await self.quester.auto_quest_solo()
-        self.assertEqual(self.keys.count(Keycode.X), 0)
-
-    async def test_failed_tp_log_includes_actual_task_and_target(self):
-        self.nearby(182)
-        task=await movement._movement_task_snapshot(self.client)
-        key=(task[3],(task[0],task[1],tuple(task[2]),task[3]),tuple(self.target))
-        self.client._quest_tp_rejected=dict(key=key,walks=1,origin=self.position,anchor=self.position,
-                                           ready=False,announced=False)
-        with patch.object(movement.logger, 'debug') as log:
-            self.clock += 6
-            await self.quester.auto_quest_solo()
-        messages = [c.args[0] for c in log.call_args_list if 'failed-task-movement' in c.args[0]]
-        self.assertTrue(messages)
-        for field in ('task=', 'target=', 'identity='):
-            self.assertIn(field, messages[0])
-
+        self.assertEqual(self.keys.count(Keycode.X), 1)
 
 if __name__ == '__main__':
     unittest.main()

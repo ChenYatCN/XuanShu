@@ -17,6 +17,14 @@ REAL_WAIT_FOR = asyncio.wait_for
 class PartyProbeTests(fixtures.DungeonFixture, unittest.IsolatedAsyncioTestCase):
     follow_until = fixtures.FollowerTests.follow_until
 
+    async def test_confirmed_dungeon_session_behavior_unchanged(self):
+        session = await self.enter()
+        self.q.zone, self.h.zone = 'Dungeon/Room2', 'Dungeon/Room2'
+        self.q.quest_party_probe_pending = True
+        gate = Quester(self.q, [self.q], None)
+        self.assertTrue(await gate._quest_party_probe_blocks_movement())
+        self.assertTrue(session.confirmed)
+
     async def test_confirmed_dungeon_friend_failures_stop_after_two_attempts(self):
         session = await self.enter()
         self.q.zone, self.q.area_id = 'Dungeon/Room2', 201
@@ -123,6 +131,7 @@ class PartyProbeTests(fixtures.DungeonFixture, unittest.IsolatedAsyncioTestCase)
         self.h.mouse_handler.__aenter__.assert_not_awaited()
 
     async def test_mouse_acquisition_timeout_preserves_gate_and_cancels_wait(self):
+        await self.enter()
         self.q.zone, self.h.zone = 'Dungeon/Room2', 'Dungeon/Room1'
         self.ready_probe(present=False)
         self.proof.return_value = False
@@ -164,6 +173,7 @@ class PartyProbeTests(fixtures.DungeonFixture, unittest.IsolatedAsyncioTestCase)
         self.assertFalse(self.q.in_solo_zone)
 
     async def test_cancelled_friend_action_does_not_hang_in_mouse_exit(self):
+        await self.enter()
         self.q.zone, self.h.zone = 'Dungeon/Room2', 'Dungeon/Room1'
         self.ready_probe(present=False)
         self.proof.return_value = False
@@ -198,7 +208,7 @@ class PartyProbeTests(fixtures.DungeonFixture, unittest.IsolatedAsyncioTestCase)
         raw = entry('probe_mouse', dict(asyncio=self.clock_api(accelerated=True)), hitter=self.h)
         scope = asynccontextmanager(raw)
         async def cancelled_probe():
-            async with scope():
+            async with scope(self.h):
                 started.set()
                 await asyncio.Future()
         task = asyncio.create_task(cancelled_probe())
@@ -213,6 +223,7 @@ class PartyProbeTests(fixtures.DungeonFixture, unittest.IsolatedAsyncioTestCase)
             await asyncio.gather(task, return_exceptions=True)
 
     async def test_unavailable_objective_read_is_cancelled_and_probe_can_retry(self):
+        await self.enter()
         self.q.zone, self.h.zone = 'Dungeon/Room2', 'Dungeon/Room1'
         self.ready_probe(present=False)
         self.proof.return_value = False

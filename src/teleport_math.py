@@ -14,9 +14,9 @@ from src.paths import (dialog_text_path, npc_range_path, popup_msgtext_path,
                        team_up_button_path, quest_name_path)
 from src.interaction_prompts import (plain_text, quest_interaction_matches, is_dungeon_entry_prompt,
                                      quest_interaction_correlates, task_transition_prompt, quest_has_action,
-                                     split_quest_location, task_object_prompt)
+                                     split_quest_location, task_object_prompt, interaction_kind)
 from src.collect_matching import parse_collect_goal
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from src.automation_ownership import get_client_automation_ownership
 from copy import copy
 from wizwalker.errors import HookNotActive
@@ -447,36 +447,6 @@ async def _movement_transition_arrival(client, source, target, task, control, po
         client, target, task, pos=position, signature=identity))
 
 
-async def _movement_target_interaction(client, source, target, task, control, position, objective, identity):
-    """A nearby alias needs observed movement towards this task AND specific words."""
-    if (task is None or not all(math.isfinite(v) for v in (*task[2], *target, *position))
-            or calc_Distance(task[2], target) > 1 or calc_Distance(target, XYZ(0, 0, 0)) <= 1):
-        return 'interaction-not-related-to-current-task'
-    if calc_Distance(position, target) > _QUEST_TARGET_INTERACTION_GAP:
-        return 'task-target-interaction-too-far'
-    approach = _current_target_approach(client, source, target, task, control)
-    if (approach is None
-            or await _movement_failure_blocks_interaction(client, target, task,
-                pos=position, signature=identity)):
-        return 'task-target-interaction-no-provenance'
-    # Reuse the collector's existing action parser; never recruit its goals
-    # into the weaker ordinary alias path. Strict name matches stay unchanged.
-    if _dedicated_collect_objective(objective) or not quest_interaction_correlates(objective, *identity):
-        return 'task-target-interaction-no-semantic-correlation'
-    return 'accepted-task-target-interaction'
-
-
-def _object_action_objective(objective):
-    """Only object-action instructions may use the visible-prompt fallback."""
-    goal_parsed = parse_collect_goal(objective)
-    if goal_parsed is not None and goal_parsed.total is not None:
-        return False  # Counted collection stays with its dedicated handler.
-    if any(quest_has_action(objective, action) for action in ('defeat', 'photomance', 'pet_mode')):
-        return False
-    goal, _ = split_quest_location(plain_text(objective or '').strip())
-    return bool(_OBJECT_ACTION_OBJECTIVE.match(goal.strip()))
-
-
 async def _visible_object_prompt_arrival(client, source, target, task, control, position, identity):
     """A fresh object prompt at the end of measured movement to this task target.
 
@@ -498,34 +468,138 @@ async def _visible_object_prompt_arrival(client, source, target, task, control, 
     return True
 
 
-async def _movement_target_object(client, source, target, task, control, position, objective, identity):
-    """Last resort: an object action at a genuinely approached current target."""
-    if not task_object_prompt(*identity):
-        return 'object-not-object-prompt'
-    if (task is None or type(task[1]) is not int or task[1] <= 0
-            or not all(math.isfinite(v) for v in (*task[2], *target, *position))
-            or calc_Distance(task[2], target) > 1 or calc_Distance(target, XYZ(0, 0, 0)) <= 1):
-        return 'object-stale-task'
-    distance = calc_Distance(position, target)
-    if distance > CURRENT_TARGET_OBJECT_FALLBACK_DISTANCE:
-        # QuestData target can be an object center/collider interior while the
-        # real prompt appears around its perimeter. The current-task movement
-        # plus the fresh object prompt is terminal evidence; never send an X
-        # for an unrelated nearby object or without approach provenance.
-        if not _object_action_objective(objective):
-            return 'object-too-far'
-        if not await _visible_object_prompt_arrival(
-                client, source, target, task, control, position, identity):
-            return 'object-no-provenance'
-    elif not await _movement_transition_arrival(
-            client, source, target, task, control, position, identity):
-        return 'object-no-provenance'
-    retry = getattr(client, '_quest_interaction_retry', None)
-    if (isinstance(retry, dict) and _same_movement_task(retry.get('task'), task)
-            and calc_Distance(retry['target'], target) <= 1
-            and retry.get('object_sent') == (objective, identity, control)):
-        return 'object-awaiting-update'
-    return 'accepted-current-target-object'
+@dataclass(frozen=True)
+class CurrentTaskInteractionEvidence:
+    """All facts used to authorize one X for the current visible prompt."""
+    matched: bool
+    transition: bool
+    transition_candidate: bool
+    entry: bool
+    semantic: bool
+    object_action: bool
+    objective_kind: str
+    action_kind: str
+    gap: float
+    approach: bool
+    failure_blocked: bool
+    strong_spatial: bool
+    fresh_prompt: bool
+    transition_arrival: bool
+    gateway_arrival: bool
+    object_arrival: bool
+    object_far_ok: bool
+
+
+_ACCEPTED_INTERACTION_REASONS = frozenset((
+    'accepted-current-task', 'accepted-task-target-enter',
+    'accepted-task-target-interaction', 'accepted-task-target-transition',
+    'accepted-current-target-gateway', 'accepted-current-target-object',
+))
+_TALK_OBJECTIVE = re.compile(
+    r'^(?:talk|speak|converse|chat)\b'
+    r'|^(?:交谈|交談|对话|對話|谈话|談話|沟通|溝通)\s*', re.I)
+_ENTER_OBJECTIVE = re.compile(
+    r'^(?:enter|go\s+to|travel\s+to|teleport\s+to)\b'
+    r'|^(?:进入|進入|前往|前去|传送至|傳送至)\s*', re.I)
+
+
+def _objective_action_kind(objective):
+    """Classify only the action; the title remains auxiliary evidence."""
+    goal, _ = split_quest_location(plain_text(objective or '').strip())
+    goal = goal.strip()
+    if _TALK_OBJECTIVE.match(goal):
+        return 'talk'
+    if _OBJECT_ACTION_OBJECTIVE.match(goal):
+        return 'object'
+    if parse_collect_goal(objective) is not None:
+        return 'collect'
+    if _ENTER_OBJECTIVE.match(goal):
+        return 'enter'
+    return ''
+
+
+def _prompt_action_kind(identity):
+    kind = interaction_kind(identity[1]) if identity else None
+    if kind in ('talk', 'collect', 'enter', 'ride', 'teleport', 'climb'):
+        return kind
+    if identity and task_object_prompt(*identity):
+        return 'object'
+    return kind or ''
+
+
+def _strong_spatial_action_compatibility(evidence):
+    """Missing vocabulary is unknown; only two recognized actions can conflict."""
+    if not evidence.objective_kind or not evidence.action_kind:
+        return 'unknown'
+    compatible = False
+    if evidence.objective_kind == 'talk':
+        compatible = evidence.action_kind == 'talk'
+    elif evidence.objective_kind == 'collect':
+        compatible = evidence.action_kind in ('collect', 'object')
+    elif evidence.objective_kind == 'object':
+        compatible = evidence.action_kind == 'object'
+    elif evidence.objective_kind == 'enter':
+        compatible = evidence.transition and evidence.action_kind in ('enter', 'ride', 'teleport', 'climb')
+    return 'compatible' if compatible else 'incompatible'
+
+
+def _decide_current_task_interaction(evidence):
+    """Single acceptance table for current-task prompt evidence."""
+    compatibility = _strong_spatial_action_compatibility(evidence)
+    if compatibility == 'incompatible':
+        # A Find/Visit-style final objective can legitimately end on an
+        # entrance prompt. Only a fresh, approached, exact-target transition
+        # with its own arrival proof earns the verb exemption.
+        if (evidence.strong_spatial and evidence.transition
+                and (evidence.transition_arrival or evidence.gateway_arrival)):
+            if evidence.transition_candidate:
+                return True, 'accepted-task-target-transition'
+            return True, 'accepted-current-target-gateway'
+        return False, 'task-target-interaction-incompatible-action'
+    if evidence.matched:
+        return True, 'accepted-current-task'
+    if evidence.strong_spatial:
+        if compatibility == 'unknown' and evidence.transition:
+            return True, ('accepted-task-target-enter' if evidence.entry
+                          else 'accepted-task-target-transition')
+        if compatibility == 'unknown' or evidence.object_action:
+            # Reuse the one-X receipt and exact-arrival final validation.
+            return True, 'accepted-current-target-object'
+        if evidence.objective_kind == 'collect':
+            return True, 'accepted-current-target-object'  # Collector owns post-X completion.
+        if evidence.transition:
+            return True, ('accepted-task-target-enter' if evidence.entry
+                          else 'accepted-task-target-transition')
+        return True, 'accepted-current-task'
+    if evidence.transition_candidate:
+        if evidence.gap > _QUEST_TARGET_TRANSITION_GAP:
+            return False, 'task-target-transition-too-far'
+        if not evidence.transition_arrival:
+            return False, 'task-target-transition-no-provenance'
+        return True, ('accepted-task-target-enter' if evidence.entry
+                      else 'accepted-task-target-transition')
+    if evidence.semantic:
+        if evidence.gap > _QUEST_TARGET_INTERACTION_GAP:
+            return False, 'task-target-interaction-too-far'
+        if not evidence.approach or evidence.failure_blocked:
+            return False, 'task-target-interaction-no-provenance'
+        return True, 'accepted-task-target-interaction'
+    if evidence.object_action:
+        if evidence.gap > CURRENT_TARGET_OBJECT_FALLBACK_DISTANCE:
+            if evidence.objective_kind == 'object' and evidence.object_far_ok:
+                return True, 'accepted-current-target-object'
+            return False, ('object-too-far' if evidence.objective_kind != 'object'
+                          else 'object-no-provenance')
+        if not evidence.object_arrival:
+            return False, 'object-no-provenance'
+        return True, 'accepted-current-target-object'
+    if evidence.transition:
+        if evidence.gap > _QUEST_TARGET_TRANSITION_GAP:
+            return False, 'gateway-too-far'
+        if not evidence.gateway_arrival:
+            return False, 'gateway-no-provenance'
+        return True, 'accepted-current-target-gateway'
+    return False, 'task-target-interaction-no-semantic-correlation'
 
 
 async def _quest_interaction_eligibility(client, target, task=None, *, task_client=None,
@@ -558,9 +632,7 @@ async def _quest_interaction_eligibility(client, target, task=None, *, task_clie
             return 'input-owner-conflict'
 
     def result(reason):
-        accepted = reason in ('accepted-current-task', 'accepted-task-target-enter',
-                              'accepted-task-target-interaction', 'accepted-task-target-transition',
-                              'accepted-current-target-gateway', 'accepted-current-target-object')
+        accepted = reason in _ACCEPTED_INTERACTION_REASONS
         frozen_task = ((current[0], current[1], tuple(current[2]), current[3])
                        if current is not None else None)
         value = QuestInteractionEligibility(accepted, reason, frozen_task, tuple(target),
@@ -606,46 +678,76 @@ async def _quest_interaction_eligibility(client, target, task=None, *, task_clie
             return result('no-visible-prompt')
         if not math.isfinite(calc_Distance(position, target)) or calc_Distance(position, target) >= 750:
             return result('too-far-from-task')
+        gap = calc_Distance(position, target)
         matched = quest_interaction_matches(objective, identity[0])
+        transition = task_transition_prompt(*identity)
+        dedicated = (_dedicated_collect_objective(raw_objective)
+                     or any(quest_has_action(objective, action)
+                            for action in ('defeat', 'photomance', 'pet_mode')))
+        transition_candidate = bool(not matched and transition and not dedicated)
+        entry = is_dungeon_entry_prompt(identity[1])
+        semantic = bool(not matched and not transition_candidate and not dedicated
+                        and quest_interaction_correlates(objective, *identity))
+        object_action = bool(task_object_prompt(*identity))
+        objective_kind = _objective_action_kind(objective)
+        action_kind = _prompt_action_kind(identity)
+        approach_record = _current_target_approach(client, source, target, current, control)
+        approach = approach_record is not None
+        fresh_prompt = bool(approach_record and (
+            approach_record.get('prompt_absent')
+            or approach_record.get('initial_identity') != identity))
+        failure_blocked = False
+        if approach:
+            failure_blocked = await _movement_failure_blocks_interaction(
+                client, target, current, pos=position, signature=identity)
         transition_arrival = False
-        if (not matched and task_transition_prompt(*identity)
-                and not _dedicated_collect_objective(raw_objective)
-                and not any(quest_has_action(objective, action) for action in ('defeat', 'photomance', 'pet_mode'))):
-            if calc_Distance(position, target) > _QUEST_TARGET_TRANSITION_GAP:
-                return result('task-target-transition-too-far')
+        if transition_candidate:
             transition_arrival = await _movement_transition_arrival(
                 client, source, target, current, control, position, identity)
-            if not transition_arrival:
-                return result('task-target-transition-no-provenance')
-        ordinary_arrival = False
         gateway_arrival = False
+        if transition and not transition_candidate:
+            gateway_arrival = await _movement_transition_arrival(
+                client, source, target, current, control, position, identity)
         object_arrival = False
-        object_prompt_arrival = False
-        if not matched and not transition_arrival:
-            reason = await _movement_target_interaction(client, source, target, current, control,
-                position, raw_objective, identity)
-            if reason != 'accepted-task-target-interaction':
-                # QuestData can point to a required gateway before the actual
-                # Defeat/Talk/Collect objective. The existing movement proof
-                # supplies that link; only the existing transition classifier
-                # may use it without objective/title correlation.
-                if not task_transition_prompt(*identity):
-                    object_reason = await _movement_target_object(client, source, target, current, control,
-                        position, objective, identity)
-                    if object_reason != 'accepted-current-target-object':
-                        return result(reason if object_reason == 'object-not-object-prompt' else object_reason)
-                    object_arrival = True
-                    object_prompt_arrival = (
-                        calc_Distance(position, target) > CURRENT_TARGET_OBJECT_FALLBACK_DISTANCE)
-                else:
-                    if calc_Distance(position, target) > _QUEST_TARGET_TRANSITION_GAP:
-                        return result('gateway-too-far')
-                    if not await _movement_transition_arrival(
-                            client, source, target, current, control, position, identity):
-                        return result('gateway-no-provenance')
-                    gateway_arrival = True
-            else:
-                ordinary_arrival = True
+        object_far_ok = False
+        if object_action:
+            if gap <= CURRENT_TARGET_OBJECT_FALLBACK_DISTANCE:
+                object_arrival = await _movement_transition_arrival(
+                    client, source, target, current, control, position, identity)
+            elif objective_kind == 'object':
+                object_far_ok = await _visible_object_prompt_arrival(
+                    client, source, target, current, control, position, identity)
+        evidence = CurrentTaskInteractionEvidence(
+            matched=matched, transition=transition,
+            transition_candidate=transition_candidate, entry=entry,
+            semantic=semantic, object_action=object_action,
+            objective_kind=objective_kind, action_kind=action_kind,
+            gap=gap, approach=approach, failure_blocked=failure_blocked,
+            strong_spatial=False, fresh_prompt=fresh_prompt,
+            transition_arrival=transition_arrival,
+            gateway_arrival=gateway_arrival, object_arrival=object_arrival,
+            object_far_ok=object_far_ok)
+        strong_spatial = (approach and fresh_prompt
+                          and (not dedicated or objective_kind == 'collect')
+                          and gap <= CURRENT_TARGET_OBJECT_FALLBACK_DISTANCE
+                          and not failure_blocked)
+        evidence = replace(evidence, strong_spatial=strong_spatial)
+        accepted, reason = _decide_current_task_interaction(evidence)
+        if not accepted:
+            return result(reason)
+        if reason == 'accepted-current-target-object':
+            retry = getattr(client, '_quest_interaction_retry', None)
+            if (isinstance(retry, dict) and _same_movement_task(retry.get('task'), current)
+                    and calc_Distance(retry['target'], target) <= 1
+                    and retry.get('object_sent') == (objective, identity, control)):
+                return result('object-awaiting-update')
+        ordinary_arrival = reason == 'accepted-task-target-interaction'
+        transition_arrival = reason in ('accepted-task-target-enter',
+                                        'accepted-task-target-transition',
+                                        'accepted-current-target-gateway')
+        gateway_arrival = reason == 'accepted-current-target-gateway'
+        object_arrival = reason == 'accepted-current-target-object'
+        object_prompt_arrival = object_arrival and object_far_ok
         fallback_approach = getattr(client, '_quest_target_approach', None)
         if expected is not None and (not expected.accepted or expected.task != (
                 current[0], current[1], tuple(current[2]), current[3])

@@ -429,7 +429,7 @@ class ActualCallerTests(PartyTransitionFixture, unittest.IsolatedAsyncioTestCase
     async def test_failed_initial_entry_capture_closes_pending_session_without_x(self):
         self.caller.read_popup.return_value = 'Press X to Enter'
         self.visible.side_effect = lambda _client, path: path in (npc_range_path, team_up_button_path)
-        self.h.goal_id.side_effect = (7, 8)
+        self.q.goal_id.side_effect = (7, 8)
         await self.caller.auto_quest_solo()
         self.q.send_key.assert_not_awaited()
         self.h.send_key.assert_not_awaited()

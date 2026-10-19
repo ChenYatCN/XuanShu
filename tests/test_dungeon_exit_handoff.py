@@ -82,7 +82,7 @@ class ExitGoalTests(fixtures.DungeonFixture, unittest.IsolatedAsyncioTestCase):
         reader.teleport_to_quest_target = AsyncMock(side_effect=lambda c, target: setattr(c, 'position', target))
         reader.read_popup = AsyncMock(return_value='Press X to Talk')
         reader.read_quest_txt = AsyncMock(return_value='Talk to NPC')
-        reader.handle_npc_talking_quests = AsyncMock(return_value=False)
+        reader.handle_npc_talking_quests = AsyncMock(return_value=True)
         for name in ('close_npc_quest_menu', 'close_automation_popup', 'is_spiral_door_open', 'is_potion_needed'):
             self.stack.enter_context(patch('src.questing.' + name, AsyncMock(return_value=False)))
         self.stack.enter_context(patch('src.mainline_progress.log_mainline_progress', AsyncMock()))
@@ -95,8 +95,9 @@ class ExitGoalTests(fixtures.DungeonFixture, unittest.IsolatedAsyncioTestCase):
         reader.teleport_to_quest_target.assert_awaited_once_with(self.q, self.q.quest_position.position.return_value)
         self.q.send_key.assert_awaited_once_with(Keycode.X, .1)
         reader.handle_npc_talking_quests.assert_awaited_once()
+        self.assertTrue(reader.handle_npc_talking_quests.await_args.kwargs['post_x'])
 
-    async def test_quester_out_without_popup_title_does_not_authorize_x(self):
+    async def test_quester_out_readable_popup_does_not_require_title_for_x(self):
         await self.enter()
         self.q.zone = 'Outside'
         self.q.quest_party_quest_worker_zone = 'Outside'
@@ -121,8 +122,9 @@ class ExitGoalTests(fixtures.DungeonFixture, unittest.IsolatedAsyncioTestCase):
         self.stack.enter_context(patch('src.questing.get_popup_title', AsyncMock(return_value='')))
         await reader.auto_quest_solo()
         reader.teleport_to_quest_target.assert_awaited_once()
-        self.q.send_key.assert_not_awaited()
-        reader.handle_npc_talking_quests.assert_not_awaited()
+        self.q.send_key.assert_awaited_once_with(Keycode.X, .1)
+        reader.handle_npc_talking_quests.assert_awaited_once()
+        self.assertTrue(reader.handle_npc_talking_quests.await_args.kwargs['post_x'])
 
 
 class ExitFollowerTests(fixtures.DungeonFixture, unittest.IsolatedAsyncioTestCase):

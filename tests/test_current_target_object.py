@@ -60,6 +60,44 @@ class CurrentTargetObjectTests(Fixture):
                 self.assertEqual(self.keys, [Keycode.X])
                 self.stack.close()
 
+    async def test_strong_spatial_talk_allows_localized_title_mismatch(self):
+        self.objective = 'Talk to the Guardian'
+        self.title, self.prompt = '星语者', '按 或 交谈'
+        proof = await self.object_ready(.386)
+        self.assertTrue(proof.accepted, proof.reason)
+        self.assertEqual(proof.reason, 'accepted-current-task')
+        self.assertTrue(await self.quester._send_quest_interaction_x(
+            self.client, self.target, proof))
+        self.assertEqual(self.keys, [Keycode.X])
+
+    async def test_weak_spatial_localized_talk_still_requires_semantic_evidence(self):
+        self.objective = 'Talk to the Guardian'
+        self.title, self.prompt = '星语者', '按 或 交谈'
+        proof = await self.object_ready(140)
+        self.assertFalse(proof.accepted)
+        self.assertFalse(await self.quester._send_quest_interaction_x(
+            self.client, self.target, proof))
+        self.assertEqual(self.keys, [])
+
+    async def test_strong_spatial_collect_allows_localized_title_and_keeps_collector_route(self):
+        self.objective = 'Collect Ancient Vessel'
+        self.title, self.prompt = '古代容器', 'Press X to Collect'
+        proof = await self.object_ready(.386)
+        self.assertTrue(proof.accepted, proof.reason)
+        self.assertEqual(proof.reason, 'accepted-current-target-object')
+        self.assertTrue(await self.quester._send_quest_interaction_x(
+            self.client, self.target, proof))
+        self.assertEqual(self.keys, [Keycode.X])
+
+    async def test_weak_spatial_localized_collect_still_requires_semantic_evidence(self):
+        self.objective = 'Collect Ancient Vessel'
+        self.title, self.prompt = '古代容器', 'Press X to Collect'
+        proof = await self.object_ready(140)
+        self.assertFalse(proof.accepted)
+        self.assertFalse(await self.quester._send_quest_interaction_x(
+            self.client, self.target, proof))
+        self.assertEqual(self.keys, [])
+
     async def test_visible_use_prompt_after_current_task_approach_can_qualify_when_anchor_is_inside_object(self):
         self.objective = '<center>使用 星辰计 地点：奥秘</center>'
         self.client.zone_name.return_value = 'Arcanum/Interiors/AR_Z01_AstalSchool'
@@ -214,7 +252,7 @@ class CurrentTargetObjectTests(Fixture):
             with self.subTest(reason=reason):
                 self.setUp()
                 self.objective, self.title, self.prompt = objective, title, action
-                proof = await self.object_ready()
+                proof = await self.object_ready(140 if reason == 'accepted-task-target-interaction' else .386)
                 self.assertEqual(proof.reason, reason)
                 self.stack.close()
 
@@ -375,4 +413,4 @@ class CurrentTargetObjectTests(Fixture):
         with patch.object(self.quester, 'teleport_to_quest_target', AsyncMock(return_value='ready')):
             await self.quester.auto_quest_solo()
             await self.quester.auto_quest_solo()
-        self.assertEqual(self.keys.count(Keycode.X), 1)
+        self.assertEqual(self.keys.count(Keycode.X), 2)

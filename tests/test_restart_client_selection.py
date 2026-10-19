@@ -162,14 +162,17 @@ class RestartSelectionBackendTests(unittest.IsolatedAsyncioTestCase):
             handles.add(44)
             return 44
         namespace['launch_account_instance'] = launch
-        namespace['asyncio'] = SimpleNamespace(sleep=AsyncMock(),
-            to_thread=AsyncMock(side_effect=lambda fn, *args: fn(*args)))
+        import asyncio
+        from tests.test_ibao_restart_lifecycle import account_helpers
+        namespace['asyncio'] = asyncio
+        namespace['ibao_groups'] = SimpleNamespace(groups=[], stop=AsyncMock())
+        account_helpers(namespace, self.tree)
         info = next(n for n in ast.walk(self.tree) if isinstance(n, ast.FunctionDef)
                     and n.name == '_build_hooked_clients_info')
         exec(compile(ast.Module(body=[info], type_ignores=[]), 'XuanShu.py', 'exec'), namespace)
         namespace['_send_hooked_clients_update'] = lambda: namespace['snapshots'].append(namespace['_build_hooked_clients_info']())
-        fn = ast.parse('async def restart(): pass').body[0]
-        fn.body = command_body(self.tree, 'RelaunchClient')
+        fn = ast.parse('async def restart():\n    for _once in (1,):\n        pass').body[0]
+        fn.body[0].body = command_body(self.tree, 'RelaunchClient')
         exec(compile(ast.fix_missing_locations(ast.Module(body=[fn], type_ignores=[])),
                      'XuanShu.py', 'exec'), namespace)
         return namespace, clients, handles

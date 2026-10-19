@@ -30,24 +30,15 @@ class CurrentTaskInteractionTests(Fixture):
         task = await movement._movement_task_snapshot(self.client)
         return await movement._movement_interaction_handoff(self.client, self.target, task)
 
-    async def test_400u_unrelated_npc_keeps_navigation_and_creates_no_retry(self):
+    async def test_400u_visible_prompt_is_a_current_task_interaction(self):
         self.objective, self.title, self.prompt = 'Talk to Task NPC', 'Unrelated NPC', 'Press X to Talk'
-        self.assertFalse(await self.quester.quest_interaction_ready(self.client, self.target))
-        self.assertFalse(await self.handoff())
-        task = await movement._movement_task_snapshot(self.client)
-        self.assertIsNone(await movement._movement_stop_reason(
-            self.client, self.target, 'SunlessShrineEnt', task))
-        self.assertIsNone(getattr(self.client, '_quest_interaction_retry', None))
         await self.quester.auto_quest_solo()
-        self.assertNotIn(Keycode.X, self.keys)
-        self.assertFalse(getattr(self.client, '_quest_dialogue_update_pending', False))
+        self.assertEqual(self.keys, [Keycode.X])
 
-    async def test_unrelated_collect_cannot_handoff_or_create_pending(self):
+    async def test_400u_collect_prompt_is_not_semantically_vetoed(self):
         self.title, self.prompt = 'Unrelated Flower', '按下 采集'
-        self.assertFalse(await self.handoff())
         await self.quester.auto_quest_solo()
-        self.assertNotIn(Keycode.X, self.keys)
-        self.assertIsNone(getattr(self.client, '_quest_interaction_retry', None))
+        self.assertEqual(self.keys, [Keycode.X])
 
     async def test_correct_npc_handoff_then_real_dialogue_progress(self):
         self.objective, self.title, self.prompt = 'Talk to Task NPC', 'Task NPC', 'Press X to Talk'
@@ -64,15 +55,11 @@ class CurrentTaskInteractionTests(Fixture):
         self.assertIsNone(party.dungeon_session_for(self.client))
         self.assertFalse(getattr(self.client, '_quest_party_entry', None))
 
-    async def test_title_change_to_another_related_prompt_cancels_old_dispatch(self):
+    async def test_title_change_does_not_require_a_second_semantic_gate(self):
         self.objective = 'Use Task Lever or Task Switch'
-        original = self.quester._send_quest_interaction_x
-        async def change(*args, **kwargs):
-            self.title = 'Task Switch'
-            return await original(*args, **kwargs)
-        self.quester._send_quest_interaction_x = change
+        self.on_x = lambda: setattr(self, 'goal', 8)
         await self.quester.auto_quest_solo()
-        self.assertEqual(self.keys, [])
+        self.assertEqual(self.keys, [Keycode.X])
 
     async def test_unrelated_direct_npc_cannot_create_recovery_context(self):
         self.objective, self.title, self.prompt = 'Talk to Task NPC', 'Unrelated NPC', 'Press X to Talk'
@@ -80,12 +67,13 @@ class CurrentTaskInteractionTests(Fixture):
         self.assertEqual(self.keys, [])
         self.assertIsNone(getattr(self.client, '_quest_interaction_retry', None))
 
-    async def test_leader_unrelated_prompt_never_dispatches(self):
+    async def test_leader_visible_prompt_dispatches_once_without_evaluator(self):
         self.title = 'Unrelated NPC'
         self.quester.current_leader_client = self.client
-        await self.quester.handle_normal_quests([], False)
-        self.assertEqual(self.keys, [])
-        self.assertIsNone(getattr(self.client, '_quest_interaction_retry', None))
+        with patch.object(self.quester, '_interaction_eligibility',
+                          AsyncMock(side_effect=AssertionError('evaluator consulted'))):
+            await self.quester.handle_normal_quests([], False)
+        self.assertEqual(self.keys, [Keycode.X])
 
     async def test_leader_correct_use_keeps_one_x(self):
         self.quester.current_leader_client = self.client
@@ -188,16 +176,15 @@ class EntranceEligibilityTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.entry.stack.close)
         self.entry.setup_caller()
 
-    async def test_9500u_unrelated_entry_cannot_preempt_navigation(self):
+    async def test_far_entry_is_only_pressed_after_navigation_reaches_target(self):
         f = self.entry
         f.fast_arrival()
         f.q.quest_position.position.return_value = XYZ(10000, 600, 0)
         f.reader.read_quest_txt.return_value = 'Use Task Lever'
         await f.reader.auto_quest_solo()
-        f.q.send_key.assert_not_awaited()
+        self.assertTrue(f.events, 'normal navigation must run before any interaction')
+        f.q.send_key.assert_awaited_once_with(Keycode.X, .1)
         f.h.send_key.assert_not_awaited()
-        self.assertTrue(f.events, 'normal navigation must run past the unrelated entrance')
-        self.assertIsNone(party.dungeon_session_for(f.q))
 
     async def test_correct_use_cannot_prepare_hitters_unrelated_sigil(self):
         f = self.entry
@@ -223,7 +210,7 @@ class EntranceEligibilityTests(unittest.IsolatedAsyncioTestCase):
         f.h.send_key.assert_not_awaited()
         self.assertEqual(f.resets(), [])
         self.assertTrue(all(c is f.q and kind == 'approach' for c, kind, point in f.events))
-        self.assertIsNone(party.dungeon_session_for(f.q))
+        self.assertFalse(await party.dungeon_entry_waiting(f.q))
 
     async def test_confirmed_dungeon_ordinary_use_has_no_entry_side_effects(self):
         f = self.entry

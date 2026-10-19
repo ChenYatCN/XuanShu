@@ -1,9 +1,13 @@
 """Crown Shop dismissal must never send a second ESC after the shop closes."""
 import asyncio
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+from src import ibao_core
 from src.ibao_core import crownshopVisibilty, dismiss_crownshop, skipDialogue
+
+REAL_SLEEP = asyncio.sleep
 
 
 class _FakeWindow:
@@ -123,6 +127,101 @@ class CrownShopDismissTests(unittest.IsolatedAsyncioTestCase):
                 await task
         self.assertGreaterEqual(dialogue_reads, 1)
         self.assertEqual(client.esc_calls, 0)
+
+
+class CrownShopCallerRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def run_crownshop_path(self, entry, close_after):
+        client = _FakeClient(close_after=close_after)
+        client.mouse_handler = object()
+        events = []
+        original_key = client.send_key
+
+        async def key(code, duration=0):
+            if code == ibao_core.Keycode.ESC:
+                events.append(('esc', client._state['visible']))
+            await original_key(code, duration)
+
+        async def visible(current):
+            result = await crownshopVisibilty(current)
+            events.append(('shop-read', result))
+            return result
+
+        async def tick(_seconds):
+            await REAL_SLEEP(0)
+
+        client.send_key = key
+        client.is_loading = AsyncMock(return_value=False)
+        clock = SimpleNamespace(sleep=tick, Lock=asyncio.Lock,
+                                get_running_loop=asyncio.get_running_loop)
+        with patch('src.ibao_core.asyncio', clock), \
+             patch('src.ibao_core.crownshopVisibilty', visible), \
+             patch('src.ibao_core.CROWNSHOP_DISMISS_TIMEOUT', 0):
+            if entry == 'appearOffline':
+                # Enter the existing character-load exception path, without
+                # opening Settings or sending its unrelated setup ESC.
+                settings_reads = 0
+
+                async def control_visible(_root, path):
+                    nonlocal settings_reads
+                    if path == ibao_core.settingsConfirm:
+                        settings_reads += 1
+                        return settings_reads <= 2
+                    return False
+
+                value = SimpleNamespace(maybe_text=AsyncMock(return_value='Yes'))
+                with patch('src.ibao_core.is_visible_by_path', control_visible), \
+                     patch('src.ibao_core.click_window_from_path', AsyncMock()), \
+                     patch('src.ibao_core.window_from_path', AsyncMock(
+                         side_effect=[AttributeError('character is loading'), value])):
+                    await asyncio.wait_for(ibao_core.appearOffline(
+                        client, client.title, SimpleNamespace(Name='Wizard')), 1)
+            else:
+                completed = asyncio.Event()
+
+                async def in_dialog():
+                    if not client._state['visible']:
+                        # The complete Crown Shop loop has returned; park the
+                        # next outer iteration so this infinite worker is bounded.
+                        completed.set()
+                        await asyncio.Event().wait()
+                    return False
+
+                client.is_in_dialog = in_dialog
+                task = asyncio.create_task(ibao_core.skipDialogue(client))
+                try:
+                    await asyncio.wait_for(completed.wait(), 1)
+                finally:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+        self.assertFalse(client.settings_open)
+        self.assertFalse(client._state['visible'])
+        return client, events
+
+    async def test_first_escape_closes_shop_both_callers_send_exactly_one(self):
+        for entry in ('appearOffline', 'skipDialogue'):
+            with self.subTest(entry=entry):
+                client, _ = await self.run_crownshop_path(entry, 1)
+                self.assertEqual(client.esc_calls, 1)
+                self.assertEqual(client.esc_saw_shop, [True])
+
+    async def test_still_visible_after_first_escape_both_callers_retry_once(self):
+        for entry in ('appearOffline', 'skipDialogue'):
+            with self.subTest(entry=entry):
+                client, _ = await self.run_crownshop_path(entry, 2)
+                self.assertEqual(client.esc_calls, 2)
+                self.assertEqual(client.esc_saw_shop, [True, True])
+
+    async def test_each_escape_requires_a_new_successful_visibility_read(self):
+        for entry in ('appearOffline', 'skipDialogue'):
+            with self.subTest(entry=entry):
+                _, events = await self.run_crownshop_path(entry, 2)
+                previous = -1
+                for index, event in enumerate(events):
+                    if event[0] != 'esc':
+                        continue
+                    self.assertIn(('shop-read', True), events[previous + 1:index],
+                                  'fixed double ESC without a new Crown Shop detection')
+                    previous = index
 
 
 if __name__ == '__main__':

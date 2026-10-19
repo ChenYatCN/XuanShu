@@ -69,16 +69,18 @@ class ClimbTransitionTests(Fixture):
                 self.assertEqual(self.keys, [Keycode.X])
                 self.stack.close()
 
-    async def test_climb_reuses_gateway_before_defeat_or_collect_objectives(self):
-        for objective, title in (('Defeat Guardians in Unknown Region', 'Unlisted Cliff'),
-                                  ('收集 齿轮 地点：远方 (0/3)', '未知通道')):
+    async def test_climb_gateway_cannot_override_known_collect_action_conflict(self):
+        for objective, title, accepted in (('Defeat Guardians in Unknown Region', 'Unlisted Cliff', True),
+                                  ('收集 齿轮 地点：远方 (0/3)', '未知通道', False)):
             with self.subTest(objective=objective):
                 self.setUp()
                 self.objective, self.title = objective, title
                 proof = await self.climb_ready()
-                self.assertEqual(proof.reason, 'accepted-current-target-gateway')
-                self.assertTrue(await self.quester._send_quest_interaction_x(self.client, self.target, proof))
-                self.assertEqual(self.keys, [Keycode.X])
+                self.assertEqual(proof.reason, 'accepted-current-target-gateway' if accepted
+                                 else 'task-target-interaction-incompatible-action')
+                self.assertEqual(await self.quester._send_quest_interaction_x(
+                    self.client, self.target, proof), accepted)
+                self.assertEqual(self.keys, [Keycode.X] if accepted else [])
                 self.stack.close()
 
     async def test_climb_keeps_transition_250u_limit_and_remote_9500u_guard(self):

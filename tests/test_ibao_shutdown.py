@@ -146,10 +146,10 @@ class IbaoShutdownTests(unittest.IsolatedAsyncioTestCase):
         client.teleport.assert_not_awaited()
         recovery.assert_not_awaited()
 
-    async def test_cancelled_replacement_drains_config_and_unhooks_new_client(self):
+    async def test_cancelled_replacement_drains_config_unhooks_and_kills_new_client(self):
         import wizwalker
         ready, config_ready, config_stopped = asyncio.Event(), asyncio.Event(), asyncio.Event()
-        replacement = SimpleNamespace(title='p1', close=AsyncMock())
+        replacement = SimpleNamespace(title='p1', close=AsyncMock(), account_nick='account')
         walker = SimpleNamespace(clients=[], _managed_handles=[], client_cls=lambda _: replacement)
         async def prepare(client):
             ready.set()
@@ -164,6 +164,7 @@ class IbaoShutdownTests(unittest.IsolatedAsyncioTestCase):
             'Client': object, 'asyncio': asyncio, 'walker': walker, 'logger': Mock(),
             'client_resizing_manager': SimpleNamespace(teardown_client=AsyncMock()),
             'window_config_applied': set(), 'launched_account_map': {},
+            '_relaunching_clients': {},
             '_hooking_in_progress': set(), '_kill_process_by_handle': Mock(),
             'get_all_wizard_handles': lambda: [], 'released_handles': set(),
             '_send_hooked_clients_update': Mock(), 'utils': SimpleNamespace(get_wiz_install=lambda: 'path'),
@@ -172,6 +173,8 @@ class IbaoShutdownTests(unittest.IsolatedAsyncioTestCase):
             '_init_client_attrs': AsyncMock(), 'wizwalker': wizwalker,
         }
         tree = ast.parse(Path('XuanShu.py').read_text(encoding='utf-8'))
+        from tests.test_ibao_restart_lifecycle import account_helpers
+        account_helpers(namespace, tree)
         fn = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)
                   and n.name == '_relaunch_managed_client')
         exec(compile(ast.Module(body=[fn], type_ignores=[]), 'XuanShu.py', 'exec'), namespace)
@@ -184,8 +187,11 @@ class IbaoShutdownTests(unittest.IsolatedAsyncioTestCase):
                 await task
         self.assertTrue(config_stopped.is_set())
         replacement.close.assert_awaited_once()
-        namespace['_init_client_attrs'].assert_not_awaited()
+        namespace['_init_client_attrs'].assert_awaited_once_with(replacement, character_select=True)
         self.assertEqual(walker.clients, [])
         self.assertEqual(walker._managed_handles, [])
         self.assertEqual(namespace['_hooking_in_progress'], set())
-        self.assertIn(4321, namespace['released_handles'])
+        self.assertNotIn(4321, namespace['released_handles'])
+        self.assertEqual(namespace['launched_account_map'], {})
+        self.assertEqual(namespace['_account_launches'], {})
+        self.assertTrue(any(c.args == (4321,) for c in namespace['_kill_process_by_handle'].call_args_list))

@@ -75,7 +75,7 @@ class PerFollowerProbeTests(unittest.IsolatedAsyncioTestCase):
         tasks = [asyncio.create_task(follow(h, self.q, primary))
                  for h, primary in ((self.p2, True), (self.p3, False))]
         try:
-            await asyncio.wait_for(self.done.wait(), .5)
+            await asyncio.wait_for(self.done.wait(), 1.0)
             for _ in range(5): await REAL_SLEEP(0)
         finally:
             for task in tasks: task.cancel()
@@ -85,6 +85,20 @@ class PerFollowerProbeTests(unittest.IsolatedAsyncioTestCase):
         await self.run_pair()
         self.assertEqual(list(self.counts.values()), [1, 1])
 
+    async def test_one_failed_follower_does_not_cancel_other_active_probe(self):
+        self.q.quest_party_probe_pending = True
+        self.p2._quest_follower_probe = dict(
+            quester=self.q, pending=False, terminal='unavailable')
+        self.p3._quest_follower_probe = dict(
+            quester=self.q, pending=True, terminal=None)
+        gate = Quester(self.q, [self.q], None)
+        with patch('src.questing.observe_dungeon_session', AsyncMock(return_value=None)):
+            self.assertTrue(await gate._quest_party_probe_blocks_movement())
+        self.p3._quest_follower_probe['pending'] = False
+        self.q.quest_party_probe_pending = False
+        with patch('src.questing.observe_dungeon_session', AsyncMock(return_value=None)):
+            self.assertFalse(await gate._quest_party_probe_blocks_movement())
+
     async def test_p2_value_error_does_not_stop_p3_success(self):
         await self.run_pair(p2_fails=True)
         self.assertGreaterEqual(self.counts[id(self.p2)], 1)
@@ -92,11 +106,13 @@ class PerFollowerProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.p3.zone, self.q.zone)
         self.assertNotEqual(self.p2.zone, self.q.zone)
         self.assertIsNot(self.p2._quest_follower_probe, self.p3._quest_follower_probe)
-        self.assertTrue(self.p2._quest_follower_probe['pending'])
+        self.assertFalse(self.p2._quest_follower_probe['pending'])
+        self.assertEqual(self.p2._quest_follower_probe['terminal'], 'unavailable')
         self.assertFalse(self.p3._quest_follower_probe['pending'])
         self.assertGreater(self.p2._quest_follower_probe['retry_at'], 0)
         self.assertEqual(self.p3._quest_follower_probe['retry_at'], 0)
-        self.assertTrue(self.q.quest_party_probe_pending, 'personal success is not whole-party success')
+        self.assertFalse(self.q.quest_party_probe_pending,
+                         'the last terminal/successful ordinary probe releases movement')
 
     async def test_already_reunited_p2_is_not_probed_again(self):
         await self.run_pair(already_p2=True)

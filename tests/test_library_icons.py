@@ -21,10 +21,10 @@ class LibraryIconsTests(unittest.TestCase):
         painter = QPainter(image)
         QSvgRenderer(svg.encode()).render(painter)
         painter.end()
-        # Sample the entire clear centerline of each bottom node at 10x size.
-        for x in (50, 190):
+        # Sample the clear centerline of each child node at 10x size.
+        for y in (115, 195):
             self.assertTrue(all(image.pixelColor(x, y).alpha() == 0
-                                for y in range(168, 212)), x)
+                                for x in range(145, 196)), y)
 
     def test_translation_control_renders_small_and_recolors_without_font(self):
         for color in ('#63cdda', '#202020'):
@@ -54,7 +54,7 @@ class LibraryIconsTests(unittest.TestCase):
                 svg = library_svg(name, color)
                 self.assertNotIn('currentColor', svg)
                 if name in ('8-界面/人物怪物列表.svg', '8-界面/界面.svg',
-                            '8-界面/用户列表.svg', '2-物品/箱子.svg', '2-物品/钓鱼竿.svg'):
+                            '2-物品/箱子.svg', '2-物品/钓鱼竿.svg'):
                     self.assertIn(f'fill="{color}"', svg)
                 else:
                     self.assertIn('fill="none"', svg)

@@ -1234,6 +1234,10 @@ async def main():
         mainline_quester_ids = {id(client) for client in party.questers}
         for client in (walker.clients if members is None else members):
             clear_dungeon_session(client)
+            receipt = getattr(client, '_deimos_quest_x', None)
+            if isinstance(receipt, dict) and (receipt.get('kind') == 'dungeon-entry'
+                    or 'deadline' in receipt and 'attempts' not in receipt):
+                client._deimos_quest_x = None
             client.questing_status = active and id(client) in participant_ids
             if not active:
                 client._quest_internal_failure_wait = None
@@ -2121,6 +2125,7 @@ async def main():
             arrival_details = {}
             quester_zone, hitter_zone = None, None
             resync_anchor = None
+            follow_distance = 900  # Keep the existing ordinary follow threshold.
 
             async def refresh_probe_reference():
                 nonlocal quester_zone, hitter_zone, next_retry_at
@@ -2146,7 +2151,8 @@ async def main():
                     reference = None
                 previous = probe_state.get('reference') or probe_state.get('last_reference')
                 if reference is None or previous != reference:
-                    probe_state.update(reference=reference, pending=True, verified=False)
+                    probe_state.update(reference=reference, pending=True, verified=False,
+                                       friend_outcome=None, terminal=None, release_pending=False)
                     probe_state.pop('completion_reference', None)
                     probe_state['source_zone'] = hitter_zone
                     if reference is not None and previous is not None:
@@ -2344,6 +2350,90 @@ async def main():
                     # the hitter follower and the rest of the party stay alive.
                     restart_quest_worker_after_probe(quester)
                 return True
+
+            def ordinary_probe_release_result():
+                """Read only current expected results; never infer a solo outcome."""
+                reference = probe_state.get('reference')
+                if not isinstance(reference, tuple) or len(reference) != 8:
+                    return None
+                expected = tuple(getattr(quester, 'quest_party_hitters', ()))
+                if hitter not in expected:
+                    return None
+                all_unavailable, any_arrived = True, False
+                for member in expected:
+                    state = getattr(member, '_quest_follower_probe', None)
+                    ref = state.get('reference') if isinstance(state, dict) else None
+                    valid = (isinstance(state, dict) and state.get('quester') is quester
+                        and isinstance(ref, tuple) and len(ref) == 8
+                        and (ref[0], ref[2], ref[4], ref[6])
+                            == (reference[0], reference[2], reference[4], reference[6])
+                        and state.get('source_zone') == ref[1]
+                        and ref[7][3] == getattr(member, '_party_area_generation', 0))
+                    cleanup = (isinstance(getattr(member, '_friend_follow_failure', None), dict)
+                        or isinstance(state, dict) and isinstance(state.get('friend_failure'), dict))
+                    owner = getattr(member, '_xuanshu_automation_ownership', None)
+                    cleanup = cleanup or (owner is not None and owner.locked
+                        and owner.owner_label in ('friend-follow', 'friend-ui-cleanup'))
+                    unavailable = bool(valid and not cleanup and state.get('friend_outcome') == 'unavailable'
+                        and (state.get('pending') is False and state.get('terminal') == 'unavailable'
+                            or member is hitter and state.get('terminal') in (None, 'unavailable')))
+                    arrived = bool(valid and not cleanup and state.get('pending') is False
+                        and state.get('verified') is True and state.get('completion_reference') == ref)
+                    all_unavailable = all_unavailable and unavailable
+                    any_arrived = any_arrived or arrived
+                return 'multiplayer' if any_arrived else 'unavailable' if all_unavailable else None
+
+            async def release_ordinary_probe_after_solo_check():
+                """Use existing solo confirmation/gear lifecycle before releasing movement."""
+                if (dungeon_session_for(hitter) is not None
+                        or dungeon_session_for(quester) is not None
+                        or not getattr(quester, 'quest_party_probe_pending', False)
+                        or not (probe_state.get('release_pending')
+                            or probe_state.get('pending') is False
+                            and probe_state.get('terminal') == 'unavailable')):
+                    return False
+                reference = await refresh_probe_reference()
+                result = ordinary_probe_release_result()
+                if result is None:
+                    if probe_state.get('friend_outcome') == 'unavailable':
+                        probe_state.update(pending=False, terminal='unavailable',
+                                           release_pending=False, friend_outcome='unavailable')
+                    else:
+                        # An unresolved current result must return to the
+                        # ordinary retry scheduler, not keep this release
+                        # attempt armed across later probe results.
+                        probe_state['release_pending'] = False
+                    log_probe('complete', 'friend-probe-unavailable',
+                              extra={'release_movement': False, 'waiting_for_peer': True})
+                    return False
+                for member in getattr(quester, 'quest_party_hitters', ()):
+                    state = getattr(member, '_quest_follower_probe', None)
+                    ref = state.get('reference') if isinstance(state, dict) else None
+                    if isinstance(ref, tuple) and len(ref) == 8 and ref[6] == reference[6]:
+                        if await member.is_loading() or await _party_area_token(member) != ref[7]:
+                            return False
+                try:
+                    solo_zone = await quest_reader.determine_solo_zone()
+                except (ValueError, AttributeError, wizwalker.WizWalkerMemoryError):
+                    return False  # An unreadable check is not a completed release.
+                if reference != await refresh_probe_reference() or result != ordinary_probe_release_result():
+                    return False
+                if result == 'multiplayer':
+                    solo_zone = False
+                if solo_zone and is_probe_hitter:
+                    # complete_zone_probe owns the existing second-set switch
+                    # and clears quest_party_probe_pending only after it returns.
+                    completed = await complete_zone_probe(True)
+                    if not completed:
+                        log_probe('skip', 'friend-probe-solo-not-ready')
+                        return False
+                    probe_state.update(pending=False, verified=False, terminal='unavailable',
+                                       friend_outcome='unavailable', release_pending=False)
+                    log_probe('complete', 'friend-probe-unavailable',
+                              extra={'release_movement': True, 'solo': True})
+                    return True
+                probe_state['release_pending'] = False
+                return release_ordinary_friend_terminal()
 
             async def follower_arrival_confirmed(first, second):
                 """A live instance proof plus actual proximity, never zone alone."""
@@ -2547,9 +2637,53 @@ async def main():
                     f"quester={operation['quester'].title} token={operation['token']} "
                     f"decision={decision} {details}")
 
-            def retire_friend_failure(operation, *, disappeared=False):
+            def other_ordinary_probe_active():
+                """Keep another follower's ordinary probe ownership intact."""
+                for other in getattr(quester, 'quest_party_hitters', ()):
+                    if other is hitter:
+                        continue
+                    state = getattr(other, '_quest_follower_probe', None)
+                    if (isinstance(state, dict) and state.get('quester') is quester
+                            and state.get('pending') and state.get('terminal') is None):
+                        return other
+                return None
+
+            def clear_ordinary_quester_probe(reason):
+                """Clear the movement gate only when no ordinary probe remains."""
+                if (dungeon_session_for(hitter) is not None
+                        or dungeon_session_for(quester) is not None
+                        or other_ordinary_probe_active() is not None):
+                    return False
+                if not getattr(quester, 'quest_party_probe_pending', False):
+                    return False
+                quester.quest_party_probe_pending = False
+                probe_state['release_pending'] = False
+                log_probe('complete', reason, extra={'release_movement': True})
+                return True
+
+            def release_ordinary_friend_terminal(reason='friend-probe-unavailable'):
+                """A finished ordinary friend attempt must not keep the quester paused."""
+                result = ordinary_probe_release_result()
+                if (dungeon_session_for(hitter) is not None
+                        or dungeon_session_for(quester) is not None
+                        or result is None
+                        or getattr(quester, 'in_solo_zone', False)
+                        or getattr(quester, 'quest_party_solo_gear_active', False)):
+                    return False
+                if result == 'multiplayer' and (probe_state.get('friend_outcome') != 'unavailable'
+                        or probe_state.get('terminal') not in (None, 'unavailable')):
+                    return is_probe_hitter and clear_ordinary_quester_probe('friend-probe-arrived')
+                probe_state.update(pending=False, verified=False, terminal='unavailable',
+                                   friend_outcome='unavailable', release_pending=False)
+                released = is_probe_hitter and clear_ordinary_quester_probe(reason)
+                if not released:
+                    log_probe('complete', reason, extra={'release_movement': False})
+                return released
+
+            def retire_friend_failure(operation, *, disappeared=False, outcome='unavailable'):
                 client = operation['client']
                 operation['state'] = 'retired'
+                operation['outcome'] = outcome
                 if disappeared:
                     log_friend_cleanup(operation, 'modal-disappeared', clicked=operation['clicked'])
                     operation['busy_until'] = loop.time() + 60.0
@@ -2559,6 +2693,8 @@ async def main():
                     del client._friend_follow_failure
                 if probe_state.get('friend_failure') is operation:
                     probe_state.pop('friend_failure')
+                    probe_state['friend_outcome'] = outcome
+                    probe_state['release_pending'] = outcome == 'unavailable'
 
             def friend_failure_current(operation):
                 client = operation.get('client')
@@ -2642,13 +2778,30 @@ async def main():
                     return True
 
                 async def safe_input():
-                    return (getattr(client, '_friend_follow_failure', None) is operation
-                        and client in walker.clients and client.questing_status
-                        and not await client.is_loading() and not await client.in_battle()
-                        and not any(getattr(client, flag, False) for flag in (
+                    reason = None
+                    if getattr(client, '_friend_follow_failure', None) is not operation:
+                        reason = 'receipt-replaced'
+                    elif client not in walker.clients:
+                        reason = 'client-removed'
+                    elif not client.questing_status:
+                        reason = 'questing-stopped'
+                    elif await client.is_loading():
+                        reason = 'loading'
+                    elif await client.in_battle():
+                        reason = 'battle'
+                    else:
+                        reason = next((flag for flag in (
                             'entity_detect_combat_status', 'refilling_potions', 'quest_recovery_owner',
                             'quest_party_entry_active', 'quest_party_safe_return_active',
-                            'post_combat_movement_active', 'quest_party_battle_rescue_active', 'feeding_pet_status')))
+                            'post_combat_movement_active', 'quest_party_battle_rescue_active', 'feeding_pet_status')
+                            if getattr(client, flag, False)), None)
+                    if reason:
+                        if operation.get('last_input_block') != reason:
+                            log_friend_cleanup(operation, 'input-blocked', reason=reason)
+                            operation['last_input_block'] = reason
+                        return False
+                    operation.pop('last_input_block', None)
+                    return True
 
                 try:
                     async with asyncio.timeout(4.0):
@@ -2691,7 +2844,10 @@ async def main():
                                         if not operation.get('visible_logged'):
                                             log_friend_cleanup(operation, 'modal-still-visible')
                                             operation['visible_logged'] = True
-                                    elif (not operation.get('invalidated')
+                                    attempts = operation.get('click_attempts', int(operation['clicked']))
+                                    if (not operation.get('invalidated')
+                                            and attempts < 3
+                                            and loop.time() >= operation.get('next_click_at', 0.0)
                                             and await safe_input()):
                                         async with probe_mouse(client):
                                             if not await safe_input():
@@ -2721,7 +2877,8 @@ async def main():
                                                 return False
                                             if (not friend_failure_current(operation)
                                                     or operation.get('modal') != fresh_signature
-                                                    or operation.get('clicked')
+                                                    or operation.get('click_attempts', int(operation['clicked'])) >= 3
+                                                    or loop.time() < operation.get('next_click_at', 0.0)
                                                     or client not in walker.clients or not client.questing_status
                                                     or any(getattr(client, flag, False) for flag in (
                                                         'entity_detect_combat_status', 'refilling_potions', 'quest_recovery_owner',
@@ -2729,9 +2886,19 @@ async def main():
                                                         'post_combat_movement_active', 'quest_party_battle_rescue_active', 'feeding_pet_status'))
                                                     or get_client_automation_ownership(client)._owner_task is not asyncio.current_task()):
                                                 return False
-                                            operation.update(clicked=True, state='waiting-disappearance')
-                                            await client.mouse_handler.click_window(button)
-                                            log_friend_cleanup(operation, 'click-ok', attempt='1/1')
+                                            operation.update(click_attempts=attempts + 1,
+                                                             next_click_at=loop.time() + 1.0)
+                                            dispatched = False
+                                            def clicked():
+                                                nonlocal dispatched
+                                                if dispatched:
+                                                    return
+                                                dispatched = True
+                                                operation.update(clicked=True, state='waiting-disappearance')
+                                                log_friend_cleanup(operation, 'click-ok',
+                                                    attempt=f'{attempts + 1}/3', clicked=True)
+                                            await client.mouse_handler.click_window(button, on_dispatched=clicked)
+                                            clicked()  # Also support a successful handler without the callback.
                                 await asyncio.sleep(.1)
                 except asyncio.CancelledError:
                     raise  # Preserve receipt/consumed input across worker cancellation.
@@ -2754,7 +2921,7 @@ async def main():
                 if kind == 'failure':
                     return False
                 log_friend_cleanup(operation, 'arrival-confirmed')
-                retire_friend_failure(operation)
+                retire_friend_failure(operation, outcome='arrived')
                 return True
 
             async def teleport_to_quester_from_friend_list(
@@ -2834,12 +3001,33 @@ async def main():
                         log_probe('skip', 'member-unavailable')
                         clear_dungeon_session(hitter)
                         return
+                    if (probe_state.get('release_pending')
+                            and probe_state.get('pending')
+                            and not isinstance(getattr(hitter, '_friend_follow_failure', None), dict)
+                            and dungeon_session_for(hitter) is None
+                            and dungeon_session_for(quester) is None):
+                        await release_ordinary_probe_after_solo_check()
+                        continue
+                    if (probe_state.get('pending') is False
+                            and getattr(quester, 'quest_party_probe_pending', False)
+                            and dungeon_session_for(hitter) is None
+                            and dungeon_session_for(quester) is None):
+                        if probe_state.get('terminal'):
+                            await release_ordinary_probe_after_solo_check()
+                        else:
+                            clear_ordinary_quester_probe('friend-probe-arrived')
                     failure = probe_state.get('friend_failure') or getattr(hitter, '_friend_follow_failure', None)
                     if failure:
                         await settle_friend_failure(failure)
                         current = getattr(hitter, '_friend_follow_failure', None)
                         if isinstance(current, dict) and current.get('modal') is not None:
                             continue  # A verified result modal owns the client UI.
+                        if (not isinstance(current, dict)
+                                and probe_state.get('release_pending')
+                                and dungeon_session_for(hitter) is None
+                                and dungeon_session_for(quester) is None):
+                            await release_ordinary_probe_after_solo_check()
+                            continue
                     session = await observe_dungeon_session(hitter)
                     await observe_dungeon_session(quester)
                     if dungeon_exit_from_zone is not None and not await hitter.is_loading():
@@ -2952,7 +3140,8 @@ async def main():
 
                     quester_zone = await quester.zone_name()
                     if probe_state.get('zone') != quester_zone:
-                        probe_state.update(zone=quester_zone, source_zone=None, pending=True)
+                        probe_state.update(zone=quester_zone, source_zone=None, pending=True,
+                                           friend_outcome=None, terminal=None, release_pending=False)
                     now = loop.time()
                     if quester_zone != last_quester_zone:
                         if last_quester_zone is not None:
@@ -3114,7 +3303,9 @@ async def main():
                             continue
                         if session:
                             session.follow_attempts.pop(id(hitter), None)
-                        if probe_pending or getattr(quester, 'quest_party_probe_pending', False):
+                        if (probe_pending or getattr(quester, 'quest_party_probe_pending', False)
+                                or getattr(quester, 'in_solo_zone', False)
+                                or getattr(quester, 'quest_party_solo_gear_active', False)):
                             await complete_zone_probe(False)
                         if iteration_reference != probe_state.get('reference'):
                             log_probe('skip', 'stale-probe-reference')
@@ -3142,14 +3333,37 @@ async def main():
                             if fresh is None:
                                 continue
                             quester_pos, hitter_pos = fresh[2]
-                        if calc_Distance(hitter_pos, quester_pos) > 900:
+                        if calc_Distance(hitter_pos, quester_pos) > follow_distance:
                             update_party_status(hitter, quester, "正在跟随")
+                            owners = [get_client_automation_ownership(c) for c in (hitter, quester)]
+                            if any(o.locked and o._owner_task is not asyncio.current_task() for o in owners):
+                                log_probe('skip', 'own-position-input-busy')
+                                continue
+                            if (probe_state.get('position_reference') == iteration_reference
+                                    and loop.time() < probe_state.get('position_retry_at', 0.0)):
+                                log_probe('skip', 'own-position-cooldown')
+                                continue
                             try:
-                                if not getattr(quester, 'quest_party_entry_active', False):
+                                async with asyncio.timeout(2.0), automation_owner(hitter, 'friend-follow'):
+                                    if not await hitter_is_in_quester_area():
+                                        continue
+                                    fresh = await fresh_follow_state(resync_anchor)
+                                    if (fresh is None or fresh[0] != iteration_reference
+                                            or hitter_zone != quester_zone
+                                            or await dungeon_entry_waiting(hitter)):
+                                        continue
+                                    quester_pos, hitter_pos = fresh[2]
+                                    if calc_Distance(hitter_pos, quester_pos) <= follow_distance:
+                                        continue
+                                    # Reuse the existing follow backoff if a TP has
+                                    # no actual landing; reserve before sending input.
+                                    probe_state.update(position_reference=iteration_reference,
+                                        position_retry_at=loop.time() + friend_follow_retry_delay(1))
                                     await hitter.teleport(quester_pos)
-                            except ValueError:
+                            except (ValueError, asyncio.TimeoutError):
                                 await asyncio.sleep(0.5)
                         else:
+                            probe_state.pop('position_retry_at', None)
                             log_recovered(hitter, '已确认归队距离', channel='follow')
                             update_party_status(hitter, quester, "已归队")
                         continue
@@ -3340,6 +3554,7 @@ async def main():
                                 modal=None, clicked=False, state='request-sent', busy_until=0.0)
                             request_client._friend_follow_failure = operation
                             probe_state['friend_failure'] = operation  # Index only; reference is not its owner.
+                            probe_state.update(friend_outcome=None, terminal=None, release_pending=False)
                             log_friend_cleanup(operation, 'request-sent')
 
                         async def capture_friend_failure():
@@ -3438,7 +3653,9 @@ async def main():
                                 if exit_handoff:
                                     record_dungeon_exit(hitter, hitter_zone_before_probe,
                                                         await hitter.zone_name(), evidence='live-rejoin')
-                                if getattr(quester, 'quest_party_probe_pending', False):
+                                if (getattr(quester, 'quest_party_probe_pending', False)
+                                        or getattr(quester, 'in_solo_zone', False)
+                                        or getattr(quester, 'quest_party_solo_gear_active', False)):
                                     context = ((await quester.zone_name(), dungeon_session_for(quester),
                                         (await quester.quest_id(), await quester.goal_id()))
                                         if entry_reverse else probe_context)
@@ -3478,10 +3695,19 @@ async def main():
                         log_probe('retry', 'own-friend-instance-unavailable', owner_client=request_client)
                         if probe_state.get('friend_failure'):
                             continue
-                        solo_confirmed = False if entry_reverse else await complete_zone_probe(True, probe_context)
+                        ordinary_release = False
+                        if session is None and dungeon_session_for(quester) is None:
+                            probe_state['release_pending'] = True
+                            ordinary_release = await release_ordinary_probe_after_solo_check()
+                            solo_confirmed = bool(getattr(quester, 'in_solo_zone', False)
+                                                  and ordinary_release)
+                        else:
+                            solo_confirmed = False if entry_reverse else await complete_zone_probe(True, probe_context)
                         if exit_handoff:
                             await exit_hitter_to_hub()
-                        update_party_status(hitter, quester, "单人区域，任务端独立执行" if solo_confirmed
+                        update_party_status(hitter, quester,
+                                            "单人区域，任务端独立执行" if solo_confirmed
+                                            else "好友探测已结束，任务端继续" if ordinary_release
                                             else "等待地牢归队，好友传送暂不可用")
                         logger.debug(
                             f"打手 {hitter.title} 无法进入 {quester.title} 当前区域，"
@@ -3509,11 +3735,20 @@ async def main():
                             log_probe('retry', 'own-friend-instance-unavailable', owner_client=request_client)
                             if probe_state.get('friend_failure'):
                                 continue
-                            solo_confirmed = False if entry_reverse else await complete_zone_probe(True, probe_context)
+                            ordinary_release = False
+                            if session is None and dungeon_session_for(quester) is None:
+                                probe_state['release_pending'] = True
+                                ordinary_release = await release_ordinary_probe_after_solo_check()
+                                solo_confirmed = bool(getattr(quester, 'in_solo_zone', False)
+                                                      and ordinary_release)
+                            else:
+                                solo_confirmed = False if entry_reverse else await complete_zone_probe(True, probe_context)
                             if exit_handoff:
                                 await exit_hitter_to_hub()
                             update_party_status(
-                                hitter, quester, "单人区域，任务端独立执行" if solo_confirmed
+                                hitter, quester,
+                                "单人区域，任务端独立执行" if solo_confirmed
+                                else "好友探测已结束，任务端继续" if ordinary_release
                                 else "等待地牢归队，好友传送暂不可用"
                             )
                             logger.debug(
@@ -3530,6 +3765,9 @@ async def main():
                         next_retry_at = loop.time() + delay
                         probe_state.update(failures=failure_count, retry_at=next_retry_at)
                         log_probe('retry', getattr(exc, 'reason', 'own-friend-request-failed'), owner_client=request_client)
+                        if session is None and dungeon_session_for(quester) is None:
+                            probe_state['release_pending'] = True
+                            await release_ordinary_probe_after_solo_check()
                         if exit_handoff:
                             await exit_hitter_to_hub()
                         update_party_status(
@@ -4577,6 +4815,156 @@ async def main():
     _hooking_in_progress: set[int] = set()
     # Reserve a restarted client's title until its replacement is hooked.
     _relaunching_clients: dict[int, dict] = {}
+    # Cover the old/new handle-map gap and the finite native login call only.
+    _account_launches: dict[str, dict] = {}
+    # The native API identifies its window by an enumeration delta. Serialize
+    # only that finite call, also allowing exact child-PID rollback on errors
+    # where native login spawned a process but returned no window handle.
+    _account_native_launch_lock = asyncio.Lock()
+
+    def _account_owned_wizard_pids():
+        import pymem.process
+        parent = os.getpid()
+        found_parent = False
+        children = set()
+        for entry in pymem.process.list_processes():
+            pid = int(entry.th32ProcessID)
+            found_parent = found_parent or pid == parent
+            name = entry.szExeFile
+            if isinstance(name, bytes):
+                name = name.decode(errors='replace')
+            if entry.th32ParentProcessID == parent and str(name).casefold() == 'wizardgraphicalclient.exe':
+                children.add(pid)
+        if not found_parent:
+            raise RuntimeError('无法确认启动进程列表，保留账号事务')
+        return children
+
+    def _account_terminate_spawned_pid(pid):
+        import pymem.ressources.kernel32 as kernel
+        if pid not in _account_owned_wizard_pids():
+            return
+        process = kernel.OpenProcess(0x00100001, False, pid)  # SYNCHRONIZE | PROCESS_TERMINATE
+        if process:
+            try:
+                kernel.TerminateProcess(ctypes.c_void_p(process), 1)
+            finally:
+                kernel.CloseHandle(process)
+
+    async def _account_native_launch(transaction, game_path, release):
+        from src.ibao_runtime import complete_before_cancel, launch_for_recovery
+        async with _account_native_launch_lock:
+            before = _account_owned_wizard_pids()
+            try:
+                handle = await launch_for_recovery(launch_account_instance,
+                    transaction['account'], game_path, release)
+                transaction['new_handle'] = handle
+                return handle
+            finally:
+                # The native thread has drained before this snapshot, including
+                # repeated cancellation. No other managed native launch overlaps.
+                await complete_before_cancel(asyncio.create_task(
+                    _account_capture_native_pids(transaction, before)))
+
+    async def _account_capture_native_pids(transaction, before):
+        while True:
+            try:
+                transaction['spawned_pids'] = _account_owned_wizard_pids() - before
+                return
+            except (OSError, RuntimeError) as exc:
+                logger.warning('[ibao_restart_trace] account={} '
+                    'phase=wait-process-snapshot reservation=retained reason={}',
+                    transaction['account'], exc)
+                await asyncio.sleep(.1)
+
+    def _account_launch_reserve(nickname, trigger):
+        key = str(nickname).casefold()
+        if key in _account_launches:
+            raise RuntimeError(f"账号 '{nickname}' 正在启动，稍后重试")
+        transaction = dict(key=key, account=nickname, trigger=trigger,
+            old_handle=None, new_handle=None, client=None)
+        _account_launches[key] = transaction
+        return transaction
+
+    def _account_launch_release(transaction):
+        if _account_launches.get(transaction['key']) is transaction:
+            _account_launches.pop(transaction['key'])
+
+    async def _wait_process_disappearance(handle, timeout=5.0):
+        deadline = asyncio.get_running_loop().time() + timeout
+        while handle in get_all_wizard_handles():
+            if asyncio.get_running_loop().time() >= deadline:
+                return False
+            await asyncio.sleep(.1)
+        return True
+
+    async def _rollback_account_replacement(transaction):
+        """Clean only the failed launch's process, Client, maps and title."""
+        handle = transaction.get('new_handle')
+        pids = transaction.get('spawned_pids', set())
+        handles = {handle} if handle is not None else set()
+        if pids:
+            handles.update(h for h in get_all_wizard_handles() if utils.get_pid_from_handle(h) in pids)
+        if not handles and not pids:
+            return
+        while True:
+            try:
+                for pid in pids:
+                    _account_terminate_spawned_pid(pid)
+                for h in handles:
+                    _kill_process_by_handle(h)
+                gone = all([await _wait_process_disappearance(h) for h in handles])
+                gone = gone and not (pids & _account_owned_wizard_pids())
+            except (OSError, RuntimeError) as exc:
+                # Enumeration/termination must become readable before releasing
+                # ownership. Retrying cleanup cannot create another process.
+                gone = False
+                logger.warning('ibao replacement rollback 尚待确认：{}', exc)
+            logger.info('[ibao_restart_trace] account={} new_handle={} '
+                'phase=rollback kill_result={} wait_new_cleanup_result={}',
+                transaction['account'], handle, gone, gone)
+            if gone:
+                break
+            # A failed kill may be retried, but must never release the account
+            # reservation or launch another process while this one survives.
+            await asyncio.sleep(1)
+        client = transaction.get('client')
+        if client in walker.clients:
+            walker.clients.remove(client)
+        for h in handles:
+            if h in walker._managed_handles:
+                walker._managed_handles.remove(h)
+            launched_account_map.pop(h, None)
+            _hooking_in_progress.discard(h)
+            window_config_applied.discard(h)
+            released_handles.discard(h)
+            _relaunching_clients.pop(h, None)
+        _send_hooked_clients_update()
+
+    async def _launch_reserved_native(transaction, game_path):
+        """Non-IBAO cancellation keeps its exact window registered for manual use."""
+        from src.ibao_runtime import launch_for_recovery
+        def cancelled(handle):
+            transaction['new_handle'] = handle
+            launched_account_map[handle] = transaction['account']
+            released_handles.add(handle)
+            _send_hooked_clients_update()
+        try:
+            handle = await _account_native_launch(transaction, game_path, cancelled)
+        except asyncio.CancelledError:
+            if transaction.get('new_handle') is not None:
+                cancelled(transaction['new_handle'])
+            elif transaction.get('spawned_pids'):
+                # Native login failed before returning a handle; cancellation
+                # while its PID snapshot drains must not hide the failed spawn.
+                from src.ibao_runtime import complete_before_cancel
+                await complete_before_cancel(asyncio.create_task(_rollback_account_replacement(transaction)))
+            raise
+        except Exception:
+            from src.ibao_runtime import complete_before_cancel
+            await complete_before_cancel(asyncio.create_task(_rollback_account_replacement(transaction)))
+            raise
+        transaction['new_handle'] = handle
+        return handle
 
     def _mask_uid(uid) -> str:
         s = str(uid)
@@ -4714,11 +5102,18 @@ async def main():
                         client._character_session_log_at = now + 30.0
             await asyncio.sleep(0.5)
 
-    async def _init_client_attrs(client):
-        """Initialize all per-client attributes. Called once per client after hooking."""
-        client_speeds[client.process_id] = await client.client_object.speed_multiplier()
+    async def _init_client_attrs(client, *, character_select=False):
+        """Initialize Python defaults and, when available, character data."""
+        # IBAO resumes at character select, where the character/world pointers
+        # do not exist yet. Its account metadata is inherited by the caller.
+        if not character_select:
+            client_speeds[client.process_id] = await client.client_object.speed_multiplier()
         client.combat_status = False
         client.questing_status = False
+        receipt = getattr(client, '_deimos_quest_x', None)
+        if isinstance(receipt, dict) and (receipt.get('kind') == 'dungeon-entry'
+                or 'deadline' in receipt and 'attempts' not in receipt):
+            client._deimos_quest_x = None
         client.sigil_status = False
         client.auto_pet_status = False
         client.feeding_pet_status = False
@@ -4747,7 +5142,7 @@ async def main():
         client.post_combat_movement_active = False
         client.post_combat_movement_at = 0.0
         client.wizard_name = None
-        client.character_level = await client.stats.reference_level()
+        client.character_level = 0 if character_select else await client.stats.reference_level()
         client.discard_duplicate_cards = discard_duplicate_cards
         client.fusion_result_side = fusion_result_side
         client.kill_minions_first = kill_minions_first
@@ -4773,32 +5168,33 @@ async def main():
         client.client_to_follow = client_to_follow
         client.account_nick = launched_account_map.get(client.window_handle)
 
-        # Resolve vault nickname via account-level user_id
-        try:
-            uid = await client.game_client.user_id()
-            logger.debug(
-                f"[GID] _init_client_attrs '{client.title}': user_id={_mask_uid(uid)}"
-            )
-            if uid and uid != 0:
-                client.player_gid = uid
-                vault_nick = wizlaunch.get_nickname_by_gid(uid)
-                if vault_nick and client.window_handle not in launched_account_map:
-                    launched_account_map[client.window_handle] = vault_nick
-                nick = launched_account_map.get(client.window_handle)
-                if nick:
-                    client.account_nick = nick
-                    wizlaunch.update_player_gid(nick, uid)
-                    logger.debug(
-                        f"[GID] Saved user_id {_mask_uid(uid)} for vault account '{nick}'"
-                    )
-            else:
-                client.player_gid = None
+        if not character_select:
+            # Resolve vault nickname via account-level user_id
+            try:
+                uid = await client.game_client.user_id()
                 logger.debug(
-                    f"[GID] _init_client_attrs '{client.title}': user_id is 0, deferring"
+                    f"[GID] _init_client_attrs '{client.title}': user_id={_mask_uid(uid)}"
                 )
-        except Exception as e:
-            client.player_gid = None
-            logger.debug(f"[GID] _init_client_attrs '{client.title}': exception {e}")
+                if uid and uid != 0:
+                    client.player_gid = uid
+                    vault_nick = wizlaunch.get_nickname_by_gid(uid)
+                    if vault_nick and client.window_handle not in launched_account_map:
+                        launched_account_map[client.window_handle] = vault_nick
+                    nick = launched_account_map.get(client.window_handle)
+                    if nick:
+                        client.account_nick = nick
+                        wizlaunch.update_player_gid(nick, uid)
+                        logger.debug(
+                            f"[GID] Saved user_id {_mask_uid(uid)} for vault account '{nick}'"
+                        )
+                else:
+                    client.player_gid = None
+                    logger.debug(
+                        f"[GID] _init_client_attrs '{client.title}': user_id is 0, deferring"
+                    )
+            except Exception as e:
+                client.player_gid = None
+                logger.debug(f"[GID] _init_client_attrs '{client.title}': exception {e}")
 
         # Set follower/leader statuses for auto questing/sigil
         if client_to_follow and client_to_follow in client.title:
@@ -4809,185 +5205,181 @@ async def main():
             questing_leader_pid = client.process_id
 
     async def _relaunch_managed_client(
-        handle: int, nickname: str, preserved_title: str | None = None
+        handle: int, nickname: str, preserved_title: str | None = None, *, _context=None
     ) -> Client:
-        """Relaunch one vault account, hook it, and preserve its client slot."""
-        from src.ibao_runtime import complete_before_cancel, launch_for_recovery
+        """Relaunch once: teardown, kill/wait, launch, Client, prepare, return."""
+        from src.ibao_runtime import complete_before_cancel, prepare_restarted_client
 
-        old_client = next(
-            (c for c in walker.clients if c.window_handle == handle), None
-        )
-        old_index = (
-            walker.clients.index(old_client)
-            if old_client in walker.clients
-            else len(walker.clients)
-        )
-        if preserved_title is None and old_client is not None:
-            preserved_title = str(old_client.title)
+        launch = _account_launch_reserve(nickname, 'ibao-recovery')
+        new_handle = new_client = config_task = None
+        prepared = replacement_released = False
+        pending_title = None
+        title_key = handle if handle is not None else -id(launch)
 
-        await client_resizing_manager.teardown_client(handle)
-        window_config_applied.discard(handle)
-        if old_client is not None:
-            await stop_questing_on_client_loss(str(old_client.title))
-            try:
-                async with asyncio.timeout(10):
-                    await complete_before_cancel(
-                        asyncio.create_task(old_client.close())
-                    )
-            except Exception:
-                pass
-            finally:
-                if handle in walker._managed_handles:
-                    walker._managed_handles.remove(handle)
-                if old_client in walker.clients:
-                    walker.clients.remove(old_client)
-                released_handles.add(handle)
-                _send_hooked_clients_update()
-        launched_account_map.pop(handle, None)
-        _hooking_in_progress.discard(handle)
-        _kill_process_by_handle(handle)
-        for _ in range(50):
-            if handle not in get_all_wizard_handles():
-                break
-            await asyncio.sleep(0.1)
-        else:
-            raise RuntimeError("原客户端未能关闭，已取消自动登录以避免重复启动")
-        released_handles.discard(handle)
-        logger.info(
-            f"Killed client for relaunch (handle {handle}, account '{nickname}')."
-        )
-        _send_hooked_clients_update()
-
-        game_path = str(utils.get_wiz_install())
-        await asyncio.sleep(1)
-
-        def release_cancelled_launch(new_handle):
-            # The native call has finished. Do not hook or click Play after a
-            # stop; keep this exact newly launched window available to the user.
-            launched_account_map[new_handle] = nickname
-            released_handles.add(new_handle)
-            _send_hooked_clients_update()
-
-        new_handle = await launch_for_recovery(
-            launch_account_instance, nickname, game_path, release_cancelled_launch
-        )
-        launched_account_map[new_handle] = nickname
-        released_handles.discard(new_handle)
-        if new_handle not in walker._managed_handles:
-            walker._managed_handles.append(new_handle)
-
-        new_client = walker.client_cls(new_handle)
-        insert_at = min(old_index, len(walker.clients))
-        walker.clients.insert(insert_at, new_client)
-        if preserved_title:
-            new_client.title = preserved_title
-        else:
-            used_numbers = {int(info['title'][1:]) for info in _relaunching_clients.values()
-                            if info['title'].startswith('p') and info['title'][1:].isdigit()} | {
-                int(c.title[1:])
-                for c in walker.clients
-                if c is not new_client
-                and str(c.title).startswith("p")
-                and str(c.title)[1:].isdigit()
-            }
-            number = 1
-            while number in used_numbers:
-                number += 1
-            new_client.title = f"p{number}"
-
-        _hooking_in_progress.add(new_handle)
-        _send_hooked_clients_update()
-        config_task = None
-        if client_resizing and new_handle not in window_config_applied:
-            window_config_applied.add(new_handle)
-            config_task = asyncio.create_task(
-                _apply_account_window_config(new_client, new_handle, nickname)
-            )
-        initialized = False
-        replacement_released = False
+        def release_cancelled_launch(returned_handle):
+            nonlocal new_handle
+            new_handle = returned_handle
+            launch['new_handle'] = returned_handle
 
         async def release_replacement():
             nonlocal replacement_released
             if replacement_released:
                 return
+            if new_client is not None:
+                try:
+                    async with asyncio.timeout(5):
+                        await new_client.close()
+                except Exception as exc:
+                    logger.warning("ibao 释放失败客户端 Hook 失败：{}", exc)
+                try:
+                    new_client.title = "Wizard101"
+                except Exception:
+                    pass  # Killing the exact process below remains mandatory.
+                new_client.is_ibao = False
+            await _rollback_account_replacement(launch)
             replacement_released = True
-            try:
-                await new_client.close()
-            except Exception as exc:
-                logger.warning("ibao 停止时释放新客户端 Hook 失败：{}", exc)
-            finally:
-                if new_handle in walker._managed_handles:
-                    walker._managed_handles.remove(new_handle)
-                if new_client in walker.clients:
-                    walker.clients.remove(new_client)
-                released_handles.add(new_handle)
 
         try:
-            from src.ibao_runtime import prepare_restarted_client
-
+            live = set(get_all_wizard_handles())
+            if any(h != handle and h in live and str(n).casefold() == launch['key']
+                    for h, n in launched_account_map.items()):
+                raise RuntimeError("该账号已有运行实例，等待当前实例接管")
+            if handle is not None and handle in live:
+                known_account = launched_account_map.get(handle)
+                if known_account and str(known_account).casefold() != launch['key']:
+                    raise RuntimeError("旧 handle 已属于其他账号，拒绝关闭")
+                launched_account_map[handle] = nickname
+            old_client = next((c for c in walker.clients if c.window_handle == handle), None)
+            source_pid = (_context or {}).get('process_id') or getattr(old_client, 'process_id', None)
+            original_speed = client_speeds.get(source_pid) if source_pid else None
+            old_index = walker.clients.index(old_client) if old_client is not None else len(walker.clients)
+            if preserved_title is None and old_client is not None:
+                preserved_title = str(old_client.title)
+            if preserved_title:
+                pending_title = {'title': preserved_title, 'launching': True}
+                _relaunching_clients[title_key] = pending_title
+            if handle is not None:
+                await client_resizing_manager.teardown_client(handle)
+            window_config_applied.discard(handle)
+            if old_client is not None:
+                await stop_questing_on_client_loss(str(old_client.title))
+                try:
+                    async with asyncio.timeout(10):
+                        await complete_before_cancel(asyncio.create_task(old_client.close()))
+                except Exception:
+                    pass
+                finally:
+                    if handle in walker._managed_handles:
+                        walker._managed_handles.remove(handle)
+                    if old_client in walker.clients:
+                        walker.clients.remove(old_client)
+                    old_client.is_ibao = False
+                    released_handles.add(handle)
+                    _send_hooked_clients_update()
+            _hooking_in_progress.discard(handle)
+            if handle is not None:
+                _kill_process_by_handle(handle)
+            if handle is not None and not await _wait_process_disappearance(handle):
+                raise RuntimeError("原客户端未能关闭，已取消自动登录以避免重复启动")
+            launched_account_map.pop(handle, None)
+            if _context is not None:
+                _context['old_closed'] = True
+            released_handles.discard(handle)
+            new_handle = await _account_native_launch(launch,
+                str(utils.get_wiz_install()), release_cancelled_launch)
+            launched_account_map[new_handle] = nickname
+            released_handles.discard(new_handle)
+            _hooking_in_progress.add(new_handle)
+            # The handle map now prevents duplicate launches. Native launch
+            # serialization has no role in hooks, prepare or takeover.
+            _account_launch_release(launch)
+            if new_handle not in walker._managed_handles:
+                walker._managed_handles.append(new_handle)
+            new_client = walker.client_cls(new_handle)
+            launch['client'] = new_client
+            walker.clients.insert(min(old_index, len(walker.clients)), new_client)
+            if preserved_title:
+                new_client.title = preserved_title
+            else:
+                used_numbers = {int(info['title'][1:]) for info in _relaunching_clients.values()
+                    if info['title'].startswith('p') and info['title'][1:].isdigit()} | {
+                    int(c.title[1:]) for c in walker.clients if c is not new_client
+                    and str(c.title).startswith('p') and str(c.title)[1:].isdigit()}
+                number = 1
+                while number in used_numbers:
+                    number += 1
+                new_client.title = f"p{number}"
+            if pending_title is not None:
+                _relaunching_clients.pop(title_key, None)
+                _relaunching_clients[new_handle] = pending_title
+            new_client.is_ibao = True
+            new_client.player_gid = (_context or {}).get('player_gid') or getattr(old_client, 'player_gid', None)
+            if original_speed is not None:
+                client_speeds[new_client.process_id] = original_speed
+            # Set Python defaults without reading character/world pointers.
+            await _init_client_attrs(new_client, character_select=True)
+            _send_hooked_clients_update()
+            if client_resizing and new_handle not in window_config_applied:
+                window_config_applied.add(new_handle)
+                config_task = asyncio.create_task(_apply_account_window_config(new_client, new_handle, nickname))
             logger.info("ibao 重启后等待角色选择界面，必要时发送 ESC")
-            try:
-                await prepare_restarted_client(new_client)
-            except wizwalker.errors.HookAlreadyActivated:
-                pass
-            await _init_client_attrs(new_client)
-            initialized = True
+            await prepare_restarted_client(new_client)
+            if not new_client.is_running():
+                raise wizwalker.errors.ClientClosedError()
+            prepared = True
         finally:
-
             async def finish_replacement():
                 if config_task is not None:
                     if not config_task.done():
                         config_task.cancel()
                     await asyncio.gather(config_task, return_exceptions=True)
-                if not initialized:
-                    # Also runs for cancellation inside character preparation
-                    # or attribute setup. No UI may report stopped beforehand.
+                if not prepared:
                     await release_replacement()
                 _hooking_in_progress.discard(new_handle)
+                if _relaunching_clients.get(title_key) is pending_title:
+                    _relaunching_clients.pop(title_key, None)
+                if new_handle is not None:
+                    _relaunching_clients.pop(new_handle, None)
                 _send_hooked_clients_update()
-
             try:
                 await complete_before_cancel(asyncio.create_task(finish_replacement()))
             except asyncio.CancelledError:
-                # Stop can arrive after initialization but before ownership is
-                # returned to the supervisor. That replacement is ours too.
+                # Explicit Stop still drains and releases the not-yet-returned
+                # replacement; optional world reads never reach this cleanup.
                 await complete_before_cancel(asyncio.create_task(release_replacement()))
-                _send_hooked_clients_update()
                 raise
-
-        logger.info(
-            f"Relaunched, logged in, and hooked '{nickname}' as {new_client.title}."
-        )
-        from src.ibao_runtime import ibao_restart_trace
-        await ibao_restart_trace(
-            'relaunch-return', new_client,
-            walker_clients=[(id(c), c.window_handle) for c in walker.clients])
+            finally:
+                _account_launch_release(launch)
         return new_client
 
     async def _recover_ibao_client(client: Client, _settings: dict) -> Client:
-        """Resolve the saved account before replacing an inactive ibao client."""
-        handle = client.window_handle
-        nickname = launched_account_map.get(handle) or getattr(
-            client, "account_nick", None
-        )
+        """Resolve stable account metadata, restart once, hand off directly."""
+        context = _settings.get('_recovery_context')
+        if context is None:
+            context = dict(account=None, handle=client.window_handle, title=str(client.title),
+                player_gid=getattr(client, 'player_gid', None))
+        nickname = context.get('account')
+        handle = None if context.get('old_closed') else context.get('handle')
         if not nickname:
-            player_gid = getattr(client, "player_gid", None)
-            if player_gid:
+            nickname = launched_account_map.get(handle) or getattr(client, 'account_nick', None)
+            player_gid = context.get('player_gid')
+            if not nickname and player_gid:
                 nickname = wizlaunch.get_nickname_by_gid(player_gid)
-        if not nickname:
-            raise RuntimeError(
-                f"{client.title} 没有关联玄枢账号库，无法自动登录；"
-                "请先从客户端管理启动该账号"
-            )
+            if not nickname:
+                raise RuntimeError(f"{context['title']} 没有关联玄枢账号库，无法自动登录")
+            context['account'] = nickname
+        new_client = await _relaunch_managed_client(handle, nickname,
+            preserved_title=context['title'], _context=context)
 
-        preserved_title = str(client.title)
-        logger.warning(f"ibao {preserved_title} 正在重启账号 '{nickname}' 并恢复采集。")
-        new_client = await _relaunch_managed_client(
-            handle, nickname, preserved_title=preserved_title
-        )
-        new_client.is_ibao = True
-        _restart_always_on_tasks()
-        await _restart_active_toggle_tasks()
+        async def refresh_global_tasks():
+            # These tasks consume a client snapshot. Refresh independently of
+            # the successful restart; their completion never approves takeover.
+            try:
+                _restart_always_on_tasks()
+                await _restart_active_toggle_tasks()
+            except Exception as exc:
+                logger.warning("ibao {} 已接管，全局任务刷新暂未完成：{}", new_client.title, exc)
+        asyncio.create_task(refresh_global_tasks())
         return new_client
 
     ibao_groups.set_recovery_handler(_recover_ibao_client)
@@ -5493,7 +5885,8 @@ async def main():
 
                 # Auto-hook any unmanaged handle that was launched via the vault (in launch order)
                 hooked_any = False
-                launch_order = [h for h in launched_account_map if h in unmanaged]
+                launch_order = [h for h in launched_account_map
+                                if h in unmanaged and h not in _hooking_in_progress]
                 for handle in launch_order:
                     # Window enumeration and process lookup can race with a
                     # newly launched (or closing) game window.  Leave the
@@ -7185,9 +7578,10 @@ async def main():
                                     vault_nick = wizlaunch.get_nickname_by_gid(gid)
                                     if vault_nick:
                                         already_managed.add(vault_nick)
-                            nicknames = [
+                            nicknames = list(dict.fromkeys(
                                 n for n in nicknames if n not in already_managed
-                            ]
+                                and str(n).casefold() not in _account_launches
+                            ))
                             if not nicknames:
                                 logger.info(
                                     "All selected accounts are already launched and hooked."
@@ -7246,11 +7640,20 @@ async def main():
                                 # insertion order identical to the UI click order;
                                 # the auto-hook loop consumes this mapping in order.
                                 for nickname in nicknames:
-                                    handle = await asyncio.to_thread(
-                                        launch_account_instance, nickname, game_path
-                                    )
-                                    launched_account_map[handle] = nickname
-                                    logger.info(f"Launched and logged in '{nickname}'.")
+                                    # Recheck after verification/previous launches:
+                                    # another entry may have claimed this account.
+                                    live = set(get_all_wizard_handles())
+                                    if (str(nickname).casefold() in _account_launches
+                                            or any(h in live and str(n).casefold() == str(nickname).casefold()
+                                                for h, n in launched_account_map.items())):
+                                        continue
+                                    transaction = _account_launch_reserve(nickname, 'initial')
+                                    try:
+                                        handle = await _launch_reserved_native(transaction, game_path)
+                                        launched_account_map[handle] = nickname
+                                        logger.info(f"Launched and logged in '{nickname}'.")
+                                    finally:
+                                        _account_launch_release(transaction)
                             except Exception as e:
                                 logger.error(f"Error launching instances: {e}")
 
@@ -7275,6 +7678,12 @@ async def main():
 
                         case xuanshu_gui.GUICommandType.UnhookClient:
                             handle = com.data
+                            # Explicit release is a user stop, not an unexpected
+                            # disappearance for the production supervisor.
+                            titles = [c.title for g in ibao_groups.groups for c, _ in g['workers']
+                                if c.window_handle == handle]
+                            if titles:
+                                await ibao_groups.stop(titles)
                             for c in walker.clients[:]:
                                 if c.window_handle == handle:
                                     await stop_questing_on_client_loss(str(c.title))
@@ -7404,52 +7813,72 @@ async def main():
 
                         case xuanshu_gui.GUICommandType.RelaunchClient:
                             handle, nickname = com.data
-                            await client_resizing_manager.teardown_client(handle)
-                            window_config_applied.discard(handle)
-                            # Unhook the hooked client
-                            for c in walker.clients[:]:
-                                if c.window_handle == handle:
-                                    await stop_questing_on_client_loss(str(c.title))
-                                    _relaunching_clients[handle] = {'title': str(c.title), 'launching': True}
-                                    _send_hooked_clients_update()
-                                    try:
-                                        c.title = "Wizard101"
-                                        await c.close()
-                                    except Exception:
-                                        pass
-                                    if c.window_handle in walker._managed_handles:
-                                        walker._managed_handles.remove(c.window_handle)
-                                    walker.clients.remove(c)
-                                    launched_account_map.pop(handle, None)
-                                    break
-                            # Kill the process
-                            _kill_process_by_handle(handle)
-                            released_handles.discard(handle)
-                            logger.info(
-                                f"Killed client for relaunch (handle {handle}, account '{nickname}')."
-                            )
-                            _send_hooked_clients_update()
-                            # Relaunch via wizlaunch (credentials stay in Rust)
+                            if str(nickname).casefold() in _account_launches:
+                                logger.info("账号 '{}' 已在启动或恢复，忽略重复重启请求", nickname)
+                                continue
+                            transaction = _account_launch_reserve(nickname, 'manual')
+                            transaction['old_handle'] = handle
                             try:
-                                game_path = str(utils.get_wiz_install())
-                                await asyncio.sleep(1)
-                                new_handle = await asyncio.to_thread(
-                                    launch_account_instance, nickname, game_path
+                                # An explicit manual restart revokes any old
+                                # production worker before tearing down its client.
+                                titles = [c.title for g in ibao_groups.groups for c, _ in g['workers']
+                                    if c.window_handle == handle
+                                    or str(getattr(c, 'account_nick', '')).casefold() == str(nickname).casefold()]
+                                if titles:
+                                    await ibao_groups.stop(titles)
+                                live = set(get_all_wizard_handles())
+                                if any(h != handle and h in live and str(n).casefold() == str(nickname).casefold()
+                                        for h, n in launched_account_map.items()):
+                                    logger.info("账号 '{}' 已有替代实例，忽略旧 handle 的重启请求", nickname)
+                                    continue
+                                await client_resizing_manager.teardown_client(handle)
+                                window_config_applied.discard(handle)
+                                # Unhook the hooked client
+                                for c in walker.clients[:]:
+                                    if c.window_handle == handle:
+                                        await stop_questing_on_client_loss(str(c.title))
+                                        _relaunching_clients[handle] = {'title': str(c.title), 'launching': True}
+                                        _send_hooked_clients_update()
+                                        try:
+                                            c.title = "Wizard101"
+                                            await c.close()
+                                        except Exception:
+                                            pass
+                                        if c.window_handle in walker._managed_handles:
+                                            walker._managed_handles.remove(c.window_handle)
+                                        walker.clients.remove(c)
+                                        break
+                                # Kill the process
+                                _kill_process_by_handle(handle)
+                                released_handles.discard(handle)
+                                logger.info(
+                                    f"Killed client for relaunch (handle {handle}, account '{nickname}')."
                                 )
-                                launched_account_map[new_handle] = nickname
-                                pending = _relaunching_clients.pop(handle, None)
-                                if pending is not None:
-                                    pending['launching'] = False
-                                    _relaunching_clients[new_handle] = pending
-                                logger.info(f"Relaunched and logged in '{nickname}'.")
                                 _send_hooked_clients_update()
-                            except Exception as e:
-                                _relaunching_clients.pop(handle, None)
-                                logger.error(f"Error relaunching '{nickname}': {e}")
-                                _send_hooked_clients_update()
-                            if walker.clients:
-                                _restart_always_on_tasks()
-                                await _restart_active_toggle_tasks()
+                                # Relaunch via wizlaunch (credentials stay in Rust)
+                                try:
+                                    game_path = str(utils.get_wiz_install())
+                                    if not await _wait_process_disappearance(handle):
+                                        raise RuntimeError("原客户端仍在运行，取消重复启动")
+                                    launched_account_map.pop(handle, None)
+                                    new_handle = await _launch_reserved_native(transaction, game_path)
+                                    launched_account_map[new_handle] = nickname
+                                    pending = _relaunching_clients.pop(handle, None)
+                                    if pending is not None:
+                                        pending['launching'] = False
+                                        _relaunching_clients[new_handle] = pending
+                                    logger.info(f"Relaunched and logged in '{nickname}'.")
+                                    _send_hooked_clients_update()
+                                except Exception as e:
+                                    _relaunching_clients.pop(handle, None)
+                                    logger.error(f"Error relaunching '{nickname}': {e}")
+                                    _send_hooked_clients_update()
+                                if walker.clients:
+                                    _restart_always_on_tasks()
+                                    await _restart_active_toggle_tasks()
+
+                            finally:
+                                _account_launch_release(transaction)
 
                         case xuanshu_gui.GUICommandType.UpdateSettings:
                             global speed_multiplier, use_potions, rpc_status, drop_status, anti_afk_status

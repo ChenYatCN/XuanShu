@@ -73,6 +73,7 @@ class DungeonSession:
     phase: str = 'active'
     quester_out: bool = False
     retire_reason: str | None = None
+    entry_key: tuple | None = None
 
 
 def _clear_dungeon_entry(session):
@@ -346,7 +347,11 @@ async def observe_dungeon_session(client):
             or await client.is_loading()):
         return session
     zone = await client.zone_name()
-    if zone == session.source_zones[id(client)]:
+    if zone == session.source_zones[id(client)] and id(client) not in session.exited:
+        from loguru import logger
+        logger.debug(f"[dungeon_operation] client={client.title} generation={session.generation} "
+                     f"transition={id(state) if state is not None else None} event=zone-change "
+                     f"before={session.last_zones[id(client)]} after={zone} evidence=source-zone-exit")
         session.exited.add(id(client))
         session.exit_evidence[id(client)] = ('source-zone', session.last_zones[id(client)], zone)
         if client is session.quester:
@@ -488,6 +493,7 @@ async def quest_party_members_ready(quester, *, zone=None):
 async def remember_dungeon_transition(quester, target):
     """Retain this group's source entrance before movement/X can change rooms."""
     from copy import copy
+    from wizwalker.errors import WizWalkerMemoryError
     from src.utils import observe_party_area, _party_area_token
     session = dungeon_session_for(quester)
     if (not session or session.quester is not quester
@@ -500,19 +506,29 @@ async def remember_dungeon_transition(quester, target):
         members = tuple(c for c in session.members if id(c) not in session.exited)
         tasks, tokens = {}, {}
         for member in members:
-            await observe_party_area(member)
-            tasks[id(member)] = (await member.quest_id(), await member.goal_id())
-            tokens[id(member)] = await _party_area_token(member)
-            task, token = tasks[id(member)], tokens[id(member)]
+            initial_hitter = member is not quester and not session.confirmed
+            try:
+                await observe_party_area(member)
+                task = await member.quest_id(), await member.goal_id()
+                token = await _party_area_token(member)
+            except (WizWalkerMemoryError, ValueError, AttributeError, RuntimeError, TimeoutError):
+                if initial_hitter:
+                    continue  # Optional recovery evidence is not initial entry membership.
+                return False
             if (type(task[0]) is not int or task[0] < (1 if member is quester else 0) or type(task[1]) is not int
                     or token[0] != zone
                     or any(type(value) is not int or value <= 0 for value in token[1:3])):
+                if initial_hitter:
+                    continue
                 return False
+            tasks[id(member)], tokens[id(member)] = task, token
         if (dungeon_session_for(quester) is not session
                 or not await quest_party_members_ready(quester, zone=zone)
                 or tuple(c for c in session.members if id(c) not in session.exited) != members):
             return False
         for member in members:
+            if member is not quester and not session.confirmed:
+                continue
             if (await _party_area_token(member) != tokens[id(member)]
                     or (await member.quest_id(), await member.goal_id()) != tasks[id(member)]):
                 return False

@@ -96,8 +96,10 @@ class EntrySyncTests(DungeonFixture, unittest.IsolatedAsyncioTestCase):
                 if change == 'loading': self.h.is_loading.return_value = True
                 if change == 'battle': self.h.in_battle.return_value = True
                 if change == 'solo': self.h.in_solo_zone = True
-                if change == 'task': self.h.goal_id.return_value = 8
-                if change == 'area': self.h.area_id = 999
+                if change == 'task': self.q.goal_id.return_value = 8
+                if change == 'area':
+                    self.h.area_id = 999
+                    self.proof.return_value = False
                 if change == 'stop': self.q.questing_status = False
                 self.assertFalse(await self.reader._send_dungeon_entry_x(members))
                 self.q.send_key.assert_not_awaited()

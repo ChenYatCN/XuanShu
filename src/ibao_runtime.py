@@ -230,6 +230,8 @@ async def prepare_restarted_client(client, timeout=60):
     confirmed title/start screen: not loading, no zone, and Play not visible.
     """
     client = _TrackedClient(client, lambda: None)
+    reached_character_select = bool(getattr(client, '_ibao_intro_completed', False))
+    escape_count = 0
     async with asyncio.timeout(timeout):
         try:
             await complete_before_cancel(
@@ -245,9 +247,14 @@ async def prepare_restarted_client(client, timeout=60):
             except (HookNotActive, ClientClosedError):
                 raise
             except Exception:
-                ready = False  # Root window can be unset during initial frames.
+                # An unreadable control is not proof that it is absent.
+                await asyncio.sleep(.5)
+                continue
             if ready:
-                await ibao_restart_trace('prepare-return', client)
+                client._ibao_intro_completed = True
+                client._ibao_restart_handoff = True
+                logger.info('[ibao_restart_trace] stage=prepare-return title={} '
+                    'character_select_reached=True intro_esc_count={}', client.title, escape_count)
                 return
             try:
                 loading = await client.is_loading()
@@ -280,13 +287,19 @@ async def prepare_restarted_client(client, timeout=60):
                 await asyncio.sleep(.5)
                 continue
             if character_shell:
+                reached_character_select = True
+                client._ibao_intro_completed = True
                 # Character-select window is already present; wait for its Play
                 # control instead of sending ESC into a transitional frame.
+                await asyncio.sleep(.5)
+                continue
+            if reached_character_select:
                 await asyncio.sleep(.5)
                 continue
             # Title/start screen evidence: hooks readable, not loading, no zone,
             # no character-select shell. ESC dismisses it.
             await client.send_key(ibao_core.Keycode.ESC, .1)
+            escape_count += 1
             await asyncio.sleep(1)
 
 
@@ -296,9 +309,16 @@ async def _run_client_session(client, settings):
         client, settings.get('_activity_callback', lambda: None),
         settings.get('_is_active', lambda: True))
     # Reuse exact original UI paths, but bound entry and allow cancellation.
+    reached_character_select = bool(getattr(tracked_client, '_ibao_restart_handoff', False))
     async with asyncio.timeout(60):
         await ibao_restart_trace('session-first-poll', tracked_client)
         while not await scope['is_visible_by_path'](tracked_client.root_window, scope['playButton']):
+            if (reached_character_select
+                    or await scope['is_visible_by_path'](tracked_client.root_window, CHARACTER_SELECT_WINDOW)):
+                reached_character_select = True
+                tracked_client._ibao_intro_completed = True
+                await asyncio.sleep(1)
+                continue
             if await scope['is_visible_by_path'](tracked_client.root_window, scope['logOutConfirm']):
                 await scope['click_window_until_gone'](tracked_client, scope['logOutConfirm'])
             elif await scope['is_visible_by_path'](tracked_client.root_window, scope['quitButton']):
@@ -312,6 +332,7 @@ async def _run_client_session(client, settings):
                                          play_visible=False, quit_visible=False)
                 await tracked_client.send_key(ibao_core.Keycode.ESC, .1)
             await asyncio.sleep(1)
+    tracked_client._ibao_restart_handoff = False
     await scope['azothFarmer'](tracked_client, 0)
 
 
@@ -407,6 +428,17 @@ class IbaoGroups:
         """Run one client and replace it in-place after an inactivity restart."""
         supervisor = asyncio.current_task()
         current_client = client
+        # One supervisor per account; native launch serialization is separate.
+        owners = self.__dict__.setdefault('_account_workers', {})
+        account = group.get('account') or getattr(client, 'account_nick', None)
+        owner_key = str(account).casefold() if account else ('client', id(client))
+        previous = owners.get(owner_key)
+        if previous is not None and previous is not supervisor and not previous.done():
+            raise RuntimeError('该账号已有生产线 worker')
+        owners[owner_key] = supervisor
+        identity = dict(account=account, handle=getattr(client, 'window_handle', None),
+                        process_id=getattr(client, 'process_id', None),
+                        title=str(client.title), player_gid=getattr(client, 'player_gid', None))
         while True:
             if group.get('stopping'):
                 raise asyncio.CancelledError
@@ -420,10 +452,15 @@ class IbaoGroups:
 
             runtime_settings = deepcopy(settings)
             attempt_active = [True]
-            runtime_settings['_is_active'] = lambda active=attempt_active: active[0] and not group.get('stopping', False)
+            generation = group.get('_recovery_generation', 0) + 1
+            group['_recovery_generation'] = generation
+            runtime_settings['_is_active'] = lambda active=attempt_active, gen=generation: (
+                active[0] and group.get('_recovery_generation') == gen
+                and not group.get('stopping', False) and not group.get('_unexpected_loss', False))
             # Input attempts are not evidence of progress.
             runtime_settings['_activity_callback'] = lambda: None
-            runtime_settings['_progress_callback'] = touch
+            runtime_settings['_progress_callback'] = lambda active=runtime_settings['_is_active'], update=touch: (
+                update() if active() else None)
             def collected(runtime_settings=runtime_settings):
                 if not runtime_settings['_is_active']():
                     return
@@ -433,16 +470,17 @@ class IbaoGroups:
                 self.notify()
                 self.persist()
             runtime_settings['_collection_callback'] = collected
-            await ibao_restart_trace('before-worker-create', current_client)
             worker_task = asyncio.create_task(
                 self._guarded_worker(current_client, runtime_settings)
             )
             group['_worker_task'] = worker_task
             try:
                 selection_failed = False
+                process_lost = bool(group.get('_unexpected_loss'))
                 while not worker_task.done():
-                    if not getattr(current_client, 'is_running', lambda: True)():
-                        raise HookNotActive('Client')
+                    if group.get('_unexpected_loss') or not getattr(current_client, 'is_running', lambda: True)():
+                        process_lost = True
+                        break
                     if self.worker is run_client:
                         try:
                             async with asyncio.timeout(2):
@@ -451,7 +489,9 @@ class IbaoGroups:
                                 touch()
                                 last_signature = signature
                         except HookNotActive:
-                            raise
+                            # A transient monitor read is not an explicit Stop.
+                            # A dead process or failed child below owns recovery.
+                            pass
                         except Exception:
                             pass
                     remaining = self.inactivity_timeout - (
@@ -463,6 +503,12 @@ class IbaoGroups:
                         await asyncio.wait_for(
                             asyncio.shield(worker_task), timeout=min(remaining, 2)
                         )
+                    except asyncio.CancelledError:
+                        if (group.get('_unexpected_loss') and not group.get('stopping')
+                                and worker_task.cancelled()):
+                            process_lost = True
+                            break
+                        raise
                     except Exception:
                         if worker_task.done():
                             break
@@ -470,18 +516,19 @@ class IbaoGroups:
 
                 if worker_task.done():
                     if worker_task.cancelled():
-                        return await worker_task
-                    error = worker_task.exception()
-                    if isinstance(error, HookNotActive) or not getattr(current_client, 'is_running', lambda: True)():
-                        if error is None:
-                            raise HookNotActive('Client')
-                        raise error
-                    if error is None or self.recovery is None:
+                        if group.get('stopping') or not group.get('_unexpected_loss'):
+                            return await worker_task
+                        error = None
+                    else:
+                        error = worker_task.exception()
+                    process_lost = (process_lost or isinstance(error, (HookNotActive, ClientClosedError))
+                        or not getattr(current_client, 'is_running', lambda: True)())
+                    if self.recovery is None or error is None and not process_lost:
                         return await worker_task
                     selection_failed = isinstance(error, ibao_core.CharacterSelectionError)
                     if selection_failed:
                         logger.warning('ibao {} 本地选角重找失败，直接自动恢复：{}', current_client.title, error)
-                    else:
+                    elif not process_lost:
                         logger.warning('ibao {} 采集异常，等待无操作超时后恢复: {}', current_client.title, error)
                         await asyncio.sleep(max(0, self.inactivity_timeout - (self.clock() - last_activity)))
 
@@ -513,11 +560,26 @@ class IbaoGroups:
                         if group.get('stopping'):
                             raise asyncio.CancelledError
                         try:
-                            replacement = await self.recovery(old_client, deepcopy(settings))
+                            context = dict(identity)
+                            recovery_settings = deepcopy(settings)
+                            recovery_settings['_recovery_context'] = context
+                            try:
+                                replacement = await self.recovery(old_client, recovery_settings)
+                            finally:
+                                # Resolve identity once; a failed replacement is
+                                # never allowed to make the stale Client current.
+                                if context.get('account'):
+                                    identity['account'] = context['account']
+                                identity['old_closed'] = context.get('old_closed', False)
                             if replacement is None:
                                 raise RuntimeError('自动重启没有返回新客户端')
-                            await ibao_restart_trace('recovery-return', replacement)
                             current_client = replacement
+                            self._replace_group_client(group, old_client, current_client, supervisor)
+                            group.pop('_unexpected_loss', None)
+                            identity.update(handle=getattr(replacement, 'window_handle', None),
+                                process_id=getattr(replacement, 'process_id', None),
+                                title=str(replacement.title), old_closed=False, account=identity.get('account')
+                                    or getattr(replacement, 'account_nick', None))
                             break
                         except asyncio.CancelledError:
                             raise
@@ -631,5 +693,16 @@ class IbaoGroups:
             for client, task in group['workers']
             if id(client) not in live or not getattr(client, 'is_running', lambda: True)()
         ]
-        if groups:
-            await self._stop_groups(groups)
+        if self.recovery is None:
+            if groups:
+                await self._stop_groups(groups)
+            return
+        for group in groups:
+            if group.get('stopping'):
+                continue
+            # Wake the existing supervisor, never convert an unexpected death
+            # into a user stop. Expected replacement teardown is excluded above.
+            group['_unexpected_loss'] = True
+            worker = group.get('_worker_task')
+            if worker is not None and not worker.done():
+                worker.cancel()

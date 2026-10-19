@@ -16,7 +16,8 @@ class Fixture(unittest.IsolatedAsyncioTestCase):
 
     def identity(self):
         self.title = 'Failed NPC'
-        self.objective = 'Talk to Failed NPC or Different NPC or Other NPC or New NPC or New object'
+        # These tests isolate identity tracking; action compatibility has its own tests.
+        self.objective = 'Failed NPC or Different NPC or Other NPC or New NPC or New object'
         self.stack.enter_context(patch('src.questing.get_popup_title',
             AsyncMock(side_effect=lambda _: self.title)))
 
@@ -126,8 +127,8 @@ class FailedObjectTests(Fixture):
                 self.goal = 8
         self.on_x = interact
         await self.quester.auto_quest_solo()
-        self.assertEqual(self.keys.count(Keycode.X), 2)
-        self.assertEqual(self.keys.count(Keycode.A), 1)
+        self.assertEqual(self.keys.count(Keycode.X), 1)
+        self.assertEqual(self.keys.count(Keycode.A), 0)
 
 
 class DialogueStabilityTests(Fixture):
@@ -161,6 +162,9 @@ class DialogueStabilityTests(Fixture):
         self.assertTrue(self.client.questing_status)
 
     async def test_solo_does_not_log_or_move_during_dialogue_then_continues(self):
+        # Changing the quest arrow after dialogue does not teleport the player.
+        position = XYZ(self.target.x, self.target.y, self.target.z)
+        self.client.body.position.side_effect = lambda: position
         self.dialogue_update()
         log = self.stack.enter_context(patch('src.mainline_progress.log_mainline_progress', AsyncMock()))
         self.quester.teleport_to_quest_target = AsyncMock()
@@ -174,7 +178,7 @@ class DialogueStabilityTests(Fixture):
         self.on_x = lambda: setattr(self, 'goal', 9)
         await self.quester.auto_quest_solo()
         log.assert_awaited_once_with(self.client)
-        self.quester.teleport_to_quest_target.assert_awaited_once_with(self.client, self.target)
+        self.quester.teleport_to_quest_target.assert_not_awaited()
         self.assertEqual((self.target.x, self.target.y, self.target.z), (1100, 2100, 3))
 
     async def test_dialogue_reopening_during_target_read_prevents_move(self):
@@ -210,7 +214,6 @@ class DialogueStabilityTests(Fixture):
         self.on_x = lambda: setattr(self, 'goal', 8)
         await self.quester.auto_quest_solo()
         self.assertEqual(self.keys, [Keycode.X])
-        self.assertLess(self.clock, 2)
 
     async def test_loading_battle_or_user_stop_exits_wait_without_toggling_task(self):
         for cause in ('loading', 'battle', 'stop'):

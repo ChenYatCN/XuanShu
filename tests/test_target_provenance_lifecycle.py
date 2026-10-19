@@ -106,16 +106,17 @@ class TargetProvenanceLifecycleTests(Fixture):
         self.assertIsNone(getattr(self.client, '_quest_target_approach', None))
         self.assertEqual(self.keys, [])
 
-    async def test_wrong_npc_collect_reject_but_exact_arrival_use_can_be_object(self):
+    async def test_known_action_conflicts_reject_but_compatible_enter_keeps_provenance(self):
         await self.confirmed_tp()
         self.range_visible = True
         for title, action, object_action in (('Other NPC', '按下 或 交谈', False),
-                ('Other Flower', '按下 采集', False), ('Other Lever', '按 使用', True)):
+                ('Other Flower', '按下 采集', False), ('Other Lever', '按 使用', False),
+                ('Other Entrance', '点击 进入', True)):
             self.title, self.prompt = title, action
             proof = await self.quester._interaction_eligibility(self.client, self.target)
             self.assertEqual(proof.accepted, object_action)
             if object_action:
-                self.assertEqual(proof.reason, 'accepted-current-target-object')
+                self.assertEqual(proof.reason, 'accepted-task-target-enter')
             self.assertEqual(await self.quester._send_quest_interaction_x(self.client, self.target, proof), object_action)
         self.assertEqual(self.keys, [Keycode.X])
 

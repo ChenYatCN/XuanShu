@@ -33,39 +33,57 @@ class IbaoTests(unittest.TestCase):
 
 
 class IbaoGroupTests(unittest.IsolatedAsyncioTestCase):
-    async def test_missing_client_stops_even_with_recovery_configured(self):
+    async def test_missing_client_recovers_when_recovery_is_configured(self):
         from unittest.mock import AsyncMock
         client = SimpleNamespace(title='p1')
         clients = [client]
-        async def worker(*args):
+        resumed = asyncio.Event()
+        replacement = SimpleNamespace(title='p1', is_running=lambda: True)
+        async def worker(current, _settings):
+            if current is replacement:
+                resumed.set()
             await asyncio.Event().wait()
         async def guard(run, clients):
             await run()
-        recovery = AsyncMock()
+        async def recover(*_):
+            clients[:] = [replacement]
+            return replacement
+        recovery = AsyncMock(side_effect=recover)
         manager = IbaoGroups(lambda: clients, Mock(), worker, guard, recovery=recovery)
         manager.add(['p1'], {})
         await asyncio.sleep(0)
         client.is_running = lambda: False
         await manager.remove_missing()
-        self.assertFalse(manager.groups)
-        self.assertFalse(client.is_ibao)
-        recovery.assert_not_awaited()
+        try:
+            await asyncio.wait_for(resumed.wait(), 1)
+            self.assertFalse(manager.groups[0]['stopping'])
+            self.assertFalse(client.is_ibao)
+            recovery.assert_awaited_once()
+        finally:
+            await manager.stop()
 
-    async def test_hook_inactive_is_terminal_not_recovery_loop(self):
+    async def test_hook_inactive_recovers_without_waiting_for_inactivity(self):
         from unittest.mock import AsyncMock
         from wizwalker.errors import HookNotActive
         client = SimpleNamespace(title='p1')
-        async def worker(*args):
-            raise HookNotActive('Client')
+        replacement = SimpleNamespace(title='p1')
+        resumed = asyncio.Event()
+        async def worker(current, _settings):
+            if current is client:
+                raise HookNotActive('Client')
+            resumed.set()
+            await asyncio.Event().wait()
         async def guard(run, clients):
             await run()
-        recovery = AsyncMock()
+        recovery = AsyncMock(return_value=replacement)
         manager = IbaoGroups(lambda: [client], Mock(), worker, guard, recovery=recovery)
         manager.add(['p1'], {})
-        await asyncio.gather(manager.groups[0]['workers'][0][1], return_exceptions=True)
-        await asyncio.sleep(0)
-        self.assertFalse(manager.groups)
-        recovery.assert_not_awaited()
+        try:
+            await asyncio.wait_for(resumed.wait(), 1)
+            self.assertIs(manager.groups[0]['workers'][0][0], replacement)
+            recovery.assert_awaited_once()
+        finally:
+            await manager.stop()
 
     async def test_cursor_is_released_after_individual_click(self):
         from unittest.mock import AsyncMock

@@ -9,7 +9,7 @@ import tests.test_stale_interaction_movement as prompts
 
 
 class OrdinaryRangeTests(prompts.Fixture):
-    async def test_unrelated_182_unit_prompt_keeps_navigation_without_x(self):
+    async def test_182_unit_visible_prompt_sends_one_x_without_navigation(self):
         self.nearby(182)
         self.title = 'Unrelated display name'
         self.prompt = 'Press X to Use'
@@ -17,8 +17,8 @@ class OrdinaryRangeTests(prompts.Fixture):
         self.on_x = lambda: setattr(self, 'goal', self.goal + 1)
         with patch('src.questing.collision_tp', AsyncMock()) as tp:
             await self.quester.auto_quest_solo()
-        self.assertEqual(self.keys.count(Keycode.X), 0)
-        tp.assert_awaited_once()
+        self.assertEqual(self.keys.count(Keycode.X), 1)
+        tp.assert_not_awaited()
 
     async def test_failed_or_stale_x_identity_is_not_an_ordinary_target_proof_gate(self):
         self.nearby(182)
@@ -41,7 +41,7 @@ class OrdinaryRangeTests(prompts.Fixture):
             self.assertFalse(await movement._movement_interaction_handoff(
                 self.client,self.target,await movement._movement_task_snapshot(self.client)))
 
-    async def test_failed_tp_at_visible_world_gate_stays_blocked_inside_750(self):
+    async def test_failed_tp_does_not_block_current_visible_world_gate(self):
         self.nearby(182)
         self.title = '世界之门'
         self.objective = 'Use 世界之门'
@@ -53,7 +53,7 @@ class OrdinaryRangeTests(prompts.Fixture):
                                            origin_signature=(self.title,self.prompt))
         for _ in range(3):
             await self.quester.auto_quest_solo()
-        self.assertNotIn(Keycode.X,self.keys)
+        self.assertEqual(self.keys.count(Keycode.X), 2)
 
     async def test_stable_departure_uses_ordinary_range_without_150_gate(self):
         self.nearby(354)

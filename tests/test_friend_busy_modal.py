@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from loguru import logger
 from src import utils
 from src.automation_ownership import get_client_automation_ownership
+from src.questing import Quester
 from tests.test_per_follower_probe import PerFollowerProbeTests as Fixture
 from tests.test_friend_ui_cleanup import Window as BaseWindow
 from tests.test_dungeon_local_tp import REAL_SLEEP
@@ -28,13 +29,24 @@ class Window(BaseWindow):
 class FriendBusyModalTests(unittest.IsolatedAsyncioTestCase):
     setUp = Fixture.setUp
 
-    async def scenario(self, *, kind='busy', mutation=None, retry=False, caption='你的好友现在很忙。', request_error='busy'):
+    async def scenario(self, *, kind='busy', mutation=None, retry=False, caption='你的好友现在很忙。', request_error='busy',
+                       gear=False, solo=True, switch_started=None, switch_release=None,
+                       switch_release_at=None, join_peers=False):
+        # This fixture runs one follower; p3 observes isolation as an unrelated
+        # client. Multi-hitter completion is covered by the party probe tests.
+        self.q.quest_party_hitters = [self.p2]
         self.client = self.p2
         self.session = None
         self.clicks, self.request_times, self.dismissal_owners = [], [], []
         self.retry_states = []
         self.close_at = self.show_at = None
         self.mutated = False
+        self.gear_calls = []
+        self.gear_states = []
+        self.stack.enter_context(patch.object(
+            Quester, 'determine_solo_zone', AsyncMock(return_value=solo)))
+        self.stack.enter_context(patch('src.utils.clients_share_live_area', AsyncMock(
+            side_effect=lambda a, b: a.zone == b.zone and a.area_id == b.area_id)))
         self.right = Window('rightButton')
         self.center = Window('centerButton', visible=kind == 'yesno')
         self.left = Window('leftButton', visible=False)
@@ -111,6 +123,8 @@ class FriendBusyModalTests(unittest.IsolatedAsyncioTestCase):
             if kwargs.get('on_request_sent'): kwargs['on_request_sent']()
             if retry and len(self.request_times) == 2:
                 member.zone, member.area_id = self.q.zone, self.q.area_id
+                if join_peers:
+                    self.p3.zone, self.p3.area_id = self.q.zone, self.q.area_id
                 return
             if kind == 'late': self.show_at = self.clock + .3
             elif kind != 'none': self.modal.visible = self.right.visible = True
@@ -118,8 +132,19 @@ class FriendBusyModalTests(unittest.IsolatedAsyncioTestCase):
             if request_error == 'timeout': raise asyncio.TimeoutError('request timed out')
             raise utils.FriendBusyOrInstanceClosed()
 
+        async def change_equipment(client, set_number):
+            self.gear_calls.append(set_number)
+            self.gear_states.append(self.q.quest_party_probe_pending)
+            if switch_started is not None:
+                switch_started.set()
+            if switch_release is not None:
+                await switch_release.wait()
+            return True
+
         async def tick(seconds):
             self.clock += seconds
+            if switch_release_at is not None and self.clock >= switch_release_at:
+                switch_release.set()
             if self.show_at is not None and self.clock >= self.show_at:
                 self.modal.visible = self.right.visible = True
                 self.show_at = None
@@ -138,7 +163,7 @@ class FriendBusyModalTests(unittest.IsolatedAsyncioTestCase):
         sink = logger.add(record, level='DEBUG')
         self.addCleanup(logger.remove, sink)
         namespace = dict(walker=SimpleNamespace(clients=[self.q, self.p2, self.p3]), questing_status=True,
-            gear_switching_in_solo_zones=False, quest_friend_icons={}, use_potions=False, buy_potions=False,
+            gear_switching_in_solo_zones=gear, quest_friend_icons={}, use_potions=False, buy_potions=False,
             close_automation_popup=AsyncMock(return_value=False), is_free=AsyncMock(return_value=True),
             is_visible_by_path=utils.is_visible_by_path, is_friend_teleport_error=utils.is_friend_teleport_error,
             get_window_from_path=utils.get_window_from_path, teleport_to_friend_from_list=friend,
@@ -149,7 +174,7 @@ class FriendBusyModalTests(unittest.IsolatedAsyncioTestCase):
                 wait_for=asyncio.wait_for, CancelledError=asyncio.CancelledError, TimeoutError=TimeoutError,
                 timeout=asyncio.timeout, current_task=asyncio.current_task))
         follow = entry('_follow_quester_session', namespace, members=[self.q, self.p2, self.p3],
-            change_party_equipment=AsyncMock(return_value=True), prepare_quester_name=AsyncMock(),
+            change_party_equipment=change_equipment, prepare_quester_name=AsyncMock(),
             remove_party_status=Mock(), restart_quest_worker_after_probe=Mock(), update_party_status=Mock())
         task = asyncio.create_task(follow(self.p2, self.q, True))
         waiter = asyncio.create_task(self.done.wait())
@@ -170,9 +195,104 @@ class FriendBusyModalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.dismissal_owners, ['friend-follow'])
         self.assertNotIn('friend_failure', self.p2._quest_follower_probe)
         self.assertFalse(getattr(self.p2, '_friend_follow_failure', None))
-        self.assertTrue(self.p2._quest_follower_probe['pending'], 'a rejected TP is not arrival')
+        self.assertFalse(self.p2._quest_follower_probe['pending'],
+                         'a rejected TP is terminal, not arrival')
+        self.assertEqual(self.p2._quest_follower_probe['terminal'], 'unavailable')
+        self.assertFalse(self.q.quest_party_probe_pending,
+                         'the completed cleanup must release quester movement')
+        self.assertIsNotNone(getattr(self.p2, '_friend_follow_busy_backoff', None))
         self.assertFalse(hasattr(self.p3, '_friend_follow_failure'))
         self.assertFalse(any('own-visible-transition-modal' in line for line in self.logs))
+
+    async def test_ordinary_friend_busy_releases_quester_movement_after_cleanup(self):
+        await self.scenario()
+        self.assertTrue(self.p2._quest_follower_probe['terminal'] == 'unavailable')
+        self.assertFalse(self.p2._quest_follower_probe['pending'])
+        self.assertFalse(self.q.quest_party_probe_pending)
+        gate = Quester(self.q, [self.q], None)
+        with patch('src.questing.observe_dungeon_session', AsyncMock(return_value=None)):
+            self.assertFalse(await gate._quest_party_probe_blocks_movement())
+        self.assertTrue(any('decision=allow reason=friend-probe-terminal' in line
+                            for line in self.logs))
+
+    async def test_friend_busy_backoff_blocks_new_request_not_quest_movement(self):
+        await self.scenario()
+        backoff = getattr(self.p2, '_friend_follow_busy_backoff', None)
+        self.assertIsNotNone(backoff)
+        self.assertGreater(backoff['busy_until'], self.clock)
+        self.assertEqual(len(self.request_times), 1, 'backoff must stop a second request')
+        self.assertFalse(self.q.quest_party_probe_pending)
+        gate = Quester(self.q, [self.q], None)
+        with patch('src.questing.observe_dungeon_session', AsyncMock(return_value=None)):
+            self.assertFalse(await gate._quest_party_probe_blocks_movement())
+
+    async def test_cleanup_active_temporarily_blocks_until_modal_disappears(self):
+        observed = []
+        def record(message):
+            if 'friend_busy_cleanup' in str(message) and 'decision=modal-detected' in str(message):
+                observed.append(self.q.quest_party_probe_pending)
+        sink = logger.add(record, level='DEBUG')
+        self.addCleanup(logger.remove, sink)
+        await self.scenario(kind='slow-close')
+        self.assertTrue(observed)
+        self.assertTrue(all(observed), 'cleanup must temporarily own the probe')
+        self.assertFalse(self.q.quest_party_probe_pending)
+
+    async def test_friend_request_error_also_releases_quester_movement(self):
+        await self.scenario(request_error='runtime')
+        self.assertFalse(self.p2._quest_follower_probe['pending'])
+        self.assertEqual(self.p2._quest_follower_probe['terminal'], 'unavailable')
+        self.assertFalse(self.q.quest_party_probe_pending)
+
+    async def test_solo_gear_switch_completes_before_movement_release(self):
+        release = asyncio.Event()
+        await self.scenario(gear=True, solo=True, switch_release=release,
+                            switch_release_at=2)
+        self.assertEqual(self.gear_calls, [1])
+        self.assertEqual(self.gear_states, [True])
+        self.assertTrue(self.q.quest_party_solo_gear_active)
+        self.assertTrue(self.q.in_solo_zone)
+        self.assertFalse(self.q.quest_party_probe_pending)
+        self.assertFalse(self.p2._quest_follower_probe['pending'])
+
+    async def test_equipment_switch_incomplete_keeps_probe_pending(self):
+        release, started = asyncio.Event(), asyncio.Event()
+        task = asyncio.create_task(self.scenario(
+            gear=True, solo=True, switch_started=started, switch_release=release))
+        try:
+            await asyncio.wait_for(started.wait(), 1)
+            self.assertEqual(self.gear_calls, [1])
+            self.assertEqual(self.gear_states, [True])
+            self.assertTrue(self.q.quest_party_probe_pending)
+            self.assertFalse(getattr(self.q, 'quest_party_solo_gear_active', False))
+            self.assertTrue(self.p2._quest_follower_probe['pending'])
+        finally:
+            release.set()
+            await task
+        self.assertFalse(self.q.quest_party_probe_pending)
+        self.assertTrue(self.q.quest_party_solo_gear_active)
+
+    async def test_single_busy_without_solo_confirmation_does_not_switch_gear(self):
+        await self.scenario(gear=True, solo=False)
+        self.assertEqual(self.gear_calls, [])
+        self.assertFalse(getattr(self.q, 'quest_party_solo_gear_active', False))
+        self.assertFalse(self.q.in_solo_zone)
+        self.assertFalse(self.q.quest_party_probe_pending)
+
+    async def test_hitter_return_restores_first_equipment_set(self):
+        release = asyncio.Event()
+        await self.scenario(gear=True, solo=True, retry=True,
+                            switch_release=release, switch_release_at=2, join_peers=True)
+        self.assertEqual(self.gear_calls, [1, 0])
+        self.assertFalse(self.q.quest_party_solo_gear_active)
+        self.assertFalse(self.q.in_solo_zone)
+        self.assertFalse(self.q.quest_party_probe_pending)
+
+    async def test_successful_friend_arrival_still_completes_probe(self):
+        await self.scenario(retry=True)
+        self.assertFalse(self.p2._quest_follower_probe['pending'])
+        self.assertFalse(self.q.quest_party_probe_pending)
+        self.assertGreaterEqual(len(self.request_times), 2)
 
     async def test_delayed_and_slow_hiding_failure_modal_still_get_one_click(self):
         for kind in ('late', 'slow-close'):
@@ -212,9 +332,9 @@ class FriendBusyModalTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(self.clicks, [])
                 self.stack.close()
 
-    async def test_persistent_modal_is_not_reclicked_and_never_certifies_transition_complete(self):
+    async def test_persistent_modal_has_bounded_clicks_and_never_certifies_transition_complete(self):
         await self.scenario(kind='persistent')
-        self.assertEqual(self.clicks, [('p2', 'rightButton')])
+        self.assertEqual(self.clicks, [('p2', 'rightButton')] * 3)
         self.assertTrue(self.modal.visible)
         self.assertTrue(self.p2._quest_follower_probe['pending'])
         self.assertEqual(len(self.request_times), 1)
@@ -247,6 +367,16 @@ class FriendBusyModalTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(self.request_times[1] - self.request_times[0], 60)
         self.assertEqual(self.clicks, [('p2', 'rightButton')])
         self.assertFalse(self.p2._quest_follower_probe['pending'])
+
+    async def test_unknown_no_modal_uses_existing_retry_until_real_arrival(self):
+        await self.scenario(kind='none', request_error='runtime', retry=True)
+        self.assertEqual(len(self.request_times), 2)
+        self.assertGreater(self.request_times[1], self.request_times[0])
+        self.assertEqual(self.clicks, [])
+        self.assertFalse(self.p2._quest_follower_probe['pending'])
+        self.assertTrue(self.p2._quest_follower_probe['verified'])
+        self.assertFalse(self.q.quest_party_probe_pending)
+        self.assertEqual(self.gear_calls, [])
 
 
 del Fixture

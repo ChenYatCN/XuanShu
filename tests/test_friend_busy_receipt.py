@@ -261,9 +261,9 @@ class FriendBusyReceiptTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.event_times('decision=modal-disappeared'))
         self.assertFalse(getattr(self.p2, '_friend_follow_failure', None))
 
-    async def test_G_persistent_clicked_modal_only_polls_and_H_blocks_new_requests(self):
+    async def test_G_persistent_modal_uses_three_click_budget_and_H_blocks_new_requests(self):
         await self.scenario(kind='persistent', stale=True, request_error='none')
-        self.assertEqual(self.clicks, [('p2', 'rightButton')])
+        self.assertEqual(self.clicks, [('p2', 'rightButton')] * 3)
         self.assertEqual(len(self.request_times), 1)
         self.assertTrue(self.event_times('decision=modal-still-visible'))
         self.assertTrue(self.event_times('reason=cleanup-active'))
@@ -346,13 +346,13 @@ class FriendBusyReceiptTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(kind=kind):
                 self.setUp()
                 await self.scenario(kind=kind, restart=True)
-                self.assertEqual(self.clicks, [('p2', 'rightButton')])
+                self.assertEqual(self.clicks, [('p2', 'rightButton')] * (3 if kind == 'persistent' else 1))
                 self.assertEqual(len(self.request_times), 1)
                 self.stack.close()
 
-    async def test_persistent_modal_outlives_correlation_without_reclick_or_request(self):
+    async def test_persistent_modal_outlives_correlation_without_resetting_click_budget_or_request(self):
         await self.scenario(kind='persistent', stop_at=70)
-        self.assertEqual(self.clicks, [('p2','rightButton')])
+        self.assertEqual(self.clicks, [('p2','rightButton')] * 3)
         self.assertEqual(len(self.request_times), 1)
         self.assertTrue(self.p2._friend_follow_failure['clicked'])
         self.assertFalse(self.event_times('decision=backoff-start'))

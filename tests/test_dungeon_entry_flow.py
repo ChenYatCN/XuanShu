@@ -4,7 +4,8 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from wizwalker import XYZ, Keycode
-from src import quest_party as party
+from src import quest_party as party, utils
+from loguru import logger
 from src.teleport_math import _movement_task_snapshot
 from src.automation_ownership import automation_owner, get_client_automation_ownership
 from src.paths import team_up_wait_path
@@ -18,6 +19,45 @@ class EntryFlowTests(Base):
     def setUp(self):
         super().setUp()
         self.q.title_text = self.h.title_text = 'Cannon Ledge'
+
+    async def test_initial_ready_hitter_task_token_jitter_still_sends_shared_x(self):
+        from itertools import count
+        first = True
+        for prepared in (False, True):
+            for jitter in ('task-change', 'task-unreadable', 'token-change', 'token-unreadable'):
+                with self.subTest(prepared=prepared, jitter=jitter):
+                    if not first:
+                        self.stack.close()
+                        self.setUp()
+                    first = False
+                    if prepared:
+                        self.assertEqual(await self.reader.prepare_party_dungeon_entry(), [self.q, self.h])
+                    if jitter.startswith('task'):
+                        changes = count(8)
+                        self.h.goal_id.side_effect = (lambda: next(changes)) if jitter == 'task-change' else ValueError('transient task read')
+                    else:
+                        original = utils._party_area_token
+                        changes = count(10)
+                        async def token(member):
+                            value = await original(member)
+                            if member is self.h:
+                                if jitter == 'token-unreadable':
+                                    raise ValueError('transient token read')
+                                return (*value[:3], next(changes))
+                            return value
+                        for name in ('src.utils._party_area_token', 'src.questing._party_area_token'):
+                            self.stack.enter_context(patch(name, token))
+                    lines = []
+                    sink = logger.add(lambda message: lines.append(str(message)), level='DEBUG')
+                    try:
+                        members = await self.reader.prepare_party_dungeon_entry()
+                        self.assertEqual(members, [self.q, self.h])
+                        self.assertTrue(await self.reader._send_dungeon_entry_x(members))
+                    finally:
+                        logger.remove(sink)
+                    self.q.send_key.assert_awaited_once_with(Keycode.X, .1)
+                    self.h.send_key.assert_awaited_once_with(Keycode.X, .1)
+                    self.assertTrue(any("phase=shared-x members=['p1', 'p2']" in line for line in lines))
 
     def setup_caller(self):
         for name in ('src.mainline_progress.log_mainline_progress', 'src.questing.close_npc_quest_menu',
@@ -129,7 +169,7 @@ class EntryFlowTests(Base):
 
     async def test_unreadable_snapshot_is_not_cached_as_permanent_disagreement(self):
         self.h.quest_position.position.side_effect = [ValueError('temporarily unreadable'), self.target]
-        self.assertEqual(await self.reader.prepare_party_dungeon_entry(), [self.q])
+        self.assertEqual(await self.reader.prepare_party_dungeon_entry(), [self.q, self.h])
         self.h.quest_position.position.side_effect = None
         self.assertEqual(await self.reader.prepare_party_dungeon_entry(), [self.q, self.h])
         self.assertFalse(self.events)
@@ -247,12 +287,12 @@ class EntryFlowTests(Base):
         self.q.send_key.assert_not_awaited()
         self.h.send_key.assert_not_awaited()
 
-    async def test_generic_full_caller_retries_quester_only_once_when_nobody_entered(self):
+    async def test_generic_full_caller_never_replays_one_x_lifecycle(self):
         self.q.teamup = self.h.teamup = False
         self.setup_caller()
         for _ in range(2):
             await self.reader.auto_quest_solo()
-        self.assertEqual(self.q.send_key.await_count, 2)
+        self.assertEqual(self.q.send_key.await_count, 1)
         self.assertEqual(self.h.send_key.await_count, 1)
 
     async def test_failed_entry_retires_after_real_source_area_change(self):
