@@ -225,14 +225,47 @@ async def appearOffline(client: Client, title, wizard):
         await click_window_from_path(client.mouse_handler, client.root_window, settingsConfirm)
 
 async def skipDialogue(client):
+    settings_visible_since = None
     while True:
         await asyncio.sleep(0.02)
         await asyncio.sleep(0.2)
+        dialogue_progress = False
         while await client.is_in_dialog():
+            dialogue_progress = True
             await asyncio.sleep(0.15)
             await client.send_key(Keycode.SPACEBAR, 0.05)
-        while await dismiss_crownshop(client):
-            await asyncio.sleep(0.02)
+        shop_visible = await crownshopVisibilty(client)
+        if shop_visible:
+            await dismiss_crownshop(client)
+        if (shop_visible or dialogue_progress or await client.is_loading()
+                or await client.in_battle()
+                or await is_visible_by_path(client.root_window, playButton)
+                or not await is_visible_by_path(client.root_window, settingsConfirm[:-1])):
+            if settings_visible_since is not None:
+                logger.debug('[ibao_escape] client={} event=settings-cleared', client.title)
+            settings_visible_since = None
+            continue  # A shop ESC consumes this iteration; never fall through to another ESC.
+        now = asyncio.get_running_loop().time()
+        if settings_visible_since is None:
+            settings_visible_since = now
+            logger.debug('[ibao_escape] client={} event=settings-visible', client.title)
+            continue
+        if now - settings_visible_since < 4.0:
+            continue
+        # Recheck after UI reads: a disappearing page, loading or a new shop
+        # cannot turn this recovery ESC into input for a different screen.
+        if (not await is_visible_by_path(client.root_window, settingsConfirm[:-1])
+                or await client.is_loading() or await client.in_battle()
+                or await crownshopVisibilty(client) or await client.is_in_dialog()
+                or await is_visible_by_path(client.root_window, playButton)):
+            logger.debug('[ibao_escape] client={} event=settings-cleared', client.title)
+            settings_visible_since = None
+            continue
+        logger.debug('[ibao_escape] client={} event=settings-stuck duration={:.1f}',
+                     client.title, now - settings_visible_since)
+        await client.send_key(Keycode.ESC, .1)
+        logger.debug('[ibao_escape] client={} event=recovery-esc', client.title)
+        settings_visible_since = asyncio.get_running_loop().time()
 
 async def azothCollect(client, tipAmount):
     chat = await window_from_path(client.root_window, chatWindowPath)

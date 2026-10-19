@@ -135,7 +135,7 @@ from wizwalker.utils import get_all_wizard_handles, get_foreground_window
 
 cMessageBox = ctypes.windll.user32.MessageBoxW
 
-tool_version: str = "4.2.0"
+tool_version: str = "4.2.1"
 tool_name: str = "XuanShu"
 tool_author: str = "ChenYatCN"
 repo_name: str = "XuanShu"

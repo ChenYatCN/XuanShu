@@ -22,6 +22,9 @@ class _FakeRoot:
     def __init__(self, state):
         self._state = state
 
+    async def children(self):
+        return []  # No SettingPage or character-select controls in this fixture.
+
     async def get_windows_with_name(self, name):
         if name == 'permanentShop' and self._state['present']:
             return [_FakeWindow(self._state)]
@@ -41,6 +44,8 @@ class _FakeClient:
         self.esc_saw_shop = []
         self.settings_open = False
         self.space_seen = asyncio.Event()
+        self.is_loading = AsyncMock(return_value=False)
+        self.in_battle = AsyncMock(return_value=False)
 
     async def send_key(self, key, duration=0):
         name = getattr(key, 'name', str(key))
