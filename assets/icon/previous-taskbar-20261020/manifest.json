@@ -1,0 +1,34 @@
+{
+  "XuanShu-logo.ico": {
+    "backup": "XuanShu-logo.ico",
+    "sha256": "4a668862b1e5089020475ed3573cd6c4216ccffb05352e63220ea7a33e284959"
+  },
+  "assets\\icon\\icon\\simple.png": {
+    "backup": "simple.png",
+    "sha256": "93893d70293ccc3a9c7185274346553cd136ece452097b13074797f7280836c5"
+  },
+  "assets\\icon\\icon\\icon_16.png": {
+    "backup": "icon_16.png",
+    "sha256": "06848b8e105932a84d6dbdea855682624d7c405d6b107aee137ee36f93972842"
+  },
+  "assets\\icon\\icon\\icon_24.png": {
+    "backup": "icon_24.png",
+    "sha256": "c31eca77cab8ce421f53885a6abf5f3902b1f2323861a63afd217b2bd37f3a75"
+  },
+  "assets\\icon\\icon\\icon_32.png": {
+    "backup": "icon_32.png",
+    "sha256": "a93901be80c25927404522282c4342df0b82bf190968e9ced8285f6400bd1969"
+  },
+  "assets\\icon\\icon\\icon_48.png": {
+    "backup": "icon_48.png",
+    "sha256": "4d89172d545585afd9d95a361eda49d7ff1ddc3b6dee1ce9ce71a165849c2630"
+  },
+  "assets\\icon\\icon\\icon_64.png": {
+    "backup": "icon_64.png",
+    "sha256": "a0f1f371623d6eb31959a3264feb831c0841abbb079991a342c06e51d5e0eb8b"
+  },
+  "assets\\icon\\icon\\README.md": {
+    "backup": "README.md",
+    "sha256": "9f02b6f5e225650c7c6601b2afe941d2a59def093e7105a5ddc71b7f313403be"
+  }
+}

@@ -440,7 +440,7 @@ class WorldGateRecoveryTests(unittest.IsolatedAsyncioTestCase):
         reader.read_popup = AsyncMock(return_value='Press X to interact')
         reader._dungeon_quest_snapshot = AsyncMock(return_value=(self.quest, self.goal, 'unchanged'))
         reader._recover_quest_x_direction = AsyncMock(return_value=False)
-        reader.handle_spiral_navigation = AsyncMock()
+        reader.read_spiral_door_title = AsyncMock(return_value='Spiral Map')
         with patch('src.questing.close_npc_quest_menu', AsyncMock(return_value=False)), \
              patch('src.questing.close_automation_popup', AsyncMock(return_value=False)), \
              patch('src.questing.is_spiral_door_open', AsyncMock(side_effect=lambda _:
@@ -448,11 +448,12 @@ class WorldGateRecoveryTests(unittest.IsolatedAsyncioTestCase):
              patch('src.questing.safe_click_window', AsyncMock()), \
              patch('src.questing.is_free_leader_questing', AsyncMock(return_value=True)), \
              patch('src.questing.is_visible_by_path', AsyncMock(side_effect=lambda _, path: path == npc_range_path)), \
-             patch('src.questing.get_popup_title', AsyncMock(return_value='世界之门')):
+             patch('src.questing.get_popup_title', AsyncMock(return_value='世界之门')), \
+             patch('src.questing.spiral_door_with_quest', AsyncMock(return_value=True)) as select_world:
             await reader.handle_normal_quests([hitter], True)
         self.client.send_key.assert_awaited_once()
         hitter.send_key.assert_not_awaited()
-        reader.handle_spiral_navigation.assert_awaited_once()
+        select_world.assert_awaited_once_with(self.client)
 
 
 if __name__ == '__main__':

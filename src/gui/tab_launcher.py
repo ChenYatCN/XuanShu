@@ -4,10 +4,15 @@ import os
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QCheckBox, QLineEdit, QListWidget, QListWidgetItem, QDialog,
-    QSizePolicy, QFileDialog, QComboBox,
+    QSizePolicy, QFileDialog, QComboBox, QMenu,
 )
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt, QSize, QSignalBlocker
 
+from src.account_groups import get_account_groups, get_account_group, set_account_group
+from src.gui.account_group_choice import AccountGroupChoice
+from src.gui.account_group_dialogs import (
+    account_group_defaults, show_account_group_name_dialog, show_manage_account_groups,
+)
 from src.gui.commands import GUICommand, GUICommandType
 from src.gui.helpers import (
     add_dialog_titlebar, centered_label, launcher_icon_btn, launcher_small_icon_btn,
@@ -165,9 +170,15 @@ def build_launcher_tab(ctx):
 
     # Amber warning icon for saved accounts whose metadata needs attention.
     _warning_svg = svgs['triangle-alert'].replace(ctx.stroke_color, '#E0A100')
+    _more_svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="{ctx.stroke_color}">'
+        '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/>'
+        '<circle cx="19" cy="12" r="1.6"/></svg>'
+    )
 
     _hover_rgba = "rgba(255,255,255,15)" if ctx.theme in ('black', 'dark') else "rgba(0,0,0,15)"
     _launcher_list_style = (
+        "QListWidget, QListWidget:focus { border: none; }"
         "QListWidget::item {"
         "  background: transparent;"
         "  border-radius: 4px;"
@@ -194,8 +205,44 @@ def build_launcher_tab(ctx):
     left_col.setSpacing(2)
 
     acct_header = QHBoxLayout()
+    acct_header.setSpacing(4)
     acct_header.addWidget(centered_label(tl('saved_accounts')), 1)
+    account_group_choice = AccountGroupChoice(lambda: {
+        'alt_bg': getattr(ctx, 'alt_bg', '#2d2d2d'),
+        'text_color': getattr(ctx, 'text_color', '#ffffff'),
+        'stroke_color': ctx.stroke_color,
+        'button_color': getattr(ctx, 'btn_color_hex', '#4a019e'),
+    })
+    account_group_choice.setObjectName('accountGroupChoice')
+    account_group_choice.setAccessibleName(tl('account_group'))
+    account_group_choice.setFixedHeight(22)
+    account_group_choice.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+    account_group_choice.setMinimumContentsLength(4)
+    account_group_choice.setMaximumWidth(110)
+    saved_group = ctx.settings.get_setting('launcher_account_group') if ctx.settings else None
+    current_group = [saved_group or 'favorites']
+    default_group_names = account_group_defaults(ctx)
+    acct_header.addWidget(account_group_choice)
+
+    def _toggle_search():
+        opening = search_input.isHidden()
+        search_input.setVisible(opening)
+        if opening:
+            search_input.setFocus()
+        else:
+            search_input.clear()
+
+    search_btn = launcher_small_icon_btn(ctx, svgs['search'], tl('search_accounts'), _toggle_search)
+    search_btn.setObjectName('accountSearchToggle')
+    acct_header.addWidget(search_btn)
     left_col.addLayout(acct_header)
+    search_input = QLineEdit()
+    search_input.setObjectName('accountSearch')
+    search_input.setPlaceholderText(tl('search_accounts'))
+    search_input.setClearButtonEnabled(True)
+    search_input.setFixedHeight(22)
+    search_input.hide()
+    left_col.addWidget(search_input)
 
     account_list = QListWidget()
     account_list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
@@ -204,16 +251,90 @@ def build_launcher_tab(ctx):
     ctx.widget_tags['AccountList'] = account_list
     account_selection_order: list[str] = []
     account_checkboxes: dict[str, QCheckBox] = {}
+    launch_confirmation = [None]
+
+    def _selected_accounts():
+        return [nickname for nickname in account_selection_order
+                if nickname in account_checkboxes
+                and account_checkboxes[nickname].isEnabled()
+                and account_checkboxes[nickname].isChecked()]
+
+    def _update_launch_confirmation():
+        if launch_confirmation[0] is not None:
+            launch_confirmation[0]()
+
+    def _account_toggled(nickname, checked):
+        update_account_selection_order(account_selection_order, nickname, checked)
+        _update_launch_confirmation()
+
+    def _filter_accounts():
+        query = search_input.text().strip().casefold()
+        group = current_group[0]
+        groups = get_account_groups(ctx.settings, default_group_names)
+        for i in range(account_list.count()):
+            item = account_list.item(i)
+            nick = item.data(Qt.ItemDataRole.UserRole)
+            account_group = get_account_group(ctx.settings, nick)
+            item.setHidden(query not in nick.casefold() if query
+                           else group != 'all' and group != account_group)
+            badge = account_list.itemWidget(item).findChild(QLabel, 'accountGroupLabel')
+            badge.setText(groups[account_group])
+            badge.setToolTip(groups[account_group])
+            badge.setVisible(bool(query) or group == 'all')
+
+    def _change_group():
+        group = account_group_choice.currentData()
+        if group != 'all' and group not in get_account_groups(ctx.settings, default_group_names):
+            return
+        current_group[0] = group
+        account_group_choice.setToolTip(account_group_choice.currentText())
+        if ctx.settings:
+            ctx.settings.set_setting('launcher_account_group', group)
+        _filter_accounts()
+
+    def _refresh_group_choices(selected=None):
+        groups = get_account_groups(ctx.settings, default_group_names)
+        group = selected or current_group[0]
+        if not isinstance(group, str) or (group != 'all' and group not in groups):
+            group = 'favorites'
+        with QSignalBlocker(account_group_choice):
+            account_group_choice.clear()
+            account_group_choice.addItem(tl('account_group_all'), 'all')
+            for group_id, name in groups.items():
+                account_group_choice.addItem(name, group_id)
+                account_group_choice.setItemData(account_group_choice.count() - 1, name,
+                                                 Qt.ItemDataRole.ToolTipRole)
+            account_group_choice.insertSeparator(account_group_choice.count())
+            account_group_choice.addItem('+' + tl('new_account_group').lstrip('+＋').strip(), '@create')
+            account_group_choice.addItem(tl('manage_account_groups'), '@manage')
+            account_group_choice.setCurrentIndex(account_group_choice.findData(group))
+        current_group[0] = group
+        account_group_choice.setToolTip(account_group_choice.currentText())
+        _filter_accounts()
+
+    def _activate_group_choice(index):
+        action = account_group_choice.itemData(index)
+        if action not in ('@create', '@manage'):
+            return
+        _refresh_group_choices()
+        if action == '@create':
+            group = show_account_group_name_dialog(ctx)
+            _refresh_group_choices(group)
+            if group:
+                _change_group()
+        else:
+            show_manage_account_groups(ctx, _refresh_group_choices)
+
+    account_group_choice.currentIndexChanged.connect(_change_group)
+    account_group_choice.activated.connect(_activate_group_choice)
+    search_input.textChanged.connect(_filter_accounts)
+    _refresh_group_choices()
 
     def _on_account_rows_moved(*_args):
         nicknames = []
         for i in range(account_list.count()):
             item = account_list.item(i)
-            w = account_list.itemWidget(item)
-            if w:
-                label = w.findChild(QLabel)
-                if label:
-                    nicknames.append(label.text())
+            nicknames.append(item.data(Qt.ItemDataRole.UserRole))
         if nicknames:
             send_queue.put(GUICommand(GUICommandType.ReorderAccounts, nicknames))
 
@@ -261,6 +382,16 @@ def build_launcher_tab(ctx):
         validation_label = QLabel('')
         validation_label.setStyleSheet('color: #D9534F;')
         dlg_layout.addWidget(validation_label)
+
+        dlg_layout.addWidget(QLabel(tl('account_group')))
+        group_choice = QComboBox()
+        group_choice.setObjectName('accountEditGroup')
+        for group_id, name in get_account_groups(ctx.settings, default_group_names).items():
+            group_choice.addItem(name, group_id)
+        initial_group = (get_account_group(ctx.settings, nickname) if editing
+                         else current_group[0] if current_group[0] != 'all' else 'favorites')
+        group_choice.setCurrentIndex(group_choice.findData(initial_group))
+        dlg_layout.addWidget(group_choice)
 
         steam_cb = QCheckBox(tl('steam_mode'))
         steam_cb.setChecked(bool(steam))
@@ -311,14 +442,14 @@ def build_launcher_tab(ctx):
                 send_queue.put(
                     GUICommand(
                         GUICommandType.UpdateAccount,
-                        (nickname, nick, steam_value, private_value),
+                        (nickname, nick, steam_value, private_value, group_choice.currentData()),
                     )
                 )
                 dlg.accept()
                 return
 
             send_queue.put(
-                GUICommand(GUICommandType.SaveAccount, (nick, steam_value, private_value))
+                GUICommand(GUICommandType.SaveAccount, (nick, steam_value, private_value, group_choice.currentData()))
             )
             dlg.accept()
 
@@ -350,15 +481,20 @@ def build_launcher_tab(ctx):
         cb = QCheckBox()
         account_checkboxes[nickname] = cb
         cb.toggled.connect(
-            lambda checked, nick=nickname: update_account_selection_order(
-                account_selection_order, nick, checked
-            )
+            lambda checked, nick=nickname: _account_toggled(nick, checked)
         )
         row_layout.addWidget(cb)
 
         lbl = QLabel(nickname)
-        lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        lbl.setTextFormat(Qt.TextFormat.PlainText)
+        lbl.setToolTip(nickname)
+        lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         row_layout.addWidget(lbl, 1)
+        group_label = QLabel()
+        group_label.setObjectName('accountGroupLabel')
+        group_label.setTextFormat(Qt.TextFormat.PlainText)
+        group_label.setStyleSheet('font-weight: normal;')
+        row_layout.addWidget(group_label)
 
         if disabled:
             cb.setEnabled(False)
@@ -385,18 +521,52 @@ def build_launcher_tab(ctx):
 
             show_window_config_dialog(ctx, nickname)
 
-        window_btn = launcher_small_icon_btn(
-            ctx,
-            svgs['proportions'],
-            tl('window_config_tooltip'),
-            _window_config,
-        )
-        row_layout.addWidget(window_btn)
-
         def _delete_this():
             send_queue.put(GUICommand(GUICommandType.DeleteAccount, nickname))
-        trash_btn = launcher_small_icon_btn(ctx, svgs['trash'], tl('remove_account'), _delete_this)
-        row_layout.addWidget(trash_btn)
+
+        def _move_group():
+            dlg = QDialog(ctx.window)
+            dlg.setWindowTitle(tl('move_account_group'))
+            layout = QVBoxLayout(dlg)
+            name = QLabel(nickname)
+            name.setTextFormat(Qt.TextFormat.PlainText)
+            layout.addWidget(name)
+            choice = QComboBox()
+            for group_id, name in get_account_groups(ctx.settings, default_group_names).items():
+                choice.addItem(name, group_id)
+            choice.setCurrentIndex(choice.findData(get_account_group(ctx.settings, nickname)))
+            layout.addWidget(choice)
+
+            def save():
+                set_account_group(ctx.settings, nickname, choice.currentData())
+                _filter_accounts()
+                dlg.accept()
+
+            buttons = QHBoxLayout()
+            for key, callback in (('save_account', save), ('cancel', dlg.reject)):
+                button = QPushButton(tl(key))
+                button.setStyleSheet(ctx.btn_style)
+                button.clicked.connect(callback)
+                buttons.addWidget(button)
+            layout.addLayout(buttons)
+            dlg.exec()
+            dlg.deleteLater()
+
+        more_btn = launcher_small_icon_btn(ctx, _more_svg, tl('account_more'), lambda: _show_more())
+        more_btn.setObjectName('accountMore')
+        more_btn.setAccessibleName(tl('account_more'))
+
+        def _show_more():
+            # Rows are destroyed by asynchronous account-list updates.
+            menu = QMenu(ctx.window)
+            menu.addAction(tl('move_account_group'), _move_group)
+            menu.addAction(tl('window_config_tooltip'), _window_config)
+            menu.addSeparator()
+            menu.addAction(tl('remove_account'), _delete_this)
+            menu.exec(more_btn.mapToGlobal(more_btn.rect().bottomLeft()))
+            menu.deleteLater()
+
+        row_layout.addWidget(more_btn)
 
         return row
 
@@ -420,6 +590,7 @@ def build_launcher_tab(ctx):
             if not nick:
                 continue
             item = QListWidgetItem()
+            item.setData(Qt.ItemDataRole.UserRole, nick)
             item.setSizeHint(QSize(0, 28))
             row_widget = _build_account_item_widget(
                 nick,
@@ -436,6 +607,8 @@ def build_launcher_tab(ctx):
             if checkbox is not None and checkbox.isEnabled():
                 checkbox.setChecked(True)
         account_list.setUpdatesEnabled(True)
+        _refresh_group_choices()
+        _update_launch_confirmation()
 
     def _refresh_account_eligibility(managed_accounts):
         remember = ctx.settings and ctx.settings.get_setting('remember_chosen_clients')
@@ -458,7 +631,8 @@ def build_launcher_tab(ctx):
             else:
                 cb.setEnabled(True)
                 lbl.setStyleSheet("")
-                lbl.setToolTip("")
+                lbl.setToolTip(nick)
+        _update_launch_confirmation()
 
     def _build_hooked_client_widget(info: dict):
         row = QWidget(hooked_clients_list)
@@ -609,16 +783,57 @@ def build_launcher_tab(ctx):
 
     # Launch & Login button
     def _launch_and_login():
-        selected = [
-            nickname
-            for nickname in account_selection_order
-            if nickname in account_checkboxes
-            and account_checkboxes[nickname].isEnabled()
-            and account_checkboxes[nickname].isChecked()
-        ]
+        if launch_confirmation[0] is not None:
+            return
+        selected = _selected_accounts()
+        visible = {account_list.item(i).data(Qt.ItemDataRole.UserRole)
+                   for i in range(account_list.count()) if not account_list.item(i).isHidden()}
+        if any(nick not in visible for nick in selected):
+            selected = _confirm_hidden_accounts(selected)
         if selected:
             game_path = game_path_input.text().strip()
             send_queue.put(GUICommand(GUICommandType.LaunchInstance, (selected, game_path)))
+
+    def _confirm_hidden_accounts(selected):
+        dlg = QDialog(ctx.window)
+        dlg.setObjectName('confirmAccountLaunch')
+        dlg.setWindowTitle(tl('confirm_account_launch'))
+        layout = QVBoxLayout(dlg)
+        note = QLabel(tl('hidden_account_launch_note'))
+        note.setWordWrap(True)
+        note.setStyleSheet('font-weight: normal;')
+        layout.addWidget(note)
+        review = QListWidget()
+        review.setStyleSheet(_launcher_list_style)
+        layout.addWidget(review)
+        buttons = QHBoxLayout()
+        confirm = QPushButton(tl('launch_login'))
+        confirm.setObjectName('confirmLaunchAccounts')
+        for button, callback in ((confirm, dlg.accept), (QPushButton(tl('cancel')), dlg.reject)):
+            button.setStyleSheet(ctx.btn_style)
+            button.clicked.connect(callback)
+            buttons.addWidget(button)
+        layout.addLayout(buttons)
+
+        def remaining():
+            eligible = set(_selected_accounts())
+            return [nick for nick in selected if nick in eligible]
+
+        def refresh():
+            review.clear()
+            groups = get_account_groups(ctx.settings, default_group_names)
+            for nick in remaining():
+                review.addItem(f'{nick} [{groups[get_account_group(ctx.settings, nick)]}]')
+            confirm.setEnabled(review.count() > 0)
+
+        launch_confirmation[0] = refresh
+        refresh()
+        dlg.resize(360, 320)
+        try:
+            return remaining() if dlg.exec() == QDialog.DialogCode.Accepted else []
+        finally:
+            launch_confirmation[0] = None
+            dlg.deleteLater()
 
     # Resolve game path: saved setting > auto-detect
     _saved_path = ctx.settings.get_setting('game_path') if ctx.settings else None
@@ -644,7 +859,9 @@ def build_launcher_tab(ctx):
     launcher_action_row = QHBoxLayout()
     launcher_action_row.addStretch()
     launcher_action_row.addWidget(ctx.registry.action_icon_btn(svgs['add'], tl('add_account'), lambda: _show_account_dialog()))
-    launcher_action_row.addWidget(ctx.registry.action_icon_btn(svgs['play'], tl('launch_login'), _launch_and_login))
+    launch_btn = ctx.registry.action_icon_btn(svgs['play'], tl('launch_login'), _launch_and_login)
+    launch_btn.setObjectName('launchAccounts')
+    launcher_action_row.addWidget(launch_btn)
     launcher_action_row.addWidget(ctx.registry.action_icon_btn(svgs['gear'], tl('settings'), _show_settings_dialog))
     launcher_action_row.addStretch()
     launcher_layout.addLayout(launcher_action_row)

@@ -57,7 +57,7 @@ def source_signature(paths, bundled):
     return signature(paths) + [['bundled', hashlib.sha256(bundled.read_bytes()).hexdigest()]]
 
 
-def language_files(path):
+def language_files(path, *, strict=False, tables=None):
     """Stream only language entries; honor compressed size (not original size)."""
     if path.suffix.casefold() == '.lang':
         yield str(path), path.read_bytes()
@@ -72,6 +72,8 @@ def language_files(path):
         if version >= 2:
             stream.read(1)
         entries = []
+        selected = None if tables is None else {f'locale/en-us/{table}.lang'.casefold() for table in tables}
+        seen = set()
         for _ in range(count):
             offset, raw_size, compressed_size, compressed, _, name_size = struct.unpack('<III?II', stream.read(21))
             if not 1 <= name_size <= 8192:
@@ -79,34 +81,62 @@ def language_files(path):
             name = stream.read(name_size).rstrip(b'\0').decode('utf-8')
             if not name.casefold().endswith('.lang'):
                 continue
+            if selected is not None and name.casefold() not in selected:
+                continue
+            if strict and name.casefold() in seen:
+                raise ValueError(f'{path.name}: duplicate language table {name}')
+            seen.add(name.casefold())
             length = compressed_size if compressed else raw_size
             if offset + length > size or max(length, raw_size) > 32 * 1024 * 1024:
                 raise ValueError(f'{path.name}: invalid language entry size')
-            entries.append((name, offset, length, compressed))
-        for name, offset, length, compressed in entries:
+            entries.append((name, offset, length, compressed, raw_size))
+        for name, offset, length, compressed, raw_size in entries:
             stream.seek(offset)
             data = stream.read(length)
             if compressed:
                 try:
                     data = zlib.decompress(data)
                 except zlib.error:
+                    if strict:
+                        raise ValueError(f'{path.name}: corrupt compressed language table {name}')
                     # A broken entry must not hide the other language tables.
                     continue
+            if strict and len(data) != raw_size:
+                raise ValueError(f'{path.name}: incomplete language table {name}')
             yield name, data
 
 
-def parse_language(data):
+def parse_language(data, *, strict=False, expected_table=None):
     try:
         lines = data.decode('utf-16').split('\r\n')
     except UnicodeError:
+        if strict:
+            raise ValueError('invalid UTF-16 language table')
         return
     if not lines or ':' not in lines[0]:
+        if strict:
+            raise ValueError('missing language table header')
         return
     table = lines[0].split(':', 1)[1].strip()
     if not table:
+        if strict:
+            raise ValueError('empty language table name')
         return
+    if strict:
+        if not re.fullmatch(r'[0-9]+',lines[0].split(':',1)[0]):
+            raise ValueError('invalid language format header')
+        if expected_table is not None and table!=expected_table:
+            raise ValueError(f'language header {table!r} disagrees with {expected_table!r}')
+        if lines[-1] == '':
+            lines.pop()  # One trailing record separator; an empty display field is still data.
+        if (len(lines)-1) % 3:
+            raise ValueError(f'{table}: incomplete language record')
+    seen = set()
     for index in range(1, len(lines) - 2, 3):
         key, english, translated = lines[index:index + 3]
+        if strict and (not key or key in seen):
+            raise ValueError(f'{table}: empty or duplicate language ID {key!r}')
+        seen.add(key)
         if key:
             yield f'{table}_{key}', english, translated
 

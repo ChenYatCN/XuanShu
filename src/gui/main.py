@@ -57,6 +57,7 @@ from src.gui.tab_hotkeys import build_hotkeys_tab
 from src.gui.tab_launcher import build_launcher_tab
 from src.gui.tab_stats import build_stats_tab
 from src.gui.theme import compute_styles
+from src.gui.window_theme import install_window_theme
 from src.gui.widgets import (
     AnimatedTabWidget,
     ConsoleTextEdit,
@@ -118,6 +119,7 @@ def manage_gui(
     icon_btn_style = styles["icon_btn_style"]
 
     app.setStyleSheet(styles["app_style"])
+    install_window_theme(app, theme_dict)
 
     window = QMainWindow()
     window.setWindowTitle(f"{DISPLAY_NAME} v{tool_version}")
@@ -885,6 +887,9 @@ def manage_gui(
                                 info.get("title", "")
                                 for info in _last_hooked_data.get("hooked", [])
                             ], restarting_titles=restarting_titles
+                        )
+                        hotkeys_exports.get("set_client_metadata", lambda infos: None)(
+                            _last_hooked_data.get("hooked", [])
                         )
                         if _update_mc:
                             _update_mc(hooked_count)

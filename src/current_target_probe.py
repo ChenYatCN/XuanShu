@@ -8,6 +8,7 @@ from copy import copy
 import math
 import re
 import time
+from functools import lru_cache
 
 from loguru import logger
 from wizwalker import Keycode, HookNotActive
@@ -16,6 +17,7 @@ from src.automation_ownership import automation_owner, get_client_automation_own
 from src.interaction_prompts import (plain_text, task_object_prompt, quest_has_action, interaction_kind,
     _INTERACTION_IDS, _prompt_form)
 from src.game_text_catalog import TEXT_RECORDS
+from src.game_text_snapshot import snapshot_for_client,text_values
 from src.paths import (team_up_button_path, team_up_wait_path, team_up_confirm_path,
     dialog_text_path, advance_dialog_path, decline_quest_path, cancel_multiple_quest_menu_path,
     dungeon_warning_path)
@@ -33,17 +35,19 @@ _BUSY_FLAGS = ('refilling_potions', 'quest_recovery_owner', 'quest_party_safe_re
     '_quest_dialogue_update_pending')
 
 # Reuse the existing Talk labels as an exclusion, never as a generic-X synonym.
-_TALK_PREFIXES = tuple(TEXT_RECORDS['WizardQuestGoals_TalkNPC'])
-_DEDICATED_ENGLISH, _DEDICATED_CHINESE = set(), set()
+_DEDICATED_ENGLISH = set()
 for _kind in ('talk', 'enter', 'ride', 'teleport', 'climb', 'collect'):
     for _text_id in _INTERACTION_IDS.get(_kind, ()):
         _english, _chinese = TEXT_RECORDS.get(_text_id, ('', ''))
         if ' to ' in _english:
             _DEDICATED_ENGLISH.add(_english.split(' to ', 1)[1].strip())
-        if _chinese:
-            _label = re.sub(r'^press(?:or|或)?(?:to)?', '', _prompt_form(_chinese))
-            if _label:
-                _DEDICATED_CHINESE.add(_label)
+
+
+@lru_cache(maxsize=None)
+def _dedicated_forms(snapshot):
+    return frozenset(label for kind in ('talk','enter','ride','teleport','climb','collect')
+        for text_id in _INTERACTION_IDS.get(kind,()) for value in snapshot.values(text_id)[-1:] if value
+        if (label:=re.sub(r'^press(?:or|或)?(?:to)?','',_prompt_form(value))))
 
 
 def start_navigation(client, target, task, origin, control):
@@ -76,19 +80,20 @@ async def record_endpoint(client, target, task, control, endpoint, kind):
         return  # Missing movement evidence cannot authorize a probe.
 
 
-def object_candidate(objective, title, action):
+def object_candidate(objective, title, action, *, client=None, task_client=None):
     # Classification reuses the existing object grammar. No new verb synonyms,
     # task names or map exceptions; unclassified actions remain ineligible.
     text = plain_text(objective)
     first_word = text.split(' ', 1)[0]
-    dedicated_goal = (interaction_kind(f'Press X to {first_word}') in
+    source=task_client or client
+    dedicated_goal = (interaction_kind(f'Press X to {first_word}',client=source) in
         ('talk', 'enter', 'ride', 'teleport', 'climb', 'collect')
         or any(re.match(re.escape(prefix)+(r'\b' if prefix.isascii() else ''), text, re.I)
-            for prefix in (*_TALK_PREFIXES, *_DEDICATED_ENGLISH) if prefix)
-        or any(_prompt_form(text).startswith(prefix) for prefix in _DEDICATED_CHINESE))
-    return bool(task_object_prompt(title, action) and not dedicated_goal
-        and not _dedicated_collect_objective(objective)
-        and not any(quest_has_action(objective, kind) for kind in ('defeat', 'photomance', 'pet_mode'))
+            for prefix in (*text_values('WizardQuestGoals_TalkNPC',source), *_DEDICATED_ENGLISH) if prefix)
+        or any(_prompt_form(text).startswith(prefix) for prefix in _dedicated_forms(snapshot_for_client(source))))
+    return bool(task_object_prompt(title, action,client=client) and not dedicated_goal
+        and not _dedicated_collect_objective(objective,client=source)
+        and not any(quest_has_action(objective, kind,client=source) for kind in ('defeat', 'photomance', 'pet_mode'))
         and not re.match(r"^(?:do\s+not\b|don't\b|never\b|不要|禁止)", plain_text(objective), re.I)
         and re.search(r'\bX\b|[Xx][键鍵]|<(?:icon|image);X>|&(?:InputBindings_NPCInteract|Icons_XKey)&',
                       str(action), re.I))
@@ -132,7 +137,7 @@ async def _frame(quester, state):
     popup = await _unique_popup(client)
     position = await _movement_position(client)
     if (task is None or progress is None or title is None or popup is None
-            or progress[:2] != task[:2] or not object_candidate(progress[2], title[0], raw)
+            or progress[:2] != task[:2] or not object_candidate(progress[2], title[0], raw,client=client)
             or not _same_movement_task(state['task'], task)
             or calc_Distance(position, state['terminal']['position']) > 3
             or not all(math.isfinite(v) for v in position)

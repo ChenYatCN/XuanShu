@@ -82,13 +82,15 @@ class PortalReadTests(unittest.IsolatedAsyncioTestCase):
         reader.read_spiral_door_title=AsyncMock(return_value='Streamportal')
         reader.find_quest_zone_area_name=AsyncMock(return_value='aeriel')
         other=SimpleNamespace(questing_status=True)
-        self.assertTrue(await reader.new_world_doors(self.client))  # Handled; no generic fallback.
+        self.client._quest_region_transfer_diagnostic={'reason':'区域菜单文本读取失败'}
+        with patch('src.questing.travel_region_menu',new=AsyncMock(return_value=False)) as select:
+            self.assertTrue(await reader.new_world_doors(self.client))  # Handled; no generic fallback.
+            self.assertTrue(await reader.new_world_doors(self.client))
+        select.assert_awaited_once()
         self.assertTrue(self.client.questing_status)
         self.assertTrue(other.questing_status)
         self.assertIsNone(reader.d_location)
-        self.assertEqual(self.client.root_window.get_windows_with_name.await_count,3)
-        self.assertTrue(await reader.new_world_doors(self.client))
-        self.assertEqual(self.client.root_window.get_windows_with_name.await_count,3)
+        self.assertEqual(self.client.root_window.get_windows_with_name.await_count,0)
 
     async def test_programming_error_is_not_swallowed_as_a_ui_refresh(self):
         self.panel.children.side_effect=RuntimeError('unrelated defect')

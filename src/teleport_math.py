@@ -417,8 +417,8 @@ def _current_target_approach(client, source, target, task, control):
         return approach
 
 
-def _dedicated_collect_objective(objective):
-    goal = parse_collect_goal(objective)
+def _dedicated_collect_objective(objective, *, client=None):
+    goal = parse_collect_goal(objective,client=client)
     if goal is None:
         return False
     text, _ = split_quest_location(objective)
@@ -442,7 +442,7 @@ async def _movement_transition_arrival(client, source, target, task, control, po
     delayed_prompt = bool(approach and approach.get('prompt_absent'))
     new_prompt = bool(approach and (delayed_prompt or approach.get('initial_observed')
         and approach.get('identity') == identity
-        and (approach.get('initial_identity') != identity or task_transition_prompt(*identity))))
+        and (approach.get('initial_identity') != identity or task_transition_prompt(*identity, client=client))))
     return bool(new_prompt and not await _movement_failure_blocks_interaction(
         client, target, task, pos=position, signature=identity))
 
@@ -458,7 +458,7 @@ async def _visible_object_prompt_arrival(client, source, target, task, control, 
     if (task is None or not all(math.isfinite(v) for v in (*task[2], *target, *position))
             or calc_Distance(task[2], target) > 1
             or calc_Distance(target, XYZ(0, 0, 0)) <= 1
-            or not task_object_prompt(*identity)):
+            or not task_object_prompt(*identity, client=client)):
         return False
     if _current_target_approach(client, source, target, task, control) is None:
         return False
@@ -503,7 +503,7 @@ _ENTER_OBJECTIVE = re.compile(
     r'|^(?:进入|進入|前往|前去|传送至|傳送至)\s*', re.I)
 
 
-def _objective_action_kind(objective):
+def _objective_action_kind(objective, *, client=None):
     """Classify only the action; the title remains auxiliary evidence."""
     goal, _ = split_quest_location(plain_text(objective or '').strip())
     goal = goal.strip()
@@ -511,18 +511,18 @@ def _objective_action_kind(objective):
         return 'talk'
     if _OBJECT_ACTION_OBJECTIVE.match(goal):
         return 'object'
-    if parse_collect_goal(objective) is not None:
+    if parse_collect_goal(objective,client=client) is not None:
         return 'collect'
     if _ENTER_OBJECTIVE.match(goal):
         return 'enter'
     return ''
 
 
-def _prompt_action_kind(identity):
-    kind = interaction_kind(identity[1]) if identity else None
+def _prompt_action_kind(identity, *, client=None):
+    kind = interaction_kind(identity[1],client=client) if identity else None
     if kind in ('talk', 'collect', 'enter', 'ride', 'teleport', 'climb'):
         return kind
-    if identity and task_object_prompt(*identity):
+    if identity and task_object_prompt(*identity,client=client):
         return 'object'
     return kind or ''
 
@@ -679,18 +679,18 @@ async def _quest_interaction_eligibility(client, target, task=None, *, task_clie
         if not math.isfinite(calc_Distance(position, target)) or calc_Distance(position, target) >= 750:
             return result('too-far-from-task')
         gap = calc_Distance(position, target)
-        matched = quest_interaction_matches(objective, identity[0])
-        transition = task_transition_prompt(*identity)
-        dedicated = (_dedicated_collect_objective(raw_objective)
-                     or any(quest_has_action(objective, action)
+        matched = quest_interaction_matches(objective, identity[0], client=source)
+        transition = task_transition_prompt(*identity, client=client)
+        dedicated = (_dedicated_collect_objective(raw_objective, client=source)
+                     or any(quest_has_action(objective, action, client=source)
                             for action in ('defeat', 'photomance', 'pet_mode')))
         transition_candidate = bool(not matched and transition and not dedicated)
-        entry = is_dungeon_entry_prompt(identity[1])
+        entry = is_dungeon_entry_prompt(identity[1], client=client)
         semantic = bool(not matched and not transition_candidate and not dedicated
-                        and quest_interaction_correlates(objective, *identity))
-        object_action = bool(task_object_prompt(*identity))
-        objective_kind = _objective_action_kind(objective)
-        action_kind = _prompt_action_kind(identity)
+                        and quest_interaction_correlates(objective, *identity, client=client, task_client=source))
+        object_action = bool(task_object_prompt(*identity, client=client))
+        objective_kind = _objective_action_kind(objective, client=source)
+        action_kind = _prompt_action_kind(identity, client=client)
         approach_record = _current_target_approach(client, source, target, current, control)
         approach = approach_record is not None
         fresh_prompt = bool(approach_record and (
@@ -791,7 +791,7 @@ async def _quest_interaction_eligibility(client, target, task=None, *, task_clie
             return result('transition-awaiting-update')
         return result('accepted-current-target-object' if object_arrival else
                       'accepted-current-target-gateway' if gateway_arrival else
-                      ('accepted-task-target-enter' if is_dungeon_entry_prompt(identity[1]) else
+                      ('accepted-task-target-enter' if is_dungeon_entry_prompt(identity[1], client=client) else
                        'accepted-task-target-transition') if transition_arrival else
                       'accepted-task-target-interaction' if ordinary_arrival else 'accepted-current-task')
     except (HookNotActive, MemoryReadError, ValueError, AttributeError):
@@ -1454,9 +1454,9 @@ async def _walk_remaining_to_target(client: Client, target_xyz: XYZ, world, zone
             from src.current_target_probe import object_candidate
             signature = await _movement_interaction_signature(client)
             objective = await _movement_objective(task_client or client)
-            if (signature is None or not object_candidate(objective, *signature)
-                    or quest_interaction_matches(objective, signature[0])
-                    or quest_interaction_correlates(objective, *signature)):
+            if (signature is None or not object_candidate(objective, *signature, client=client, task_client=task_client or client)
+                    or quest_interaction_matches(objective, signature[0], client=task_client or client)
+                    or quest_interaction_correlates(objective, *signature, client=client, task_client=task_client or client)):
                 return True
         extra = await asyncio.to_thread(entity_collision.build_zone_static_shapes, zone_name, None)
         # blocking_volumes_at already includes the player clearance. Use a local

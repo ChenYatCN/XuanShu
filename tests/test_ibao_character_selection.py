@@ -186,7 +186,7 @@ class CharacterSelectionTests(unittest.IsolatedAsyncioTestCase):
         await scope['logout_and_in'](client, target, True, 'p1')
         self.assertEqual(entered, [target])
         self.assertEqual([call.args[0].path for call in client.mouse_handler.click_window.await_args_list],
-                         [scope['quitButton'], scope['logOutConfirm']])
+                         [scope['quitButton'], scope['logOutConfirm'], scope['playButton']])
         client.send_key.assert_not_awaited()
 
     async def test_transient_logout_read_failure_is_retried_locally(self):
@@ -345,3 +345,46 @@ class CharacterSelectionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await scope['logout_and_in'](client, self.wizard('target'), True, 'p1')
         self.assertEqual(entered, [])
+
+
+    async def test_slow_play_transition_receives_only_one_click(self):
+        target = self.wizard('target')
+        client, scope, state, entered = self.session([[target]])
+        # Exercise the real repeated-click helper rather than the fixture stub.
+        from src.ibao_core import click_window_until_gone
+        import types
+        scope['click_window_until_gone'] = types.FunctionType(
+            click_window_until_gone.__code__, scope)
+        async def visible(root, path):
+            return path == scope['playButton'] and state.clock < .6
+        scope['is_visible_by_path'] = visible
+        client.mouse_handler.click_window = AsyncMock()
+        await scope['logout_and_in'](client, target, True, 'p1')
+        client.mouse_handler.click_window.assert_awaited_once()
+        client.wait_for_zone_change.assert_awaited_once()
+
+    async def test_play_click_failure_is_not_retried_as_a_selection_read(self):
+        target = self.wizard('target')
+        client, scope, state, entered = self.session([[target]])
+        scope['click_window_until_gone'] = AsyncMock(side_effect=RuntimeError('click failed'))
+        client.mouse_handler.click_window = AsyncMock(side_effect=RuntimeError('click failed'))
+        with self.assertRaisesRegex(RuntimeError, 'click failed'):
+            await scope['logout_and_in'](client, target, True, 'p1')
+        client.mouse_handler.click_window.assert_awaited_once()
+        client.wait_for_zone_change.assert_not_awaited()
+
+
+class WizardRemovalTests(unittest.TestCase):
+    def test_remove_each_slot_preserves_successor_and_all_other_characters(self):
+        from src.ibao_core import remaining_wizards
+        for position in range(6):
+            with self.subTest(position=position):
+                original = list(range(6))
+                result = remaining_wizards(original, position)
+                self.assertEqual(result, original[position + 1:] + original[:position])
+                self.assertNotIn(position, result)
+                self.assertEqual(original, list(range(6)))
+
+    def test_only_character_leaves_empty_list(self):
+        from src.ibao_core import remaining_wizards
+        self.assertEqual(remaining_wizards(['only'], 0), [])

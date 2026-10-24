@@ -66,11 +66,14 @@ def _rgba(color_value, alpha):
 
 
 def _filter_field_style(ctx):
-    field_bg = _rgba(ctx.text_color, 12)
     return (
         "QComboBox, QSpinBox, QDoubleSpinBox {"
-        f"  background-color: {field_bg};"
-        "}"
+        f" background-color: {ctx.alt_bg}; color: {ctx.text_color};"
+        " border: none;"
+        f" border-bottom: 1px solid {_rgba(ctx.text_color, 100)};"
+        " border-radius: 3px; padding: 2px 4px; }"
+        "QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {"
+        f" border-bottom-color: {_rgba(ctx.text_color, 100)}; }}"
     )
 
 
@@ -414,6 +417,8 @@ def build_fishing_tab(ctx):
         _sync_filter_state()
 
     def retheme():
+        for field in (school, rank, fish_id, size_min, size_max):
+            field.setStyleSheet(_filter_field_style(ctx))
         for divider in client_dividers:
             divider.setStyleSheet(
                 f"background-color: {_rgba(ctx.stroke_color, 60)}; border: none;")

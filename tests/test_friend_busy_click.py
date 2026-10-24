@@ -6,7 +6,7 @@ import unittest
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import wizwalker
 from wizwalker.memory import WindowFlags
@@ -76,7 +76,7 @@ class FriendBusyClickTests(unittest.IsolatedAsyncioTestCase):
             get_window_from_path=utils.get_window_from_path,
             friend_is_busy_and_dungeon_reset_path=utils.friend_is_busy_and_dungeon_reset_path,
             automation_owner=automation_owner, get_client_automation_ownership=get_client_automation_ownership,
-            WindowFlags=WindowFlags, wizwalker=wizwalker)
+            WindowFlags=WindowFlags, wizwalker=wizwalker, update_party_status=Mock())
         exec(self.helpers, ns)
         return SimpleNamespace(ns=ns, client=client, modal=modal, operation=operation,
             clicks=clicks, logs=logs, clock=clock, state=probe_state)
@@ -121,11 +121,13 @@ class FriendBusyClickTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_r6_persistent_modal_retries_are_bounded_and_requests_stay_blocked(self):
         f = self.make_cleanup(close_after=100)
+        self.assertFalse(await self.settle(f))
         for _ in range(3):
-            self.assertFalse(await self.settle(f))
+            self.assertTrue(await self.settle(f), 'retired cleanup must not be replayed')
             self.assertTrue(f.ns['friend_request_blocked'](f.client))
         self.assertEqual(len(f.clicks), 3)
-        self.assertNotIn('friend_outcome', f.state)
+        self.assertEqual(f.state['friend_outcome'], 'unavailable')
+        self.assertFalse(getattr(f.client, '_friend_follow_failure', None))
 
     async def test_r7_disappearance_keeps_backoff_and_unavailable_release(self):
         f = self.make_cleanup()
@@ -143,7 +145,7 @@ class FriendBusyClickTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(f.modal.visible)
         self.assertTrue(any('modal-disappeared clicked=True' in line for line in f.logs))
 
-    async def test_existing_safety_guard_reports_exact_reason_and_clicks_when_released(self):
+    async def test_existing_safety_guard_reports_reason_and_releases_without_replaying_old_cleanup(self):
         f = self.make_cleanup()
         f.client.quest_recovery_owner = 'existing-recovery'
         self.assertFalse(await self.settle(f))
@@ -152,4 +154,5 @@ class FriendBusyClickTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum('decision=input-blocked reason=quest_recovery_owner' in line for line in f.logs), 1)
         f.client.quest_recovery_owner = None
         self.assertTrue(await self.settle(f))
-        self.assertEqual(len(f.clicks), 1)
+        self.assertEqual(f.clicks, [])
+        self.assertFalse(getattr(f.client, '_friend_follow_failure', None))

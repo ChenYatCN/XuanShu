@@ -27,7 +27,8 @@ class AccountEditUITests(unittest.TestCase):
             svgs=defaultdict(lambda: '<svg xmlns="http://www.w3.org/2000/svg"/>'),
             titlebar_svg_icon=lambda *_: QIcon(), widget_tags={}, exports={},
             settings=SimpleNamespace(get_setting=lambda *_: None),
-            registry=SimpleNamespace(action_icon_btn=lambda *_: QPushButton()),
+            registry=SimpleNamespace(action_icon_btn=lambda *_: QPushButton(),
+                                     styled_btn=lambda text: QPushButton(text)),
         )
         self.tab = build_launcher_tab(self.ctx)
         self.ctx.exports['launcher']['populate_account_list']([
@@ -64,7 +65,7 @@ class AccountEditUITests(unittest.TestCase):
             GUICommandType.UpdateAccountCredentials, GUICommandType.UpdateAccount,
         ])
         self.assertEqual(commands[0].data, 'Old')
-        self.assertEqual(commands[1].data, ('Old', 'New', False, False))
+        self.assertEqual(commands[1].data, ('Old', 'New', False, False, 'favorites'))
 
     def test_private_mode_can_be_edited_and_has_server_tooltip(self):
         def interact():
@@ -81,7 +82,7 @@ class AccountEditUITests(unittest.TestCase):
         self.edit_button().click()
         command = self.ctx.send_queue.put.call_args.args[0]
         self.assertEqual(command.com_type, GUICommandType.UpdateAccount)
-        self.assertEqual(command.data, ('Old', 'Old', False, True))
+        self.assertEqual(command.data, ('Old', 'Old', False, True, 'favorites'))
 
     def test_steam_and_private_modes_are_mutually_exclusive(self):
         def interact():
@@ -97,7 +98,7 @@ class AccountEditUITests(unittest.TestCase):
         QTimer.singleShot(0, interact)
         self.edit_button().click()
         command = self.ctx.send_queue.put.call_args.args[0]
-        self.assertEqual(command.data, ('Old', 'Old', False, True))
+        self.assertEqual(command.data, ('Old', 'Old', False, True, 'favorites'))
 
     def test_existing_private_account_can_turn_mode_off(self):
         self.ctx.exports['launcher']['populate_account_list']([
@@ -116,7 +117,7 @@ class AccountEditUITests(unittest.TestCase):
         QTimer.singleShot(0, interact)
         self.edit_button().click()
         command = self.ctx.send_queue.put.call_args.args[0]
-        self.assertEqual(command.data, ('Old', 'Old', False, False))
+        self.assertEqual(command.data, ('Old', 'Old', False, False, 'favorites'))
 
     def test_steam_keeps_credentials_editable_and_cancel_does_not_save(self):
         def interact():

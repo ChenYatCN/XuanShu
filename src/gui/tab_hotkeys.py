@@ -17,10 +17,6 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QTableWidget,
-    QTableWidgetItem,
-    QHeaderView,
-    QAbstractItemView,
     QVBoxLayout,
     QWidget,
 )
@@ -37,6 +33,7 @@ from src.gui.helpers import (
 from src.gui.icon_manager import set_label_icon
 from src.gui.widgets import HotkeyCapture, ToggleNameLabel, ThemedCheckBox
 from src.gui.tab_actions import _build_client_toolbar
+from src.gui.status_overview import StatusOverviewTable
 
 
 def build_hotkeys_tab(ctx):
@@ -137,35 +134,19 @@ def build_hotkeys_tab(ctx):
     toggle_names = {}
     status_badges = {}
     status_snapshot = {}
+    client_metadata = [None]
+    state_identities = [None]
     overview_dialog = QDialog(tab)
     overview_dialog.setWindowTitle('状态总览')
     overview_dialog.resize(660, 350)
     overview_layout = QVBoxLayout(overview_dialog)
-    overview_table = QTableWidget(overview_dialog)
-    overview_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-    overview_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-    overview_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-    overview_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
-    overview_table.verticalHeader().setVisible(False)
-    overview_table.setShowGrid(False)
-    overview_table.setAlternatingRowColors(True)
-    overview_table.verticalHeader().setDefaultSectionSize(32)
+    overview_table = StatusOverviewTable(overview_dialog)
     overview_layout.addWidget(overview_table)
+    overview_dialog.finished.connect(overview_table.end_session)
 
     def _style_overview():
-        alt_color = QColor(ctx.alt_bg)
-        if QColor(ctx.bg_color).lightness() < 128:
-            alt_color = alt_color.lighter(145)
-        else:
-            alt_color = alt_color.darker(115)
-        overview_table.setStyleSheet(
-            f'QTableWidget {{ background: {ctx.bg_color}; color: {ctx.text_color};'
-            f' alternate-background-color: {alt_color.name()}; border: none; }}'
-            f'QTableWidget::item {{ padding: 3px 6px;'
-            f' border-bottom: 3px solid {ctx.bg_color}; }}'
-            f'QHeaderView::section {{ background: {ctx.alt_bg};'
-            f' color: {ctx.text_color}; border: none; padding: 4px; }}'
-        )
+        overview_table.set_theme({key: getattr(ctx, key) for key in
+                                  ('bg_color', 'alt_bg', 'text_color', 'stroke_color')})
 
     _style_overview()
 
@@ -173,23 +154,17 @@ def build_hotkeys_tab(ctx):
         return list(client_checks)
 
     def _refresh_overview():
-        clients = _ordered_clients()
-        overview_table.setRowCount(len(toggle_names))
-        overview_table.setColumnCount(len(clients) + 1)
-        overview_table.setHorizontalHeaderLabels(['功能', *clients])
-        overview_table.setColumnWidth(0, 125)
-        for col in range(1, len(clients) + 1):
-            overview_table.setColumnWidth(col, 62)
-        for row, (action, name) in enumerate(toggle_names.items()):
-            overview_table.setItem(row, 0, QTableWidgetItem(name))
-            for col, client in enumerate(clients, 1):
-                enabled = status_snapshot.get(action, {}).get(client, False)
-                item = QTableWidgetItem('●' if enabled else '○')
-                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item.setForeground(QColor(ctx.stroke_color if enabled else '#858998'))
-                overview_table.setItem(row, col, item)
+        overview_table.update_snapshot(toggle_names, client_metadata[0], _ordered_clients(),
+                                       status_snapshot, state_identities[0])
+
+    def set_client_metadata(infos):
+        client_metadata[0] = [dict(info) for info in infos]
+        if overview_dialog.isVisible():
+            _refresh_overview()
 
     def _open_overview(action=None):
+        if not overview_dialog.isVisible():
+            overview_table.begin_session()
         _refresh_overview()
         overview_dialog.setWindowTitle(
             '状态总览' if action is None else f'状态总览 · {toggle_names[action]}'
@@ -239,7 +214,8 @@ def build_hotkeys_tab(ctx):
 
     def update_client_states(snapshot):
         status_snapshot.clear()
-        status_snapshot.update(snapshot)
+        status_snapshot.update({key: value for key, value in snapshot.items() if key != '__clients__'})
+        state_identities[0] = snapshot.get('__clients__')
         _refresh_status()
         questing = any(status_snapshot.get('toggle_questing', {}).values())
         version_label.setVisible(not questing)
@@ -962,6 +938,7 @@ def build_hotkeys_tab(ctx):
         "add_dynamic_hk_row": _add_dynamic_hk_row,
         "static_ids": static_ids,
         "set_available_clients": set_available_clients,
+        "set_client_metadata": set_client_metadata,
         "update_client_states": update_client_states,
         "update_quest_status": update_quest_status,
         "selected_clients": selected_clients,

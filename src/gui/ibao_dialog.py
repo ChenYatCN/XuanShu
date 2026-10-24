@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QCheckBo
                             QDoubleSpinBox, QPlainTextEdit, QPushButton, QWidget,
                             QTableWidget, QTableWidgetItem, QComboBox, QHeaderView,
                             QFileDialog)
+from src.gui.window_theme import ClassicSpinStyle
 from src.gui.widgets import FlowLayout, ThemedCheckBox
 from src.gui.commands import GUICommand, GUICommandType
 from src.ibao_locations import DEFAULT_LOCATIONS, expand_location_aliases
@@ -145,6 +146,12 @@ def build_ibao_dialog(ctx):
     settings_row = QHBoxLayout()
     pages = ThemedCheckBox('启用第七角色翻页', ctx.stroke_color, ctx.text_color, ctx.alt_bg)
     delay = QDoubleSpinBox()
+    # Windows 11 native spin buttons use a horizontal layout. Keep this
+    # themed control on one Qt layout for both painting and mouse hit tests.
+    delay_style = ClassicSpinStyle(ctx.stroke_color)
+    delay_style.setParent(delay)
+    delay.setStyle(delay_style)
+    delay.setMinimumHeight(30)
     delay.setRange(.1, 10)
     delay.setSingleStep(.1)
     delay.setValue(.3)
@@ -332,6 +339,8 @@ def build_ibao_dialog(ctx):
             f"开始：{g.get('started_at', '')}"
             for g in groups if not g.get('archived')))
     def retheme():
+        delay_style.arrow_color = ctx.stroke_color
+        delay.update()
         dialog.setStyleSheet(
             f"QDialog#IbaoDialog {{ background: {ctx.bg_color}; border: 1px solid {ctx.stroke_color}; border-radius: 8px; }}")
         title.setStyleSheet(f'color: {ctx.text_color}; font-weight: bold;')
@@ -339,7 +348,8 @@ def build_ibao_dialog(ctx):
         location_title.setStyleSheet(f'color: {ctx.text_color}; font-weight: bold;')
         status.setStyleSheet(f'color: {ctx.stroke_color};')
         locations.setStyleSheet(
-            f'QTableWidget {{ background: {ctx.alt_bg}; color: {ctx.text_color}; border: none; padding: 0; }}'
+            f'QTableWidget {{ background: {ctx.alt_bg}; color: {ctx.text_color}; border: 1px solid transparent; padding: 0; }}'
+            'QTableWidget:focus { border-color: transparent; }'
             f'QTableWidget::item {{ padding: 6px 8px; border-bottom: 1px solid {ctx.bg_color}; }}'
             f'QTableWidget::item:selected {{ background: {ctx.bg_color}; color: {ctx.stroke_color}; }}')
         locations.horizontalHeader().setStyleSheet(f'QHeaderView::section {{ background: {ctx.bg_color}; color: {ctx.text_color}; padding: 6px; border: none; }}')

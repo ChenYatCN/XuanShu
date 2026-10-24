@@ -60,6 +60,7 @@ from src.gui import GUIKeys
 from src.gui_inputs import param_input, trunc
 from src.ibao_runtime import IbaoGroups
 from src.interaction_prompts import portal_kind
+from src.game_text_snapshot import initialize_client_language
 from src.paths import (
     advance_dialog_path,
     cancel_multiple_quest_menu_path,
@@ -86,6 +87,9 @@ from src.quest_party import (
 from src.questing import Quester
 from src.script_popups import close_automation_popup, run_with_script_popups
 from src.settings_manager import XuanShuSettings
+from src.account_groups import (
+    rename_account_group, remove_account_group, get_account_groups, set_account_group,
+)
 from src.sigil import Sigil
 from src.sprinty_client import SprintyClient
 
@@ -202,6 +206,8 @@ gear_switching_in_solo_zones = False
 hitter_client = None
 quest_party_enabled = False
 mainline_finder_enabled = False
+quest_finder_enabled = True
+post_combat_wisps_enabled = False
 questing_client_titles: list[str] = []
 questing_hitter_client_titles: list[str] = []
 quest_hitter_assignment_mode = "auto"
@@ -252,6 +258,10 @@ quest_party_enabled = bool(
 )
 mainline_finder_enabled = bool(
     _json_settings.get("mainline_finder_enabled", mainline_finder_enabled)
+)
+quest_finder_enabled = bool(_json_settings.get("quest_finder_enabled", quest_finder_enabled))
+post_combat_wisps_enabled = bool(
+    _json_settings.get("post_combat_wisps_enabled", post_combat_wisps_enabled)
 )
 questing_client_titles = list(
     _json_settings.get("questing_clients", questing_client_titles) or []
@@ -528,7 +538,7 @@ async def mass_key_press(
         for client in background_clients:
             if getattr(client, 'quest_party_quester', None) is not None:
                 try:
-                    if (portal_kind(await get_popup_title(client)) == 'world_gate'
+                    if (portal_kind(await get_popup_title(client), client=client) == 'world_gate'
                             or await is_spiral_door_open(client)):
                         continue
                 except Exception as exc:
@@ -571,6 +581,7 @@ async def xyz_sync(
             logger.debug("XYZ Sync hotkey pressed, syncing client locations.")
         source = foreground_client or background_clients[0]
         safe_clients = []
+        targets = []
         for client in background_clients:
             if client is source:
                 continue
@@ -585,28 +596,37 @@ async def xyz_sync(
                 logger.warning(f'XYZ 同步：{blocked.title} 正在执行恢复流程 '
                                f'{blocked.quest_recovery_owner}，跳过同步到 {client.title}。')
                 continue
+            targets.append(client)
+        if targets:
             try:
                 source_zone = await source.zone_name()
                 xyz = await source.body.position()
                 yaw = await source.body.yaw()
-                # Reading the coordinates also awaits memory: reject a transition
-                # that started while reading the source, before issuing any input.
-                if (await source.is_loading() or await client.is_loading()
-                        or await source.zone_name() != source_zone
-                        or getattr(source, 'refilling_potions', False)
-                        or getattr(client, 'refilling_potions', False)
-                        or getattr(source, 'quest_recovery_owner', None)
-                        or getattr(client, 'quest_recovery_owner', None)):
-                    logger.warning(f'XYZ 同步：读取坐标期间客户端状态变化，跳过 {client.title}。')
-                    continue
-                await client.teleport(xyz, yaw=yaw)
             except Exception as exc:
-                # A failed manual action is not a fatal GUI error. Cancellation
-                # remains a BaseException and must still stop this operation.
-                logger.warning('XYZ 同步：{} 同步到 {} 失败，已跳过：{}: {}',
-                               source.title, client.title, type(exc).__name__, exc)
-                continue
-            safe_clients.append(client)
+                logger.warning('XYZ 同步：{} 源坐标读取失败，已跳过本次同步：{}: {}',
+                               source.title, type(exc).__name__, exc)
+            else:
+                async def sync_client(client):
+                    try:
+                        # All targets share one snapshot, but each must reject a
+                        # source transition or unsafe state before issuing input.
+                        if (await source.is_loading() or await client.is_loading()
+                                or await source.zone_name() != source_zone
+                                or getattr(source, 'refilling_potions', False)
+                                or getattr(client, 'refilling_potions', False)
+                                or getattr(source, 'quest_recovery_owner', None)
+                                or getattr(client, 'quest_recovery_owner', None)):
+                            logger.warning(f'XYZ 同步：读取坐标期间客户端状态变化，跳过 {client.title}。')
+                            return
+                        await client.teleport(xyz, yaw=yaw)
+                    except Exception as exc:
+                        # Keep failures local; cancellation must still propagate.
+                        logger.warning('XYZ 同步：{} 同步到 {} 失败，已跳过：{}: {}',
+                                       source.title, client.title, type(exc).__name__, exc)
+                        return
+                    safe_clients.append(client)
+
+                await gather_owned(*[sync_client(client) for client in targets])
         if turn_after:
             async def turn_client(client):
                 try:
@@ -2681,20 +2701,45 @@ async def main():
                 return released
 
             def retire_friend_failure(operation, *, disappeared=False, outcome='unavailable'):
+                if operation.get('state') == 'retired':
+                    return
                 client = operation['client']
+                owns_receipt = getattr(client, '_friend_follow_failure', None) is operation
+                busy = operation.get('busy_failed') or operation.get('modal') is not None
+                previous = getattr(client, '_friend_follow_busy_backoff', None)
+                same_target = (isinstance(previous, dict)
+                    and previous.get('quester') is operation['quester']
+                    and previous.get('target_zone') == operation.get('target_zone')
+                    and previous.get('reference') == operation.get('reference'))
                 operation['state'] = 'retired'
                 operation['outcome'] = outcome
                 if disappeared:
+                    log_friend_cleanup(operation, 'modal-dismissed' if operation['clicked'] else 'already-gone')
                     log_friend_cleanup(operation, 'modal-disappeared', clicked=operation['clicked'])
+                if busy and owns_receipt:
+                    operation['busy_failures'] = (previous.get('busy_failures', 1) if same_target else 0) + 1
                     operation['busy_until'] = loop.time() + 60.0
                     client._friend_follow_busy_backoff = operation
-                    log_friend_cleanup(operation, 'backoff-start', seconds=60)
-                if getattr(client, '_friend_follow_failure', None) is operation:
+                if owns_receipt:
                     del client._friend_follow_failure
                 if probe_state.get('friend_failure') is operation:
                     probe_state.pop('friend_failure')
-                    probe_state['friend_outcome'] = outcome
-                    probe_state['release_pending'] = outcome == 'unavailable'
+                    if owns_receipt:
+                        probe_state['friend_outcome'] = outcome
+                        probe_state['release_pending'] = outcome == 'unavailable'
+                log_friend_cleanup(operation, 'cleanup-released', outcome=outcome, own_receipt=owns_receipt)
+                if owns_receipt and outcome == 'arrived' and same_target:
+                    del client._friend_follow_busy_backoff
+                if owns_receipt and outcome == 'unavailable' and (busy or operation.get('busy_retry')):
+                    budget = operation if busy else previous or operation
+                    unavailable = budget.get('retry_sent') or budget.get('busy_failures', 0) >= 2
+                    update_party_status(hitter, quester, '好友传送失败，暂不可用，等待区域参照变化' if unavailable
+                                        else '好友传送失败，等待目标稳定后有限重试')
+                    if not unavailable:
+                        log_friend_cleanup(operation, 'backoff-start', seconds=60)
+                    log_friend_cleanup(operation, 'failed' if unavailable else 'defer',
+                        reason='busy-unavailable' if unavailable else 'busy-backoff',
+                        failures=budget.get('busy_failures', 0), modal_gone=disappeared)
 
             def friend_failure_current(operation):
                 client = operation.get('client')
@@ -2710,7 +2755,23 @@ async def main():
                 if operation is None:
                     operation = getattr(client, '_friend_follow_busy_backoff', None)
                     reason = 'busy-backoff'
-                    if not operation or loop.time() >= operation['busy_until']:
+                    if not operation:
+                        return False
+                    reference = probe_state.get('reference') or probe_state.get('last_reference')
+                    if (reference is not None and operation.get('reference') is not None
+                            and reference != operation['reference']
+                            and (operation.get('retry_sent') or operation.get('busy_failures', 1) >= 2
+                                 or loop.time() >= operation['busy_until'])):
+                        log_friend_cleanup(operation, 'retry', reason='probe-reference-changed')
+                        if getattr(client, '_friend_follow_busy_backoff', None) is operation:
+                            del client._friend_follow_busy_backoff
+                        return False
+                    if operation.get('retry_sent') or operation.get('busy_failures', 1) >= 2:
+                        reason = 'busy-unavailable'
+                    elif loop.time() >= operation['busy_until']:
+                        if operation.get('last_block') != 'retry':
+                            log_friend_cleanup(operation, 'retry', reason='busy-backoff-ended')
+                            operation['last_block'] = 'retry'
                         return False
                 if operation.get('last_block') != reason:
                     log_friend_cleanup(operation, 'request-blocked', reason=reason)
@@ -2771,13 +2832,11 @@ async def main():
                 """Receipt owns only this sent request's Busy acknowledgement, never arrival."""
                 client = operation['client']
                 if not friend_failure_current(operation):
-                    if probe_state.get('friend_failure') is operation:
-                        probe_state.pop('friend_failure')
-                    operation['state'] = 'retired'
                     log_friend_cleanup(operation, 'receipt-replaced')
+                    retire_friend_failure(operation, outcome='superseded')
                     return True
 
-                async def safe_input():
+                async def safe_input(*, verified_busy=False):
                     reason = None
                     if getattr(client, '_friend_follow_failure', None) is not operation:
                         reason = 'receipt-replaced'
@@ -2785,7 +2844,7 @@ async def main():
                         reason = 'client-removed'
                     elif not client.questing_status:
                         reason = 'questing-stopped'
-                    elif await client.is_loading():
+                    elif await client.is_loading() and not verified_busy:
                         reason = 'loading'
                     elif await client.in_battle():
                         reason = 'battle'
@@ -2809,10 +2868,8 @@ async def main():
                             deadline = loop.time() + 3.0
                             while loop.time() < deadline:
                                 if not friend_failure_current(operation):
-                                    if probe_state.get('friend_failure') is operation:
-                                        probe_state.pop('friend_failure')
-                                    operation['state'] = 'retired'
                                     log_friend_cleanup(operation, 'receipt-replaced')
+                                    retire_friend_failure(operation, outcome='superseded')
                                     return True
                                 kind, signature, _ = await friend_failure_modal(client)
                                 if kind == 'absent' and operation['modal'] is not None:
@@ -2828,9 +2885,13 @@ async def main():
                                     retire_friend_failure(operation)
                                     return True
                                 if kind == 'failure' and operation['modal'] is None:
-                                    operation.update(modal=signature, state='detected')
+                                    operation.update(modal=signature, state='detected', busy_failed=True)
                                     log_friend_cleanup(operation, 'modal-detected', text=repr(signature[2]))
+                                    update_party_status(hitter, quester, '好友传送失败，正在清理好友忙弹窗')
                                 if operation['modal'] is None:
+                                    if operation.get('busy_failed'):
+                                        await asyncio.sleep(.1)
+                                        continue  # Give the rejected request's modal this bounded cleanup window.
                                     # No verified result in this frame. Keep the receipt for the
                                     # next poll without holding same-zone follow for a 3s window.
                                     friend_request_blocked(client)
@@ -2848,9 +2909,9 @@ async def main():
                                     if (not operation.get('invalidated')
                                             and attempts < 3
                                             and loop.time() >= operation.get('next_click_at', 0.0)
-                                            and await safe_input()):
+                                            and await safe_input(verified_busy=True)):
                                         async with probe_mouse(client):
-                                            if not await safe_input():
+                                            if not await safe_input(verified_busy=True):
                                                 return False
                                             fresh_kind, fresh_signature, button = await friend_failure_modal(client)
                                             if fresh_kind == 'absent':
@@ -2861,7 +2922,7 @@ async def main():
                                                     operation['invalidated'] = True
                                                     log_friend_cleanup(operation, 'modal-invalidated')
                                                 return False
-                                            if (not await safe_input()
+                                            if (not await safe_input(verified_busy=True)
                                                     or get_client_automation_ownership(client)._owner_task is not asyncio.current_task()):
                                                 return False
                                             # Safety reads can yield after the previous UI snapshot.
@@ -2888,6 +2949,7 @@ async def main():
                                                 return False
                                             operation.update(click_attempts=attempts + 1,
                                                              next_click_at=loop.time() + 1.0)
+                                            log_friend_cleanup(operation, 'modal-dismiss-attempt', attempt=f'{attempts + 1}/3')
                                             dispatched = False
                                             def clicked():
                                                 nonlocal dispatched
@@ -2897,13 +2959,24 @@ async def main():
                                                 operation.update(clicked=True, state='waiting-disappearance')
                                                 log_friend_cleanup(operation, 'click-ok',
                                                     attempt=f'{attempts + 1}/3', clicked=True)
-                                            await client.mouse_handler.click_window(button, on_dispatched=clicked)
-                                            clicked()  # Also support a successful handler without the callback.
+                                            try:
+                                                await client.mouse_handler.click_window(button, on_dispatched=clicked)
+                                            except wizwalker.WizWalkerMemoryError as exc:
+                                                log_friend_cleanup(operation, 'defer', reason='modal-click-read-failed', detail=repr(str(exc)))
+                                            else:
+                                                clicked()  # Also support a successful handler without the callback.
                                 await asyncio.sleep(.1)
                 except asyncio.CancelledError:
-                    raise  # Preserve receipt/consumed input across worker cancellation.
+                    raise
                 except (ValueError, AttributeError, RuntimeError, wizwalker.WizWalkerMemoryError, asyncio.TimeoutError) as exc:
                     logger.debug(f'{client.title} 好友结果弹窗尚未确认消失：{exc}')
+                finally:
+                    # A confirmed rejection is terminal even if its modal cannot
+                    # be read/dismissed, ownership changes, or the worker cancels.
+                    # Unresolved sent receipts retain their existing correlation
+                    # lifecycle; successful arrival must still be able to retire them.
+                    if operation.get('busy_failed') or operation.get('modal') is not None:
+                        retire_friend_failure(operation)
                 friend_request_blocked(client)
                 return False
 
@@ -3082,6 +3155,22 @@ async def main():
                     if getattr(hitter, 'refilling_potions', False):
                         log_probe('skip', 'own-potion-refill')
                         update_party_status(hitter, quester, "正在补充药水")
+                        continue
+                    if getattr(hitter, '_quest_dialogue_update_pending', False):
+                        # Observers can mark a follower too. Give that client the
+                        # existing passive settle pass before quester entry waits.
+                        log_probe('skip', 'own-dialogue-pending')
+                        update_party_status(hitter, quester, "等待本端对话和任务状态稳定")
+                        if (not await hitter.is_loading() and not await hitter.in_battle()
+                                and not get_client_automation_ownership(hitter).locked
+                                and not any(getattr(hitter, flag, False) for flag in (
+                                    'quest_recovery_owner', 'entity_detect_combat_status',
+                                    'quest_party_battle_rescue_active', 'post_combat_movement_active',
+                                    'quest_party_safe_return_active', 'feeding_pet_status',
+                                    'quest_party_entry_active'))):
+                            async with automation_owner(hitter, 'quest-dialogue-settle'):
+                                await hitter_reader.handle_npc_talking_quests(
+                                    hitter, [hitter], direction_search=False)
                         continue
                     if getattr(quester, 'quest_party_entry_active', False):
                         log_probe('skip', 'quester-entry-active')
@@ -3430,7 +3519,16 @@ async def main():
                     reference_zone = hitter_zone if entry_reverse else quester_zone
                     if friend_request_blocked(request_client):
                         log_probe('skip', 'friend-result-cleanup-active', owner_client=request_client)
-                        update_party_status(hitter, quester, "等待好友结果清理或 Busy 退避")
+                        update_party_status(hitter, quester, "好友传送失败，暂不可用，等待区域参照变化"
+                            if getattr(request_client, '_friend_follow_busy_backoff', {}).get('last_block') == 'busy-unavailable'
+                            else "等待好友结果清理或 Busy 退避")
+                        continue
+                    if (getattr(request_client, '_friend_follow_busy_backoff', None)
+                            and (await friend_failure_modal(request_client))[0] != 'absent'):
+                        # Cleanup released its receipt even if dismissal failed.
+                        # Do not operate friend panels behind that remaining modal.
+                        log_probe('skip', 'friend-result-modal-present', owner_client=request_client)
+                        update_party_status(hitter, quester, '好友传送失败，确认窗口仍可见，等待处理')
                         continue
                     if (get_client_automation_ownership(request_client).locked
                             or any(getattr(c, flag, False) for c in (request_client, reference)
@@ -3548,10 +3646,17 @@ async def main():
                         def record_friend_request():
                             generation = getattr(request_client, '_friend_request_generation', 0) + 1
                             request_client._friend_request_generation = generation
+                            backoff = getattr(request_client, '_friend_follow_busy_backoff', None)
+                            busy_retry = (isinstance(backoff, dict) and backoff.get('quester') is reference
+                                and backoff.get('target_zone') == reference_zone
+                                and backoff.get('reference') == probe_reference)
+                            if busy_retry:
+                                backoff['retry_sent'] = True  # Consume only at actual input dispatch, not lookup/preflight.
                             operation = dict(client=request_client, quester=reference,
                                 token=f'{id(request_client):x}-{generation}', generation=generation,
                                 sent_at=loop.time(), baseline=request_baseline, deadline=loop.time()+30.0,
-                                modal=None, clicked=False, state='request-sent', busy_until=0.0)
+                                modal=None, clicked=False, state='request-sent', busy_until=0.0,
+                                target_zone=reference_zone, reference=probe_reference, busy_retry=busy_retry)
                             request_client._friend_follow_failure = operation
                             probe_state['friend_failure'] = operation  # Index only; reference is not its owner.
                             probe_state.update(friend_outcome=None, terminal=None, release_pending=False)
@@ -3588,6 +3693,10 @@ async def main():
                             except Exception as exc:
                                 operation = getattr(request_client, '_friend_follow_failure', None)
                                 if operation:
+                                    if isinstance(exc, FriendBusyOrInstanceClosed):
+                                        operation['busy_failed'] = True
+                                    if operation.get('busy_failed') or operation.get('busy_retry'):
+                                        update_party_status(hitter, quester, '好友传送失败，正在清理好友忙弹窗')
                                     log_friend_cleanup(operation, 'probe-ended', reason=type(exc).__name__, detail=repr(str(exc)))
                                 await capture_friend_failure()
                                 raise
@@ -4688,7 +4797,8 @@ async def main():
                                 try:
                                     await clear_post_combat_phase(p)
                                     # collect wisps, up to a certain number
-                                    await collect_wisps_with_limit(p, limit=2)
+                                    if getattr(p, 'post_combat_wisps_enabled', False):
+                                        await collect_wisps_with_limit(p, limit=2)
                                     await asyncio.sleep(0.3)
 
                                     # A saved coordinate must not undo newer dungeon progress.
@@ -5104,6 +5214,7 @@ async def main():
 
     async def _init_client_attrs(client, *, character_select=False):
         """Initialize Python defaults and, when available, character data."""
+        await initialize_client_language(client)
         # IBAO resumes at character select, where the character/world pointers
         # do not exist yet. Its account metadata is inherited by the caller.
         if not character_select:
@@ -5145,6 +5256,8 @@ async def main():
         client.character_level = 0 if character_select else await client.stats.reference_level()
         client.discard_duplicate_cards = discard_duplicate_cards
         client.fusion_result_side = fusion_result_side
+        client.quest_finder_enabled = quest_finder_enabled
+        client.post_combat_wisps_enabled = post_combat_wisps_enabled
         client.kill_minions_first = kill_minions_first
         client.automatic_team_based_combat = automatic_team_based_combat
         client.latest_drops = ""
@@ -7389,6 +7502,9 @@ async def main():
                             )
 
                         case xuanshu_gui.GUICommandType.SaveAccount:
+                            requested_group = (
+                                com.data[3] if isinstance(com.data, (tuple, list)) and len(com.data) > 3 else None
+                            )
                             if isinstance(com.data, (tuple, list)):
                                 nickname, steam_mode = com.data[:2]
                                 private_mode = (
@@ -7413,6 +7529,9 @@ async def main():
                                 )
                                 wizlaunch.set_account_steam(nickname, bool(steam_mode))
                                 set_account_private_server(nickname, private_mode)
+                                if requested_group is not None:
+                                    set_account_group(settings, nickname, requested_group
+                                                      if requested_group in get_account_groups(settings) else 'favorites')
                                 logger.info(f"Account '{nickname}' saved.")
                             except (RuntimeError, AttributeError) as e:
                                 logger.info(f"Account save cancelled or failed: {e}")
@@ -7425,6 +7544,7 @@ async def main():
 
                         case xuanshu_gui.GUICommandType.UpdateAccount:
                             nickname, new_nickname, steam_mode = com.data[:3]
+                            requested_group = com.data[4] if len(com.data) > 4 else None
                             private_mode = (
                                 bool(com.data[3])
                                 if len(com.data) > 3
@@ -7455,6 +7575,10 @@ async def main():
                                 set_account_private_server(
                                     new_nickname, private_mode, nickname
                                 )
+                                rename_account_group(settings, nickname, new_nickname)
+                                if requested_group is not None:
+                                    set_account_group(settings, new_nickname, requested_group
+                                                      if requested_group in get_account_groups(settings) else 'favorites')
                                 if new_nickname != nickname:
                                     for handle, account_name in list(
                                         launched_account_map.items()
@@ -7521,6 +7645,7 @@ async def main():
 
                         case xuanshu_gui.GUICommandType.DeleteAccount:
                             wizlaunch.delete_account(com.data)
+                            remove_account_group(settings, com.data)
                             private_overrides = dict(
                                 settings.get_setting("private_server_accounts") or {}
                             )
@@ -7885,6 +8010,7 @@ async def main():
                             global buy_potions, use_team_up, client_to_follow, client_to_boost
                             global questing_friend_tp, gear_switching_in_solo_zones, hitter_client
                             global quest_party_enabled, mainline_finder_enabled, questing_client_titles, questing_hitter_client_titles
+                            global quest_finder_enabled, post_combat_wisps_enabled
                             global quest_hitter_assignment_mode, quest_hitter_assignments
                             global quest_friend_icons
                             global ignore_pet_level_up, only_play_dance_game
@@ -7934,6 +8060,14 @@ async def main():
                                                 client.mainline_finder_offer_guard = (
                                                     False
                                                 )
+                                    case "quest_finder_enabled":
+                                        quest_finder_enabled = bool(value)
+                                        for client in walker.clients:
+                                            client.quest_finder_enabled = quest_finder_enabled
+                                    case "post_combat_wisps_enabled":
+                                        post_combat_wisps_enabled = bool(value)
+                                        for client in walker.clients:
+                                            client.post_combat_wisps_enabled = post_combat_wisps_enabled
                                     case "questing_clients":
                                         questing_client_titles = list(value or [])
                                         quest_party_changed = True
@@ -8106,6 +8240,11 @@ async def main():
                     )
                     for c in live_clients
                 }
+            # Presentation identity accompanies the unchanged feature states so
+            # a reused p-number cannot display a previous process's state.
+            snapshot['__clients__'] = {
+                c.title: (stable_client_identity(c), c.window_handle) for c in live_clients
+            }
             if snapshot != last_hotkey_status_snapshot:
                 gui_send_queue.put(
                     xuanshu_gui.GUICommand(

@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
 
 from src.gui.commands import GUICommand, GUICommandType
 from src.gui.helpers import add_dialog_titlebar
+from src.gui.theme import blend_color
 from src.gui.icon_manager import (
     choose_custom_icon,
     reset_custom_icon,
@@ -93,14 +94,16 @@ def show_settings_dialog(ctx):
     current_theme = ctx.settings.get_theme()
     original_theme = dict(current_theme)
     theme_edits = dict(current_theme)
+    muted = blend_color(ctx.alt_bg, ctx.text_color, .70)
+    line = blend_color(ctx.alt_bg, ctx.text_color, .18)
 
     dialog = QDialog(ctx.window)
     dialog.setWindowTitle(tl("settings_title"))
     dialog.setModal(True)
     dialog.setMinimumWidth(380)
     dialog.setStyleSheet(
-        f"QWidget {{ background-color: {ctx.bg_color}; color: {ctx.text_color}; }}"
-        f"QGroupBox {{ border: 1px solid rgba(255,255,255,40); border-radius: 4px; margin-top: 14px; padding-top: 8px; }}"
+        f"QDialog {{ background-color: {ctx.bg_color}; color: {ctx.text_color}; }}"
+        f"QGroupBox {{ border: 1px solid {line}; border-radius: 4px; margin-top: 14px; padding-top: 8px; }}"
         f"QGroupBox::title {{ subcontrol-origin: margin; subcontrol-position: top left; padding: 0 6px; font-weight: bold; }}"
     )
 
@@ -112,13 +115,7 @@ def show_settings_dialog(ctx):
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
     scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    scroll.setStyleSheet(
-        "QScrollArea { border: none; }"
-        "QScrollBar:vertical { width: 6px; background: transparent; }"
-        "QScrollBar::handle:vertical { background: rgba(255,255,255,40); border-radius: 3px; min-height: 20px; }"
-        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
-        "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }"
-    )
+    scroll.setStyleSheet("QScrollArea { border: none; }")
     outer_layout.addWidget(scroll)
 
     scroll_widget = QWidget()
@@ -129,10 +126,16 @@ def show_settings_dialog(ctx):
     widgets = {}  # key -> widget
     multi_select_widgets = {}  # key -> {client title: checkbox}
 
-    def _add_checkbox(form, key, label_key):
+    def _add_checkbox(form, key, label_key, *, indent=0):
         cb = QCheckBox(tl(label_key))
         cb.setChecked(bool(current.get(key, DEFAULT_SETTINGS.get(key))))
-        form.addRow(cb)
+        if indent:
+            row = QHBoxLayout()
+            row.setContentsMargins(indent, 0, 0, 0)
+            row.addWidget(cb)
+            form.addRow(row)
+        else:
+            form.addRow(cb)
         widgets[key] = cb
 
     def _add_client_combo(form, key, label_key):
@@ -173,7 +176,7 @@ def show_settings_dialog(ctx):
             checkboxes[value] = checkbox
         if not client_options:
             empty_label = QLabel(tl("setting_quest_party_no_clients"))
-            empty_label.setStyleSheet("color: rgba(255,255,255,100);")
+            empty_label.setStyleSheet(f"color: {muted};")
             flow.addWidget(empty_label)
         form.addRow(tl(label_key), container)
         multi_select_widgets[key] = checkboxes
@@ -446,6 +449,17 @@ def show_settings_dialog(ctx):
     _add_checkbox(
         questing_form, "mainline_finder_enabled", "setting_mainline_finder_enabled"
     )
+    _add_checkbox(
+        questing_form, "quest_finder_enabled", "setting_quest_finder_enabled", indent=14
+    )
+    finder_checkbox = widgets["quest_finder_enabled"]
+    disabled_text = QColor(ctx.text_color)
+    finder_checkbox.setStyleSheet(
+        f"QCheckBox:disabled {{ color: rgba({disabled_text.red()},"
+        f"{disabled_text.green()},{disabled_text.blue()},100); }}"
+    )
+    widgets["mainline_finder_enabled"].toggled.connect(finder_checkbox.setEnabled)
+    finder_checkbox.setEnabled(widgets["mainline_finder_enabled"].isChecked())
     quester_container, quester_checks = _add_client_multi_select(
         questing_form,
         "questing_clients",
@@ -460,7 +474,7 @@ def show_settings_dialog(ctx):
     )
     party_note = QLabel(tl("setting_quest_party_note"))
     party_note.setWordWrap(True)
-    party_note.setStyleSheet("color: rgba(255,255,255,120); font-size: 10px;")
+    party_note.setStyleSheet(f"color: {muted}; font-size: 10px;")
     questing_form.addRow("", party_note)
 
     for option in live_client_options:
@@ -536,7 +550,7 @@ def show_settings_dialog(ctx):
     friend_icon_note = QLabel(tl("setting_quest_friend_icon_note"))
     friend_icon_note.setWordWrap(True)
     friend_icon_note.setStyleSheet(
-        "color: rgba(255,255,255,120); font-size: 10px;"
+        f"color: {muted}; font-size: 10px;"
     )
     friend_icon_layout.addWidget(friend_icon_note)
     questing_form.addRow(tl("setting_quest_friend_icons"), friend_icon_widget)
@@ -689,6 +703,7 @@ def show_settings_dialog(ctx):
         combat_form, "automatic_team_based_combat", "setting_auto_team_combat"
     )
     _add_checkbox(combat_form, "discard_duplicate_cards", "setting_discard_duplicates")
+    _add_checkbox(combat_form, "post_combat_wisps_enabled", "setting_post_combat_wisps_enabled")
 
     fusion_side = _NoScrollComboBox()
     fusion_side.setObjectName("fusionResultSide")

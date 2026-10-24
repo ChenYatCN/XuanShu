@@ -1,7 +1,7 @@
 """Verified text IDs and bilingual values from Locale_en-US-root.wad.
 
 Source: Locale/en-US/{GUI,GUI2,GUI3,PetGames,WizardQuestGoals}.lang.
-Snapshot inspected 2026-09-04. No game installation is needed at runtime.
+Snapshot inspected 2026-09-04. These values are runtime language fallbacks.
 English source and translated display text are retained separately.
 """
 
@@ -640,6 +640,8 @@ WORLD_RECORDS = {
 }
 
 TEXT_RECORDS = {
+    # UniverseMap.gui title; Root.wad and translated locale verified 2026-10-23.
+    "GUI_00001017": ["Spiral Map", "漩涡星系图"],
     # Reuse verified archive forms for current-target climbing transitions.
     "GUI_00005414": INTERACTION_RECORDS["GUI_00005414"],
     "GUI_00006133": INTERACTION_RECORDS["GUI_00006133"],

@@ -76,9 +76,22 @@ async def blocked(client, *, own_book=False):
 
 
 async def guard(client, zone):
-    if not active(client):
+    state = getattr(client, '_xuanshu_mainline_recovery', None)
+    stalled = isinstance(state, dict) and state.get('phase') == 'dungeon-stalled'
+    if stalled:
+        from src.quest_party import dungeon_session_for, dungeon_member_inside
+        session = state['session']
+        timer = getattr(client, 'quest_dungeon_recovery', None)
+        if (dungeon_session_for(client) is not session or session.quester is not client
+                or not dungeon_member_inside(client) or session.potion_areas
+                or not isinstance(timer, dict) or timer.get('session') is not session
+                or not timer.get('active')
+                or getattr(client, '_quest_dialogue_update_pending', False)
+                or getattr(client, '_xuanshu_mainline_book_task', None) is not asyncio.current_task()):
+            raise RuntimeError('地牢超时主线刷新上下文已失效')
+    if not active(client) and not (stalled and getattr(client, 'questing_status', False)):
         raise asyncio.CancelledError
-    if mainline_dungeon_status(client) == 'inside':
+    if mainline_dungeon_status(client) == 'inside' and not stalled:
         raise RuntimeError('已有地牢任务会话，停止主线找回界面操作')
     if await client.zone_name() != zone or await blocked(client, own_book=True):
         raise RuntimeError('找回期间区域或控制状态变化，停止任务界面操作')
@@ -473,6 +486,7 @@ async def confirm_finder_click(client, card_path, before_ui, before_task):
 
 async def select_from_book(client, last):
     zone = await client.zone_name()
+    stalled = (getattr(client, '_xuanshu_mainline_recovery', None) or {}).get('phase') == 'dungeon-stalled'
     async with automation_owner(client, OWNER):
         await guard(client, zone)
         client.quest_recovery_owner = OWNER
@@ -480,7 +494,13 @@ async def select_from_book(client, last):
         phase = '打开 Q'
         try:
             async with asyncio.timeout(25):
+                if stalled:
+                    state = client._xuanshu_mainline_recovery
+                    if await state['read_snapshot'](client) != state['snapshot']:
+                        return None  # Progress while old movement drained cancels this stale pass.
                 opened = True
+                if stalled:
+                    client._xuanshu_mainline_recovery['opened'] = True
                 await key(client, Keycode.Q)
                 for _ in range(30):
                     await guard(client, zone)
@@ -510,7 +530,8 @@ async def select_from_book(client, last):
                     client._xuanshu_mainline_card_match_log_state = card_diagnostic
                 selected = None
                 for i, row in enumerate(expected):
-                    selected = card_for_row(cards, row, last if i == 0 else None)
+                    selected = card_for_row(cards, row, last if i == 0 and (
+                        not stalled or row == last['row']) else None)
                     if selected is not None:
                         break
                 if selected is not None:
@@ -523,16 +544,27 @@ async def select_from_book(client, last):
                     if signature in seen:
                         raise RuntimeError('左翻页已回到检查过的任务页，未找到任务搜寻')
                     seen.add(signature)
-                    finders = [target for title, target in cards if title.casefold() in FINDER_TITLES]
+                    if stalled:
+                        for i, row in enumerate(expected):
+                            selected = card_for_row(cards, row, last if i == 0 and row == last['row'] else None)
+                            if selected is not None:
+                                await click(client, selected, zone)
+                                return 'restore'
+                    finders = ([] if stalled else
+                               [target for title, target in cards if title.casefold() in FINDER_TITLES])
                     if len(finders) > 1:
                         raise RuntimeError('任务搜寻卡片不唯一')
                     if finders:
+                        if not getattr(client, 'quest_finder_enabled', True):
+                            return 'finder-disabled'
                         phase = '选择任务搜寻'
                         card_path = finders[0][1]
                         card_path = card_path[:next(i+1 for i, name in enumerate(card_path)
                                                    if re.fullmatch(r'wndQuestInfo\d+', name))]
                         before_ui = await finder_ui_state(client, card_path)
                         before_task = await finder_task_state(client)
+                        if not getattr(client, 'quest_finder_enabled', True):
+                            return 'finder-disabled'
                         logger.debug('[mainline_recovery] client={} state=finder-card-found path={}', client.title, list(card_path))
                         await click(client, finders[0], zone)
                         logger.debug('[mainline_recovery] client={} state=finder-click-sent', client.title)
@@ -556,6 +588,78 @@ async def select_from_book(client, last):
             finally:
                 if getattr(client, 'quest_recovery_owner', None) == OWNER:
                     client.quest_recovery_owner = None
+
+
+async def refresh_stalled_dungeon_quest(client, session, *, read_snapshot=None):
+    """One owned-card pass, callable only by the active dungeon timeout recovery."""
+    from src.quest_party import dungeon_session_for, dungeon_member_inside
+    from src.task_lifecycle import gather_owned
+    timer = getattr(client, 'quest_dungeon_recovery', None)
+    book = getattr(client, '_xuanshu_mainline_book_task', None)
+    last = getattr(client, '_xuanshu_mainline_last_success', None)
+    if (read_snapshot is None or not isinstance(timer, dict)
+            or timer.get('session') is not session or not timer.get('active')
+            or dungeon_session_for(client) is not session or session.quester is not client
+            or not dungeon_member_inside(client) or session.potion_areas or last is None
+            or getattr(client, '_xuanshu_mainline_recovery', None) is not None
+            or book is not None and not book.done()
+            or getattr(client, 'quest_recovery_owner', None)
+            or getattr(client, '_quest_dialogue_update_pending', False)
+            or await client.is_loading() or await client.in_battle()
+            or await blocked(client, own_book=True)
+            or await is_visible_by_path(client, quest_buttons_parent_path)):
+        return False  # Retain the due timeout while another flow owns the client.
+    owners = set()
+    if (dungeon_session_for(client) is not session
+            or getattr(client, 'quest_dungeon_recovery', None) is not timer
+            or getattr(client, '_xuanshu_mainline_recovery', None) is not None
+            or getattr(client, '_xuanshu_mainline_book_task', None) is not book
+            or getattr(client, 'quest_recovery_owner', None)
+            or getattr(client, 'refilling_potions', False) or session.potion_areas
+            or getattr(client, '_quest_dialogue_update_pending', False)):
+        return False
+    for member in session.members:
+        ownership = get_client_automation_ownership(member)
+        old_movement = any(label in ('dungeon-shared-target', 'dungeon-source-entry')
+                           for label in ownership._owner_labels)
+        if ownership.locked and old_movement:
+            if ownership._owner_task is asyncio.current_task():
+                return False
+            owners.add(ownership._owner_task)
+        elif member is client and ownership.locked:
+            return False
+    state = dict(phase='dungeon-stalled', session=session,
+                 snapshot=timer['snapshot'], read_snapshot=read_snapshot)
+    client._xuanshu_mainline_recovery = state
+    client.quest_recovery_owner = OWNER
+    session.transition = None  # Existing watchers drain the obsolete shared/source movement.
+    task = None
+    try:
+        logger.info('{} 地牢任务快照连续180秒无变化，重新选择已确认主线。', client.title)
+        async with asyncio.timeout(30):
+            await gather_owned(*owners, return_exceptions=True)
+            task = asyncio.create_task(select_from_book(client, last))
+            client._xuanshu_mainline_book_task = task
+            await task
+        return bool(state.get('opened'))
+    except asyncio.CancelledError:
+        if asyncio.current_task().cancelling():
+            raise
+        return bool(state.get('opened'))  # Cancelling our UI child must leave questing running.
+    except Exception as exc:
+        log_exception(client, '地牢超时主线刷新未完成，下一完整周期再尝试', exc, level='DEBUG')
+        return bool(state.get('opened'))
+    finally:
+        if task is not None:
+            task.cancel()
+            await gather_owned(task, return_exceptions=True)
+        if getattr(client, '_xuanshu_mainline_book_task', None) is task:
+            client._xuanshu_mainline_book_task = None
+        if getattr(client, '_xuanshu_mainline_recovery', None) is state:
+            client._xuanshu_mainline_recovery = None
+        if (getattr(client, '_xuanshu_mainline_recovery', None) is None
+                and getattr(client, 'quest_recovery_owner', None) == OWNER):
+            client.quest_recovery_owner = None
 
 
 def expected_identity(last, identity):
@@ -747,6 +851,12 @@ async def maybe_recover_mainline(client):
             state.update(phase='finder-confirm', finder_confirmation=True, confirmation=None,
                          finder_deadline=state['finder_click']['accepted_at']+FINDER_CONFIRM_TIMEOUT)
             return await confirm_finder_mainline(client, state, last)
+        if selected == 'finder-disabled':
+            # A user preference is not a failed attempt. Retain the existing
+            # cooldown so a disabled Finder does not repeatedly reopen Q.
+            state.update(phase='cooldown', attempts=state['attempts'] - 1,
+                         retry_at=monotonic() + 60, confirmation=None)
+            return True
         if await is_visible_by_path(client, quest_buttons_parent_path):
             raise RuntimeError('任务界面仍打开，不能交给自动任务移动')
         current = await read_mainline_identity(client)

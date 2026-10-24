@@ -389,7 +389,7 @@ def show_window_config_dialog(ctx, nickname: str):
     dlg = QDialog(ctx.window)
     dlg.setWindowTitle(tl('window_config_title').format(nickname) if has_tl else f"Window — {nickname}")
     dlg.setModal(True)
-    dlg.setStyleSheet(f"QWidget {{ background-color: {ctx.bg_color}; color: {ctx.text_color}; }}")
+    dlg.setStyleSheet(f"QDialog {{ background-color: {ctx.bg_color}; color: {ctx.text_color}; }}")
     layout = QVBoxLayout(dlg)
 
     canvas = _MonitorCanvas(monitors, [x, y, w, h], others)

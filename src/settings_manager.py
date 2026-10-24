@@ -37,6 +37,7 @@ DEFAULT_SETTINGS = {
     "hitter_client": None,
     "quest_party_enabled": False,
     "mainline_finder_enabled": False,
+    "quest_finder_enabled": True,
     "questing_clients": [],
     "questing_hitter_clients": [],
     "quest_hitter_assignment_mode": "auto",
@@ -56,12 +57,16 @@ DEFAULT_SETTINGS = {
     "kill_minions_first": False,
     "automatic_team_based_combat": False,
     "discard_duplicate_cards": True,
+    "post_combat_wisps_enabled": False,
     "fusion_result_side": "right",
     # [client]
     "client_resizing": True,
     # [launcher]
     "remember_chosen_clients": False,
     "private_server_accounts": {},
+    "account_groups": {},
+    "account_group_definitions": None,
+    "launcher_account_group": "favorites",
     # Only contacts the official game patch service when explicitly enabled.
     "verify_patch_files": False,
     # None preserves the existing install until the user explicitly applies a choice.

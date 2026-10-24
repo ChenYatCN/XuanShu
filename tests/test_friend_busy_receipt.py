@@ -29,7 +29,7 @@ class Window(BaseWindow):
 class FriendBusyReceiptTests(unittest.IsolatedAsyncioTestCase):
     setUp = Fixture.setUp
 
-    async def scenario(self, *, kind='busy', mutation=None, retry=False, caption='你的好友现在很忙。', request_error='busy', stale=False, show_delay=None, manual=False, stop_at=10, restart=False, arrive_first=False, move_after_arrival=False, regroup_in_backoff=False):
+    async def scenario(self, *, kind='busy', mutation=None, retry=False, caption='你的好友现在很忙。', request_error='busy', stale=False, show_delay=None, manual=False, stop_at=10, restart=False, arrive_first=False, move_after_arrival=False, regroup_in_backoff=False, retry_without_busy=False):
         self.client = self.p2
         self.session = None
         self.clicks, self.request_times, self.dismissal_owners = [], [], []
@@ -133,6 +133,8 @@ class FriendBusyReceiptTests(unittest.IsolatedAsyncioTestCase):
             if kwargs.get('before_request'): await kwargs['before_request']()
             self.request_times.append(self.clock)
             if kwargs.get('on_request_sent'): kwargs['on_request_sent']()
+            if retry_without_busy and len(self.request_times)>1:
+                raise RuntimeError('retry response unreadable without Busy modal')
             if stale: self.stale_at = self.clock + .2
             if arrive_first or retry and len(self.request_times) == 2:
                 member.zone, member.area_id = self.q.zone, self.q.area_id
@@ -188,7 +190,8 @@ class FriendBusyReceiptTests(unittest.IsolatedAsyncioTestCase):
                 timeout=asyncio.timeout, current_task=asyncio.current_task))
         follow = entry('_follow_quester_session', namespace, members=[self.q, self.p2, self.p3],
             change_party_equipment=AsyncMock(return_value=True), prepare_quester_name=AsyncMock(),
-            remove_party_status=Mock(), restart_quest_worker_after_probe=Mock(), update_party_status=Mock())
+            remove_party_status=Mock(), restart_quest_worker_after_probe=Mock(),
+            update_party_status=Mock(side_effect=lambda h,q,text:self.statuses.append((h.title,text))))
         task = asyncio.create_task(follow(self.p2, self.q, True))
         waiter = asyncio.create_task(self.done.wait())
         try:
@@ -251,7 +254,8 @@ class FriendBusyReceiptTests(unittest.IsolatedAsyncioTestCase):
     async def test_E_stale_unrelated_modal_cannot_be_claimed(self):
         await self.scenario(kind='unrelated', stale=True, request_error='none')
         self.assertEqual(self.clicks, [])
-        self.assertFalse(self.event_times('decision=backoff-start'))
+        self.assertFalse(self.event_times('decision=modal-detected'))
+        self.assertTrue(self.event_times('decision=cleanup-released'))
         self.assertEqual(len(self.request_times), 1)
 
     async def test_F_user_dismissal_after_detection_retires_without_late_click(self):
@@ -266,12 +270,13 @@ class FriendBusyReceiptTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.clicks, [('p2', 'rightButton')] * 3)
         self.assertEqual(len(self.request_times), 1)
         self.assertTrue(self.event_times('decision=modal-still-visible'))
-        self.assertTrue(self.event_times('reason=cleanup-active'))
-        receipt = getattr(self.p2, '_friend_follow_failure', None)
+        self.assertTrue(self.event_times('reason=busy-backoff'))
+        self.assertFalse(getattr(self.p2, '_friend_follow_failure', None))
+        receipt = getattr(self.p2, '_friend_follow_busy_backoff', None)
         self.assertIsNotNone(receipt, 'worker cancellation must not erase sent-input budget')
         self.assertTrue(receipt['clicked'])
-        self.assertFalse(self.event_times('decision=backoff-start'))
-        self.assertTrue(self.p2._quest_follower_probe['pending'])
+        self.assertTrue(self.event_times('decision=backoff-start'))
+        self.assertFalse(self.p2._quest_follower_probe.get('verified', False))
 
     async def test_I_backoff_begins_after_disappearance_and_expiry_allows_one_retry(self):
         await self.scenario(kind='slow-close', retry=True)
@@ -354,8 +359,10 @@ class FriendBusyReceiptTests(unittest.IsolatedAsyncioTestCase):
         await self.scenario(kind='persistent', stop_at=70)
         self.assertEqual(self.clicks, [('p2','rightButton')] * 3)
         self.assertEqual(len(self.request_times), 1)
-        self.assertTrue(self.p2._friend_follow_failure['clicked'])
-        self.assertFalse(self.event_times('decision=backoff-start'))
+        self.assertFalse(getattr(self.p2, '_friend_follow_failure', None))
+        self.assertTrue(self.p2._friend_follow_busy_backoff['clicked'])
+        self.assertEqual(self.p2._friend_follow_busy_backoff['click_attempts'], 3)
+        self.assertTrue(self.event_times('decision=cleanup-released'))
 
     async def test_quest_zone_and_session_changes_cannot_revoke_sent_cleanup(self):
         for mutation in ('source-zone', 'reference-zone', 'source-token', 'session', 'quest', 'goal'):
@@ -475,11 +482,11 @@ class FriendBusyReceiptTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.event_times('decision=backoff-start'))
         self.assertGreater(self.p2.teleport.await_count, 0)
 
-    async def test_invalidated_verified_busy_is_not_clicked_and_retires_at_bounded_deadline(self):
+    async def test_invalidated_verified_busy_is_not_clicked_and_releases_after_bounded_cleanup(self):
         await self.scenario(kind='busy', mutation='caption', stop_at=40)
         self.assertEqual(self.clicks, [])
         self.assertTrue(self.event_times('decision=modal-invalidated'))
-        self.assertTrue(self.event_times('decision=invalidated-expired'))
+        self.assertTrue(self.event_times('decision=cleanup-released'))
         self.assertFalse(getattr(self.p2, '_friend_follow_failure', None))
 
 

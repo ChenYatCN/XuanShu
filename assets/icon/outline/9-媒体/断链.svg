@@ -1,1 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7.5 11-4.3 4.3a3.8 3.8 0 0 0 5.4 5.4l3.2-3.2 M14.5 6.2l4.9 1a3.8 3.8 0 0 1-1.5 7.4l-3.9-.81"/><path d="m8.5 14 1.8-1.93 M14.2 9.29l1.3.31"/><path fill="currentColor" stroke="none" d="m8.6 4.6 1.2 3.2-2.1-1.4z M10 2l1.2.2.3 3.4z M13.4 3.4l-.2 2.8-1-1.9z"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <title>断开注入</title>
+  <desc>沿用注入图标的圆角链环，两端分别斜向左下与右下，中间断开并带三道断裂短线。</desc>
+  <g id="left-broken-link" transform="translate(-1.8 0) rotate(-35 12 12)">
+    <path id="left-outline" d="M9 7H7a5 5 0 0 0 0 10h1"/>
+    <path id="left-end" d="M8 12h1.5"/>
+  </g>
+  <g id="right-broken-link" transform="translate(1.8 0) rotate(35 12 12)">
+    <path id="right-outline" d="M15 7h2a5 5 0 0 1 0 10h-1"/>
+    <path id="right-end" d="M14.5 12H16"/>
+  </g>
+  <path id="fracture-marks" d="M12 3v2 M7.5 4.5l1 1 M16.5 4.5l-1 1"/>
+</svg>

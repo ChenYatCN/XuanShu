@@ -64,7 +64,7 @@ class CollectSearch:
 
     async def snapshot(self):
         self.last_text = plain_text(await self.quester.read_quest_txt(self.client))
-        return parse_collect_goal(self.last_text)
+        return parse_collect_goal(self.last_text,client=self.client)
 
     async def read_quest_id(self):
         try:

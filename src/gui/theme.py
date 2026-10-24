@@ -4,6 +4,13 @@ from PyQt6.QtGui import QColor
 from src.gui.helpers import build_shared_svgs
 
 
+def blend_color(background, foreground, amount):
+    """Derive secondary surfaces/text from the user's existing theme colors."""
+    base, ink = QColor(background), QColor(foreground)
+    return QColor(*(round(a + (b - a) * amount) for a, b in zip(
+        (base.red(), base.green(), base.blue()), (ink.red(), ink.green(), ink.blue())))).name()
+
+
 def compute_styles(theme: dict, font: str = None, font_size: int = None) -> dict:
     """Pure function: from a 6-color theme dict, compute all stylesheet strings."""
 
@@ -13,6 +20,9 @@ def compute_styles(theme: dict, font: str = None, font_size: int = None) -> dict
     sc = theme["stroke_color"]
     bc = theme["button_color"]
     tb = theme["titlebar_bg"]
+    muted = blend_color(alt, tc, .70)
+    line = blend_color(alt, tc, .18)
+    selected = blend_color(alt, tc, .18)
 
     def _rgba(color_value, alpha: int, fallback: str = "#ffffff") -> str:
         qcolor = QColor(str(color_value))
@@ -149,6 +159,25 @@ def compute_styles(theme: dict, font: str = None, font_size: int = None) -> dict
         "}"
     )
 
+    # Keep the legacy main-control appearance; scope extra surfaces to menus/tables.
+    app_style += (
+        f"QAbstractItemView {{ selection-background-color: {selected}; selection-color: {tc}; }}"
+        f"QListWidget, QTableView, QTextEdit, QPlainTextEdit {{ border: 1px solid transparent; }}"
+        "QListWidget:focus, QTableView:focus, QTextEdit:focus, QPlainTextEdit:focus { border-color: transparent; }"
+        f"QTableView {{ background-color: {alt}; alternate-background-color: {bg}; color: {tc};"
+        f" gridline-color: {line}; }}"
+        f"QHeaderView::section {{ background-color: {alt}; color: {tc}; border: none;"
+        f" border-bottom: 1px solid {line}; padding: 4px 8px; }}"
+        f"QMenu {{ background-color: {alt}; color: {tc}; border: 1px solid {line}; padding: 4px; }}"
+        f"QMenu::item {{ padding: 5px 24px; background: transparent; }}"
+        f"QMenu::item:selected {{ background-color: {selected}; color: {tc}; }}"
+        f"QMenu::item:disabled {{ color: {muted}; }}"
+        f"QMenu::separator {{ height: 1px; background: {line}; margin: 4px 10px; }}"
+        f"QProgressBar {{ color: {tc}; background-color: {alt}; border: 1px solid {line};"
+        f" border-radius: 3px; text-align: center; }}"
+        f"QProgressBar::chunk {{ background-color: {bc}; }}"
+    )
+
     titlebar_style = f"QWidget {{ background-color: {tb}; }}"
 
     return {
@@ -192,6 +221,8 @@ def apply_theme(ctx, theme: dict):
 
     if app:
         app.setStyleSheet(styles["app_style"])
+        from src.gui.window_theme import install_window_theme
+        install_window_theme(app, theme)
 
     ctx.window.setStyleSheet(styles["groupbox_style"])
     ctx.titlebar.setStyleSheet(styles["titlebar_style"])

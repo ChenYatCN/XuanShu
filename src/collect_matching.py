@@ -41,9 +41,9 @@ class CollectGoal:
         return normalize_name(self.target), normalize_name(self.location)
 
 
-def parse_collect_goal(text):
+def parse_collect_goal(text, *, client=None):
     text = plain_text(text)
-    if not text or quest_has_action(text, 'defeat'):
+    if not text or quest_has_action(text, 'defeat',client=client):
         return None
     count = _COUNT.search(text)
     current, total = (int(count[1]), int(count[2])) if count else (None, None)

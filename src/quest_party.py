@@ -243,6 +243,50 @@ def end_dungeon_entry(session, source, reason):
                      "shared X will not be replayed")
 
 
+def _log_dungeon_source_capture(client, session, stage, decision, reason, **fields):
+    """Bounded scalar diagnostics only; never let logging change a game decision."""
+    try:
+        from loguru import logger
+        def scalar(value):
+            if value is None or type(value) in (bool, int, float):
+                return value
+            if isinstance(value, str):
+                return value[:160]
+            if isinstance(value, (tuple, list)):
+                return tuple(scalar(item) for item in value[:8])
+            return f'<{type(value).__name__}>'
+        fields = {name: scalar(value) for name, value in fields.items()}
+        generation = getattr(session, 'generation', None)
+        phase = getattr(session, 'phase', None)
+        # A rejected transient session can be recreated each tick. Its new id
+        # is not a new failure; accepted credentials retain their generation.
+        key = (stage, decision, reason, phase, fields,
+               (id(session), generation) if decision == 'accept' else None)
+        if getattr(client, '_dungeon_source_capture_log_state', None) == key:
+            return
+        client._dungeon_source_capture_log_state = key
+        payload = dict(client=client.title, generation=generation,
+            session=id(session) if session is not None else None, session_phase=phase,
+            stage=stage, decision=decision, reason=reason, **fields)
+        logger.bind(dungeon_source_capture=payload).debug(
+            '[dungeon_source_capture] client={} generation={} session={} session_phase={} '
+            'stage={} decision={} reason={} {}', client.title, generation, payload['session'],
+            phase, stage, decision, reason, ' '.join(f'{k}={v!r}' for k, v in fields.items()))
+    except Exception:
+        pass  # Diagnostic storage/formatting must not alter the original return or exception.
+
+
+def _dungeon_source_capture_error(exc):
+    from wizwalker.errors import HookNotActive, WizWalkerMemoryError
+    error = ('hook-not-active' if isinstance(exc, HookNotActive) else
+             'memory-read-error' if isinstance(exc, WizWalkerMemoryError) else
+             'value-error' if isinstance(exc, ValueError) else
+             'attribute-error' if isinstance(exc, AttributeError) else
+             'timeout-error' if isinstance(exc, TimeoutError) else
+             'runtime-error' if isinstance(exc, RuntimeError) else 'read-error')
+    return dict(error=error, exception_type=type(exc).__name__)
+
+
 async def begin_dungeon_entry(quester, entry_clients, *, evidence=False):
     """Record before X, but only live arrival can enable independent movement."""
     session = dungeon_session_for(quester)
@@ -258,17 +302,38 @@ async def begin_dungeon_entry(quester, entry_clients, *, evidence=False):
         elif existing.quester is quester:
             return existing
         else:
+            _log_dungeon_source_capture(quester, None, 'create', 'reject', 'session-create-failed',
+                check='member-session-conflict', member=getattr(member, 'title', None), existing_session=id(existing))
             return None  # Never create a parallel session over another group's member.
-    if len(members) < 2 or set(map(id, members)) != set(map(id, entry_clients)):
+    entry_ids = None
+    if len(members) < 2 or set(map(id, members)) != (entry_ids := set(map(id, entry_clients))):
+        _log_dungeon_source_capture(quester, None, 'create', 'reject', 'session-create-failed',
+            check='entry-roster-mismatch', members=tuple(getattr(c, 'title', None) for c in members),
+            entry_count=len(entry_ids) if entry_ids is not None else None)
         return None
     zones = {}
-    for client in members:
-        if (not client.questing_status or await client.is_loading()
-                or getattr(client, 'refilling_potions', False)
-                or getattr(client, 'quest_recovery_owner', None)):
-            return None
-        zones[id(client)] = await client.zone_name()
+    check = 'member-state'
+    try:
+        for client in members:
+            check, loading = 'member-state', None
+            if (not client.questing_status or (loading := await client.is_loading())
+                    or getattr(client, 'refilling_potions', False)
+                    or getattr(client, 'quest_recovery_owner', None)):
+                _log_dungeon_source_capture(quester, None, 'create', 'reject', 'session-create-failed',
+                    check='loading' if loading else 'member-not-ready', member=getattr(client, 'title', None),
+                    loading=loading)
+                return None
+            check = 'zone'
+            zones[id(client)] = await client.zone_name()
+    except Exception as exc:
+        _log_dungeon_source_capture(quester, None, 'create', 'reject', 'session-create-failed',
+            check=check + '-unreadable', member=getattr(client, 'title', None),
+            **_dungeon_source_capture_error(exc))
+        raise  # Creation read errors originally propagate to the caller.
     if not all(zones.values()) or len(set(zones.values())) != 1:
+        _log_dungeon_source_capture(quester, None, 'create', 'reject', 'session-create-failed',
+            check='zone-invalid' if not all(zones.values()) else 'zone-mismatch',
+            member_zones=tuple((getattr(c, 'title', None), zones[id(c)]) for c in members))
         return None
     session = DungeonSession(quester, members, zones,
         owner=getattr(members[1], 'quest_party_status_session', None), entry_evidence=evidence)
@@ -454,7 +519,7 @@ async def dungeon_quester_away_for_potions(quester):
     return True
 
 
-async def quest_party_members_ready(quester, *, zone=None):
+async def quest_party_members_ready(quester, *, zone=None, _capture_diagnostic=None):
     """Publish a group arrival only from current loading/instance evidence."""
     from src.utils import clients_share_live_area
     session = dungeon_session_for(quester)
@@ -462,32 +527,65 @@ async def quest_party_members_ready(quester, *, zone=None):
     if session and session.confirmed and id(quester) not in session.exited:
         members = tuple(c for c in members if id(c) not in session.exited)
     roster = tuple(map(id, members))
+    stage, member = 'zone', quester
+    def rejected(reason, **fields):
+        if _capture_diagnostic is not None:
+            _capture_diagnostic.update(reason=reason, check=stage, member=getattr(member, 'title', None), **fields)
+        return False
     try:
         zone = zone or await quester.zone_name()
         if not zone:
-            return False
+            return rejected('zone-invalid', zone_before=zone)
         for member in members:
+            stage = 'member-state'
             if (not getattr(member, 'questing_status', False)
                     or (callable(getattr(member, 'is_running', None)) and not member.is_running())
                     or getattr(member, 'refilling_potions', False)
                     or getattr(member, 'quest_recovery_owner', None)
                     or getattr(member, 'quest_party_safe_return_active', False)
                     or getattr(member, 'post_combat_movement_active', False)
-                    or getattr(member, 'quest_party_battle_rescue_active', False)
-                    or await member.is_loading() or await member.in_battle()
-                    or await member.zone_name() != zone):
-                return False
+                    or getattr(member, 'quest_party_battle_rescue_active', False)):
+                return rejected('member-state-changed')
+            stage = 'loading'
+            if await member.is_loading():
+                return rejected('loading-or-battle', loading=True, battle=None)
+            stage = 'battle'
+            if await member.in_battle():
+                return rejected('loading-or-battle', loading=False, battle=True)
+            stage = 'zone'
+            member_zone = await member.zone_name()
+            if member_zone != zone:
+                return rejected('zone-changed-during-capture', zone_before=zone, zone_after=member_zone)
+            stage = 'live-area'
             if member is not quester and not await clients_share_live_area(quester, member):
-                return False
+                return rejected('member-state-changed')
         current = (quester, *getattr(quester, 'quest_party_hitters', ()))
         if session and session.confirmed and id(quester) not in session.exited:
             current = tuple(c for c in current if id(c) not in session.exited)
-        return (tuple(map(id, current)) == roster
-                and dungeon_session_for(quester) is session
-                and all([not await c.is_loading() and await c.zone_name() == zone
-                         for c in members]))
-    except Exception:
-        return False
+        stage = 'roster'
+        if tuple(map(id, current)) != roster:
+            return rejected('member-state-changed')
+        stage = 'session'
+        if dungeon_session_for(quester) is not session:
+            return rejected('session-replaced')
+        # Preserve the original eager list: even a failed earlier member must
+        # not skip the later members' existing loading/zone reads.
+        checks = []
+        for member in members:
+            stage = 'loading-recheck'
+            loading = await member.is_loading()
+            member_zone = None
+            if not loading:
+                stage = 'zone-recheck'
+                member_zone = await member.zone_name()
+            checks.append(not loading and member_zone == zone)
+            if not checks[-1] and all(checks[:-1]):
+                rejected('loading-or-battle' if loading else 'zone-changed-during-capture',
+                    loading=loading, zone_before=zone, zone_after=member_zone)
+        return all(checks)
+    except Exception as exc:
+        return rejected('zone-unreadable' if stage.startswith('zone') else 'member-state-changed',
+                        **_dungeon_source_capture_error(exc))
 
 
 async def remember_dungeon_transition(quester, target):
@@ -496,55 +594,99 @@ async def remember_dungeon_transition(quester, target):
     from wizwalker.errors import WizWalkerMemoryError
     from src.utils import observe_party_area, _party_area_token
     session = dungeon_session_for(quester)
-    if (not session or session.quester is not quester
-            or id(quester) in session.exited or session.potion_areas
-            or not all(math.isfinite(v) for v in (target.x, target.y, target.z))
-            or not await quest_party_members_ready(quester)):
+    readiness = {}
+    def rejected(stage, reason, **fields):
+        _log_dungeon_source_capture(quester, session, stage, 'reject', reason, **fields)
         return False
+    if not session:
+        return rejected('preflight', 'session-unavailable')
+    if session.quester is not quester:
+        return rejected('preflight', 'quester-mismatch')
+    if id(quester) in session.exited:
+        return rejected('preflight', 'member-state-changed', check='quester-exited')
+    if session.potion_areas:
+        return rejected('preflight', 'member-state-changed', check='potion-areas')
+    if not all(math.isfinite(v) for v in (target.x, target.y, target.z)):
+        return rejected('preflight', 'target-invalid')
+    if not await quest_party_members_ready(quester, _capture_diagnostic=readiness):
+        return rejected('preflight', readiness.pop('reason', 'member-state-changed'), **readiness)
+    stage, member, zone, task, token = 'zone', quester, None, None, None
     try:
         zone = await quester.zone_name()
         members = tuple(c for c in session.members if id(c) not in session.exited)
         tasks, tokens = {}, {}
         for member in members:
+            task, token = None, None
             initial_hitter = member is not quester and not session.confirmed
             try:
+                stage = 'observe-area'
                 await observe_party_area(member)
+                stage = 'task'
                 task = await member.quest_id(), await member.goal_id()
+                stage = 'area-token'
                 token = await _party_area_token(member)
-            except (WizWalkerMemoryError, ValueError, AttributeError, RuntimeError, TimeoutError):
+            except (WizWalkerMemoryError, ValueError, AttributeError, RuntimeError, TimeoutError) as exc:
                 if initial_hitter:
                     continue  # Optional recovery evidence is not initial entry membership.
-                return False
-            if (type(task[0]) is not int or task[0] < (1 if member is quester else 0) or type(task[1]) is not int
-                    or token[0] != zone
-                    or any(type(value) is not int or value <= 0 for value in token[1:3])):
+                return rejected(stage, {'task': 'task-unreadable', 'area-token': 'area-token-unreadable'}
+                    .get(stage, 'area-observation-unreadable'), member=getattr(member, 'title', None), zone_before=zone,
+                    task_before=task, token_before=token, **_dungeon_source_capture_error(exc))
+            invalid = ('task-invalid' if type(task[0]) is not int
+                or task[0] < (1 if member is quester else 0) or type(task[1]) is not int else
+                'zone-invalid' if token[0] != zone else
+                'area-token-invalid' if any(type(value) is not int or value <= 0 for value in token[1:3]) else None)
+            if invalid:
                 if initial_hitter:
                     continue
-                return False
+                return rejected('validate-member', invalid, member=getattr(member, 'title', None), task_before=task,
+                                zone_before=zone, token_before=token)
             tasks[id(member)], tokens[id(member)] = task, token
-        if (dungeon_session_for(quester) is not session
-                or not await quest_party_members_ready(quester, zone=zone)
-                or tuple(c for c in session.members if id(c) not in session.exited) != members):
-            return False
+        stage = 'session-recheck'
+        if dungeon_session_for(quester) is not session:
+            return rejected(stage, 'session-replaced', zone_before=zone)
+        readiness = {}
+        if not await quest_party_members_ready(quester, zone=zone, _capture_diagnostic=readiness):
+            return rejected('members-recheck', readiness.pop('reason', 'member-state-changed'), **readiness)
+        if tuple(c for c in session.members if id(c) not in session.exited) != members:
+            return rejected('members-recheck', 'member-state-changed', check='active-members')
         for member in members:
             if member is not quester and not session.confirmed:
                 continue
-            if (await _party_area_token(member) != tokens[id(member)]
-                    or (await member.quest_id(), await member.goal_id()) != tasks[id(member)]):
-                return False
+            stage = 'area-token-recheck'
+            token = await _party_area_token(member)
+            if token != tokens[id(member)]:
+                zone_changed = isinstance(token, (tuple, list)) and token and token[0] != zone
+                return rejected(stage, 'zone-changed-during-capture' if zone_changed else
+                    'token-changed-during-capture', member=getattr(member, 'title', None), zone_before=zone,
+                    token_before=tokens[id(member)], token_after=token)
+            stage = 'task-recheck'
+            task = await member.quest_id(), await member.goal_id()
+            if task != tasks[id(member)]:
+                return rejected(stage, 'task-changed-during-capture', member=getattr(member, 'title', None),
+                    task_before=tasks[id(member)], task_after=task, zone_before=zone)
+        stage = 'commit'
         state = session.transition
         if (state and state['source_zone'] == zone and state['source_tasks'] == tasks
                 and state['source_tokens'] == tokens and time.monotonic() < state['deadline']
                 and all(abs(a - b) <= 1 for a, b in zip(
                     (state['target'].x, state['target'].y, state['target'].z),
                     (target.x, target.y, target.z)))):
+            _log_dungeon_source_capture(quester, session, stage, 'accept', 'stable-source-captured',
+                task=tasks[id(quester)], zone=zone, token=tokens[id(quester)])
             return True  # Concurrent workers share the same release/recovery budget.
         session.transition = dict(source_zone=zone, target=copy(target),
             quester_task=tasks[id(quester)], source_tasks=tasks, source_tokens=tokens,
             deadline=time.monotonic() + 30.0, attempts={}, next_attempt_at={}, arrivals={})
+        _log_dungeon_source_capture(quester, session, stage, 'accept', 'stable-source-captured',
+            task=tasks[id(quester)], zone=zone, token=tokens[id(quester)])
         return True
-    except Exception:
-        return False
+    except Exception as exc:
+        reason = ('task-unreadable' if stage.startswith('task') else
+                  'area-token-unreadable' if stage.startswith('area-token') else
+                  'zone-unreadable' if stage == 'zone' else
+                  'area-observation-unreadable' if stage == 'observe-area' else 'capture-error')
+        return rejected(stage, reason, member=getattr(member, 'title', None), zone_before=zone,
+                        task_before=task, token_before=token, **_dungeon_source_capture_error(exc))
 
 
 async def capture_dungeon_return(client):

@@ -89,7 +89,7 @@ class Sigil():
 				await asyncio.sleep(0.1)
 		while await self.client.in_battle():
 			await asyncio.sleep(0.1)
-		if should_collect_wisps:
+		if should_collect_wisps and getattr(self.client, 'post_combat_wisps_enabled', False):
 			await collect_wisps(self.client)
 
 
@@ -139,7 +139,8 @@ class Sigil():
 
 				after_xyz = await calc_FrontalVector(self.client, speed_constant=450, speed_adjusted=False)
 
-				await collect_wisps(self.client)
+				if getattr(self.client, 'post_combat_wisps_enabled', False):
+					await collect_wisps(self.client)
 
 				await self.client.teleport(after_xyz)
 				await asyncio.sleep(0.1)
@@ -239,7 +240,8 @@ class Sigil():
 
 				after_xyz = await calc_FrontalVector(self.client, speed_constant=450, speed_adjusted=False)
 
-				await asyncio.gather(*[collect_wisps(p) for p in self.clients])
+				await asyncio.gather(*[collect_wisps(p) for p in self.clients
+					if getattr(p, 'post_combat_wisps_enabled', False)])
 
 				await asyncio.gather(*[p.teleport(after_xyz) for p in self.clients])
 				await asyncio.sleep(0.1)

@@ -12,6 +12,7 @@ from wizwalker.memory import HookHandler, SimpleHook
 
 from src.dance_game_hook import attempt_activate_dance_hook, attempt_deactivate_dance_hook
 from src.interaction_prompts import matches_text
+from src.game_text_snapshot import snapshot_for_client
 from src.paths import *
 from src.teleport_math import navmap_tp
 from src.utils import navigate_to_ravenwood, click_window_by_path, is_visible_by_path, navigate_to_commons_from_ravenwood, post_keys, get_window_from_path, safe_wait_for_zone_change, LoadingScreenNotFound, FriendBusyOrInstanceClosed, get_popup_title
@@ -41,12 +42,16 @@ def _normalized_ui_text(value) -> str:
     return re.sub(r"[\s!！:：。,.，]", "", text).casefold()
 
 
-def _is_dance_game_title(value) -> bool:
-    return matches_text(value, "GUI_00002527", "PetGames_PetGameDance") or _normalized_ui_text(value) in _DANCE_GAME_TITLES
+def _is_dance_game_title(value, *, client=None) -> bool:
+    return (matches_text(value, "GUI_00002527", "PetGames_PetGameDance",client=client)
+        or any(key not in snapshot_for_client(client).records for key in ('GUI_00002527','PetGames_PetGameDance'))
+        and _normalized_ui_text(value) in _DANCE_GAME_TITLES)
 
 
-def _is_dance_go_prompt(value) -> bool:
-    return matches_text(value, "PetGames_Action_Go") or _normalized_ui_text(value) in _DANCE_GO_PROMPTS
+def _is_dance_go_prompt(value, *, client=None) -> bool:
+    return (matches_text(value, "PetGames_Action_Go",client=client)
+        or 'PetGames_Action_Go' not in snapshot_for_client(client).records
+        and _normalized_ui_text(value) in _DANCE_GO_PROMPTS)
 
 
 def _first_number(value, *, default=None):
@@ -355,7 +360,7 @@ async def _dance_rounds(client: Client):
                 raise TimeoutError("自动宠物等待回合提示超时")
             if not await action_window.is_visible():
                 raise RuntimeError("自动宠物小游戏已关闭，停止发送方向键")
-            return _is_dance_go_prompt(await action_window.maybe_text())
+            return _is_dance_go_prompt(await action_window.maybe_text(),client=client)
 
         # Only wait out a prompt after submitting that round. On entry the
         # first input prompt may already be showing and must not be skipped.

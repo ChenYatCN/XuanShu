@@ -84,68 +84,70 @@ class EntryFlowTests(Base):
         self.assertTrue(await self.reader._send_dungeon_entry_x(members))
         return party.dungeon_session_for(self.q)
 
-    async def test_quester_initial_entry_does_not_require_peer_crossed(self):
+    async def test_initial_entry_missing_hitter_waits_then_shared_x_after_ready(self):
         self.h.prompt = self.h.teamup = False
         self.h.position = self.target
-        members = await self.reader.prepare_party_dungeon_entry()
-        self.assertEqual(members, [self.q])
-        self.assertTrue(await self.reader._send_dungeon_entry_x(members))
-        self.q.send_key.assert_awaited_once_with(Keycode.X, .1)
+        self.on_approach = lambda c: None
+        self.assertEqual(await self.reader.prepare_party_dungeon_entry(), [])
+        self.q.send_key.assert_not_awaited()
         self.h.send_key.assert_not_awaited()
-        session = party.dungeon_session_for(self.q)
-        self.assertIsNotNone(session.entry_wait)
-        self.assertNotIn(id(self.h), session.entry_zones)
+        self.assertEqual(self.resets(), [self.h])
+        self.q.teleport.assert_not_awaited()
+        self.h.prompt = self.h.teamup = True
+        await self.send()
+        self.q.send_key.assert_awaited_once_with(Keycode.X, .1)
+        self.h.send_key.assert_awaited_once_with(Keycode.X, .1)
 
-    async def test_initial_entry_quester_ack_precedes_follower_join(self):
+    async def test_initial_entry_distant_hitter_prepares_without_quester_x(self):
         self.h.prompt = self.h.teamup = False
         self.h.position = XYZ(0, 0, -10000)
-        members = await self.reader.prepare_party_dungeon_entry()
-        self.assertEqual(members, [self.q])
-        self.assertTrue(await self.reader._send_dungeon_entry_x(members))
-        session = party.dungeon_session_for(self.q)
-        self.assertFalse(session.confirmed)
-        self.assertNotIn(id(self.h), session.exited)
+        self.assertEqual(await self.reader.prepare_party_dungeon_entry(), [self.q, self.h])
+        self.q.send_key.assert_not_awaited()
         self.h.send_key.assert_not_awaited()
+        self.assertEqual(self.resets(), [self.h])
+        self.q.teleport.assert_not_awaited()
 
-    async def test_initial_entry_follower_loading_does_not_block_quester(self):
+    async def test_initial_entry_follower_loading_blocks_quester(self):
         self.assertEqual(await self.reader.prepare_party_dungeon_entry(), [self.q, self.h])
         self.h.prompt = self.h.teamup = False
-        self.h.position = self.target
         self.h.is_loading.return_value = True
-        members = await self.reader.prepare_party_dungeon_entry()
-        self.assertEqual(members, [self.q])
-        self.assertTrue(await self.reader._send_dungeon_entry_x(members))
-        self.q.send_key.assert_awaited_once_with(Keycode.X, .1)
+        self.assertEqual(await self.reader.prepare_party_dungeon_entry(), [])
+        self.q.send_key.assert_not_awaited()
         self.h.send_key.assert_not_awaited()
+        self.h.is_loading.return_value = False
+        self.h.prompt = self.h.teamup = True
+        await self.send()
+        self.q.send_key.assert_awaited_once_with(Keycode.X, .1)
+        self.h.send_key.assert_awaited_once_with(Keycode.X, .1)
 
-    async def test_initial_entry_follower_unreadable_position_does_not_block_quester(self):
+    async def test_initial_entry_unreadable_hitter_arrow_still_requires_its_prompt(self):
         self.h.prompt = self.h.teamup = False
         self.h.quest_position.position.side_effect = ValueError('position unavailable')
-        members = await self.reader.prepare_party_dungeon_entry()
-        self.assertEqual(members, [self.q])
-        self.assertTrue(await self.reader._send_dungeon_entry_x(members))
-        self.q.send_key.assert_awaited_once_with(Keycode.X, .1)
+        self.assertEqual(await self.reader.prepare_party_dungeon_entry(), [])
+        self.q.send_key.assert_not_awaited()
         self.h.send_key.assert_not_awaited()
+        self.h.prompt = self.h.teamup = True
+        await self.send()
+        self.h.send_key.assert_awaited_once_with(Keycode.X, .1)
 
-    async def test_initial_entry_mixed_sentinel_and_valid_xyz_allows_quester_only(self):
+    async def test_initial_entry_mixed_sentinel_and_valid_xyz_waits_for_every_hitter(self):
         h2 = client(3, XYZ(3, 4, 0))
         h2.prompt = h2.teamup = False
         h2.position = self.target
-        h2.quest_position.position.return_value = self.target
         h2.quest_party_quester = self.q
         h2.quest_party_status_session = self.h.quest_party_status_session
-        h2.hotkey_quest_clients = [self.q, self.h, h2]
-        self.q.hotkey_quest_clients = [self.q, self.h, h2]
+        h2.hotkey_quest_clients = self.q.hotkey_quest_clients = [self.q, self.h, h2]
         self.q.quest_party_hitters = [self.h, h2]
         self.h.prompt = self.h.teamup = False
         self.h.position = XYZ(0, 0, -10000)
-        self.stack.enter_context(patch('src.utils.clients_share_live_area', AsyncMock(return_value=True)))
-        members = await self.reader.prepare_party_dungeon_entry()
-        self.assertEqual(members, [self.q])
-        self.assertTrue(await self.reader._send_dungeon_entry_x(members))
-        self.q.send_key.assert_awaited_once_with(Keycode.X, .1)
-        self.h.send_key.assert_not_awaited()
-        h2.send_key.assert_not_awaited()
+        self.on_approach = lambda c: None
+        self.assertEqual(await self.reader.prepare_party_dungeon_entry(), [])
+        for member in (self.q, self.h, h2):
+            member.send_key.assert_not_awaited()
+        self.assertEqual(self.resets(), [self.h])
+        h2.teleport.assert_awaited_once()
+        self.assertEqual(tuple(h2.teleport.await_args.args[0]), (0, 0, -10000))
+        self.q.teleport.assert_not_awaited()
 
     async def test_ready_cannon_caller_is_not_requalified_by_movement_cache(self):
         await self.reader.prepare_party_dungeon_entry()

@@ -54,10 +54,12 @@ def titlebar_control_svg(color, close=False):
     return f'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="{path}"/></svg>'
 
 
-def titlebar_button_style(close=False):
+def titlebar_button_style(close=False, focus_color='palette(highlight)'):
     hover = 'rgba(232,17,35,200)' if close else 'rgba(255,255,255,30)'
-    return ('QPushButton { background-color: transparent; border: none; padding: 4px; }'
-            f'QPushButton:hover {{ background-color: {hover}; border-radius: 4px; }}')
+    return ('QPushButton { background-color: transparent; border: 1px solid transparent; padding: 3px; }'
+            f'QPushButton:hover {{ background-color: {hover}; border-radius: 4px; }}'
+            f'QPushButton:pressed {{ background-color: {hover}; }}'
+            'QPushButton:focus { border-color: transparent; border-radius: 4px; }')
 
 
 def translation_control_svg(color):
@@ -73,7 +75,7 @@ def configure_titlebar_button(button, icon_factory, color, close=False):
     button.setFixedSize(32, 24)
     button.setIconSize(QSize(16, 16))
     button.setIcon(icon_factory(titlebar_control_svg(color, close), 24))
-    button.setStyleSheet(titlebar_button_style(close))
+    button.setStyleSheet(titlebar_button_style(close, color))
     button.setCursor(Qt.CursorShape.PointingHandCursor)
 
 

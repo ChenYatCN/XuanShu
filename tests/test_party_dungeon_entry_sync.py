@@ -137,14 +137,65 @@ class EntrySyncTests(DungeonFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.resets(), [self.h, self.h])
         self.q.send_key.assert_not_awaited()
 
-    async def test_one_already_entered_uses_source_recovery_without_reset(self):
+    async def test_unsent_peer_zone_change_waits_without_reset_or_x(self):
         await self.reader.prepare_party_dungeon_entry()
         self.h.zone, self.h.area_id = 'Dungeon/Room1', 200
         self.reader.recover_dungeon_transition = AsyncMock(return_value=True)
         self.assertEqual(await self.reader.prepare_party_dungeon_entry(), [])
-        self.reader.recover_dungeon_transition.assert_awaited_once()
+        self.reader.recover_dungeon_transition.assert_not_awaited()
         self.assertEqual(self.resets(), [])
         self.assertFalse(await self.reader._send_dungeon_entry_x([self.q,self.h]))
+
+    async def test_sent_x_never_restarts_preparation_or_repeats_input(self):
+        members = await self.reader.prepare_party_dungeon_entry()
+        self.assertTrue(await self.reader._send_dungeon_entry_x(members))
+        session = party.dungeon_session_for(self.q)
+        source = session.transition
+        self.q.prompt = self.h.prompt = False
+        for _ in range(2):
+            self.assertEqual(await self.reader.prepare_party_dungeon_entry(), [])
+            self.assertFalse(await self.reader._send_dungeon_entry_x(members))
+            self.clock += 40
+        self.assertIs(session.transition, source)
+        self.assertEqual(source['attempts'], {})
+        self.assertEqual(self.events, [])
+        for c in members:
+            c.send_key.assert_awaited_once_with(Keycode.X, .1)
+
+    async def test_missing_hitter_without_source_token_waits_without_reset(self):
+        self.h.prompt = False
+        self.h.client_object.client_zone.side_effect = ValueError('transient token read')
+        self.assertEqual(await self.reader.prepare_party_dungeon_entry(), [])
+        self.assertEqual(self.events, [])
+        self.q.send_key.assert_not_awaited()
+        self.h.send_key.assert_not_awaited()
+
+    async def test_hitter_task_change_during_reset_stops_old_approach(self):
+        self.h.prompt = False
+        self.on_reset = lambda c: c.goal_id.configure_mock(return_value=8)
+        self.assertEqual(await self.reader.prepare_party_dungeon_entry(), [])
+        self.assertEqual(self.resets(), [self.h])
+        self.reader.teleport_to_quest_target.assert_not_awaited()
+        self.assertEqual(len(self.events), 1)
+
+    async def test_hitter_area_change_during_reset_stops_old_approach(self):
+        self.h.prompt = False
+        self.on_reset = lambda c: setattr(c, 'area_id', 999)
+        self.assertEqual(await self.reader.prepare_party_dungeon_entry(), [])
+        self.assertEqual(self.resets(), [self.h])
+        self.reader.teleport_to_quest_target.assert_not_awaited()
+        self.assertEqual(len(self.events), 1)
+
+    async def test_hitter_task_change_at_approach_completion_blocks_ready(self):
+        self.h.prompt = False
+        def changed(c):
+            c.prompt = True
+            c.goal_id.return_value = 8
+        self.on_approach = changed
+        self.assertEqual(await self.reader.prepare_party_dungeon_entry(), [])
+        self.assertEqual(self.resets(), [self.h])
+        self.q.send_key.assert_not_awaited()
+        self.h.send_key.assert_not_awaited()
 
     async def test_zone_change_during_reset_stops_approach_without_old_restore(self):
         self.h.prompt = False

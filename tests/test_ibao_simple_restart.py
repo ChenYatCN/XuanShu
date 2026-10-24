@@ -17,6 +17,7 @@ def install_real_initializer(ns):
               and n.name == '_init_client_attrs')
     ns.update(client_speeds={111: 35}, use_team_up=False, discard_duplicate_cards=False,
         fusion_result_side='left', kill_minions_first=False, automatic_team_based_combat=False,
+        quest_finder_enabled=True, post_combat_wisps_enabled=False,
         combat_playstyle_overrides={}, active_combat_playstyle=None, default_config=object(),
         use_potions=False, buy_potions=False, client_to_follow=None, client_to_boost=None,
         _mask_uid=lambda uid: 'masked')

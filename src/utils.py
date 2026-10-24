@@ -42,6 +42,7 @@ from src.paths import *
 from src.sprinty_client import SprintyClient
 from src.window_text import read_control_text
 from src.interaction_prompts import plain_text
+from src.game_text_snapshot import snapshot_for_client
 from src.quest_party import pause_dungeon_for_potions, finish_dungeon_potions
 
 # from src.teleport_math import calc_Distance
@@ -213,7 +214,7 @@ async def go_to_new_world(p, destinationWorld, open_window: bool = True, *, sele
     if open_window:
         while portal_kind(
             await get_popup_title(p)
-        ) != "world_gate" and not await window_visible():
+        , client=p) != "world_gate" and not await window_visible():
             if await stopped():
                 return False
             await asyncio.sleep(0.1)
@@ -348,7 +349,7 @@ async def go_to_new_world(p, destinationWorld, open_window: bool = True, *, sele
                     name = await read_control_text(child) if select_only else await read_control_checkbox_text(child)
                     if name == spiralGateName or matches_text(
                         name, f"WorldNames_{destinationWorld}"
-                    ):
+                    , client=p):
                         if await stopped():
                             return False
                         await click_button(zoneDoorOptions[worldIndex])
@@ -445,14 +446,14 @@ async def new_portals_cycle(client: Client, location: str):
         if not await current():
             return None
         selected = next((child for child, text in snapshot[1]
-                         if resolve_portal_destination(text, [location]) == location), None)
+                         if resolve_portal_destination(text, [location], client=client) == location), None)
         if selected is not None:
             async with client.mouse_handler:
                 snapshot = await read_page()
                 if snapshot is None:
                     return await read_failed()
                 selected = next((child for child, text in snapshot[1]
-                                 if resolve_portal_destination(text, [location]) == location), None)
+                                 if resolve_portal_destination(text, [location], client=client) == location), None)
                 if selected is None or not await current():
                     return await read_failed()
                 await client.mouse_handler.click_window(selected)
@@ -635,7 +636,7 @@ async def spiral_door(
     if open_window:
         while portal_kind(
             await get_popup_title(client)
-        ) != "world_gate" and not await is_visible_by_path(client, spiral_door_path):
+        , client=client) != "world_gate" and not await is_visible_by_path(client, spiral_door_path):
             await asyncio.sleep(0.1)
 
         while not await is_visible_by_path(client, spiral_door_path):
@@ -1935,6 +1936,8 @@ async def _cycle_to_online_friends(client, friends_list):
         "在线朋友",
         "在線朋友",
     }
+    online_labels = {label for label in online_labels if label.isascii()
+        or any(key not in snapshot_for_client(client).records for key in ('GUI_00000510','GUI_FriendsOnline'))}
 
     async def _get_text():
         current_text = await list_label.maybe_text()
@@ -1947,7 +1950,7 @@ async def _cycle_to_online_friends(client, friends_list):
     for _ in range(8):
         current_page = await _get_text()
         if (
-            matches_text(current_page, "GUI_00000510", "GUI_FriendsOnline")
+            matches_text(current_page, "GUI_00000510", "GUI_FriendsOnline", client=client)
             or current_page.casefold() in online_labels
         ):
             return

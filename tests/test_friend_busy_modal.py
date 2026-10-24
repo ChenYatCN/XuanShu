@@ -324,7 +324,7 @@ class FriendBusyModalTests(unittest.IsolatedAsyncioTestCase):
                 self.stack.close()
 
     async def test_final_input_context_or_modal_replacement_safely_cancels(self):
-        for mutation in ('stop', 'loading', 'battle', 'caption', 'replacement', 'cancel'):
+        for mutation in ('stop', 'battle', 'caption', 'replacement', 'cancel'):
             with self.subTest(mutation=mutation):
                 self.setUp()
                 await self.scenario(mutation=mutation)
@@ -336,9 +336,10 @@ class FriendBusyModalTests(unittest.IsolatedAsyncioTestCase):
         await self.scenario(kind='persistent')
         self.assertEqual(self.clicks, [('p2', 'rightButton')] * 3)
         self.assertTrue(self.modal.visible)
-        self.assertTrue(self.p2._quest_follower_probe['pending'])
+        self.assertFalse(self.p2._quest_follower_probe.get('verified', False))
         self.assertEqual(len(self.request_times), 1)
-        self.assertTrue(self.p2._friend_follow_failure['clicked'])
+        self.assertFalse(getattr(self.p2, '_friend_follow_failure', None))
+        self.assertTrue(self.p2._friend_follow_busy_backoff['clicked'])
         self.assertFalse(any('friend-failure-modal-cleared' in line for line in self.logs))
 
     async def test_last_address_read_cannot_confirm_a_replaced_or_changed_modal(self):

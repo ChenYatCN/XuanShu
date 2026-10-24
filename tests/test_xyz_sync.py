@@ -25,6 +25,110 @@ class XYZSyncTests(unittest.IsolatedAsyncioTestCase):
             asyncio=SimpleNamespace(sleep=AsyncMock()), gather_owned=gather_owned)
         self.sync = load_function('xyz_sync', self.namespace)
 
+    async def test_all_targets_use_one_source_position_and_yaw_snapshot(self):
+        self.source.body.position.side_effect = ['first XYZ', 'later XYZ']
+        self.source.body.yaw.side_effect = [1.5, 2.5]
+        await self.sync(self.source, [self.failed, self.healthy], turn_after=False)
+        self.source.body.position.assert_awaited_once()
+        self.source.body.yaw.assert_awaited_once()
+        for target in (self.failed, self.healthy):
+            target.teleport.assert_awaited_once_with('first XYZ', yaw=1.5)
+            target.send_key.assert_not_awaited()
+        self.namespace['asyncio'].sleep.assert_awaited_once_with(.3)
+
+    async def test_blocked_target_check_or_teleport_does_not_queue_peer(self):
+        for stage in ('is_loading', 'teleport'):
+            with self.subTest(stage=stage):
+                self.setUp()
+                blocked = asyncio.Event()
+                release = asyncio.Event()
+                peer_teleported = asyncio.Event()
+
+                async def slow(*args, **kwargs):
+                    blocked.set()
+                    await release.wait()
+                    return False
+
+                async def healthy(*args, **kwargs):
+                    peer_teleported.set()
+
+                getattr(self.failed, stage).side_effect = slow
+                self.healthy.teleport.side_effect = healthy
+                task = asyncio.create_task(self.sync(self.source, [self.failed, self.healthy]))
+                try:
+                    await asyncio.wait_for(blocked.wait(), 1)
+                    await asyncio.wait_for(peer_teleported.wait(), 1)
+                    self.assertFalse(task.done())
+                    # Preserve the turn phase and final wait after all teleports.
+                    self.healthy.send_key.assert_not_awaited()
+                    self.namespace['asyncio'].sleep.assert_not_awaited()
+                    release.set()
+                    await asyncio.wait_for(task, 1)
+                    self.failed.teleport.assert_awaited_once_with('XYZ', yaw=0)
+                    self.healthy.teleport.assert_awaited_once_with('XYZ', yaw=0)
+                    self.assertEqual(self.healthy.send_key.await_count, 2)
+                    self.namespace['asyncio'].sleep.assert_awaited_once_with(.3)
+                finally:
+                    release.set()
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+
+    async def test_delayed_target_rechecks_source_zone_against_shared_snapshot(self):
+        peer_teleported = asyncio.Event()
+
+        async def slow_check():
+            await peer_teleported.wait()
+            return False
+
+        async def healthy(*args, **kwargs):
+            self.source.zone_name.return_value = 'New/Zone'
+            peer_teleported.set()
+
+        self.failed.is_loading.side_effect = slow_check
+        self.healthy.teleport.side_effect = healthy
+        await asyncio.wait_for(self.sync(self.source, [self.failed, self.healthy],
+                                         turn_after=False), 1)
+        self.failed.teleport.assert_not_awaited()
+        self.healthy.teleport.assert_awaited_once_with('XYZ', yaw=0)
+
+    async def test_initial_target_refill_recovery_or_loading_does_not_block_peer(self):
+        for state in ('refilling_potions', 'quest_recovery_owner', 'loading'):
+            with self.subTest(state=state):
+                self.setUp()
+                if state == 'loading':
+                    self.failed.is_loading.return_value = True
+                else:
+                    setattr(self.failed, state, True if state == 'refilling_potions' else 'recovery')
+                await self.sync(self.source, [self.failed, self.healthy])
+                self.failed.teleport.assert_not_awaited()
+                self.failed.send_key.assert_not_awaited()
+                self.healthy.teleport.assert_awaited_once_with('XYZ', yaw=0)
+                self.assertEqual(self.healthy.send_key.await_count, 2)
+
+    async def test_state_changed_during_snapshot_is_rechecked_per_target(self):
+        for actor in ('source', 'failed'):
+            for state in ('refilling_potions', 'quest_recovery_owner', 'loading'):
+                with self.subTest(actor=actor, state=state):
+                    self.setUp()
+                    member = getattr(self, actor)
+
+                    async def position():
+                        if state == 'loading':
+                            member.is_loading.return_value = True
+                        else:
+                            setattr(member, state, True if state == 'refilling_potions' else 'recovery')
+                        return 'XYZ'
+
+                    self.source.body.position.side_effect = position
+                    await self.sync(self.source, [self.failed, self.healthy], turn_after=False)
+                    self.failed.teleport.assert_not_awaited()
+                    if actor == 'source':
+                        self.healthy.teleport.assert_not_awaited()
+                    else:
+                        self.healthy.teleport.assert_awaited_once_with('XYZ', yaw=0)
+                    self.source.body.position.assert_awaited_once()
+                    self.source.body.yaw.assert_awaited_once()
+
     async def test_real_teleport_timeout_skips_only_failed_client_and_does_not_turn_it(self):
         error = ExceptionalTimeout('Timed out waiting for coro should_update')
         self.failed.teleport.side_effect = error
@@ -46,7 +150,8 @@ class XYZSyncTests(unittest.IsolatedAsyncioTestCase):
         self.healthy.teleport.assert_not_awaited()
         self.failed.send_key.assert_not_awaited()
         self.healthy.send_key.assert_not_awaited()
-        self.assertEqual(self.namespace['logger'].warning.call_count, 2)
+        self.source.body.position.assert_awaited_once()
+        self.assertEqual(self.namespace['logger'].warning.call_count, 1)
 
     async def test_target_state_read_failure_does_not_stop_selected_peer(self):
         self.failed.is_loading.side_effect = MemoryInvalidated('target invalidated')
@@ -62,13 +167,65 @@ class XYZSyncTests(unittest.IsolatedAsyncioTestCase):
                          [Keycode.A, Keycode.D])
         self.namespace['logger'].warning.assert_called_once()
 
-    async def test_teleport_cancellation_propagates_without_logging_or_operating_later_peers(self):
-        self.failed.teleport.side_effect = asyncio.CancelledError()
+    async def test_teleport_cancellation_propagates_and_drains_started_peers(self):
+        started = asyncio.Event()
+        stopped = asyncio.Event()
+
+        async def cancelled(*args, **kwargs):
+            await started.wait()
+            raise asyncio.CancelledError()
+
+        async def healthy(*args, **kwargs):
+            started.set()
+            try:
+                await asyncio.Future()
+            finally:
+                stopped.set()
+
+        self.failed.teleport.side_effect = cancelled
+        self.healthy.teleport.side_effect = healthy
         with self.assertRaises(asyncio.CancelledError):
-            await self.sync(self.source, [self.failed, self.healthy])
+            await asyncio.wait_for(self.sync(self.source, [self.failed, self.healthy]), 1)
+        self.assertTrue(stopped.is_set())
         self.failed.send_key.assert_not_awaited()
-        self.healthy.teleport.assert_not_awaited()
+        self.healthy.send_key.assert_not_awaited()
         self.namespace['logger'].warning.assert_not_called()
+        self.namespace['asyncio'].sleep.assert_not_awaited()
+
+    async def test_parent_cancellation_drains_all_pending_teleports(self):
+        started = asyncio.Event()
+        active, stopped = set(), set()
+
+        async def teleport(*args, member, **kwargs):
+            active.add(member)
+            if len(active) == 2:
+                started.set()
+            try:
+                await asyncio.Future()
+            finally:
+                stopped.add(member)
+
+        async def first(*args, **kwargs):
+            await teleport(*args, member='p2', **kwargs)
+
+        async def second(*args, **kwargs):
+            await teleport(*args, member='p3', **kwargs)
+
+        self.failed.teleport.side_effect = first
+        self.healthy.teleport.side_effect = second
+        task = asyncio.create_task(self.sync(self.source, [self.failed, self.healthy]))
+        try:
+            await asyncio.wait_for(started.wait(), 1)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertEqual(stopped, {'p2', 'p3'})
+            self.failed.send_key.assert_not_awaited()
+            self.healthy.send_key.assert_not_awaited()
+            self.namespace['logger'].warning.assert_not_called()
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     async def test_turn_cancellation_drains_all_owned_turn_tasks(self):
         started = asyncio.Event()

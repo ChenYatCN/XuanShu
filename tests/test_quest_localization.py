@@ -17,15 +17,21 @@ class QuestLocalizationTests(unittest.IsolatedAsyncioTestCase):
     async def test_chinese_special_door_selects_canonical_destination(self):
         self.quester.read_spiral_door_title = AsyncMock(return_value='<center>导航器</center>')
         self.quester.read_quest_txt = AsyncMock(return_value='拜访 伊恩 地点：卡拉梅尔市')
-        with patch('src.questing.new_portals_cycle', new=AsyncMock()) as teleport:
+        self.quester._wait_internal_quest_failure = AsyncMock(return_value=False)
+        self.assertEqual(await self.quester.find_quest_zone_area_name(self.client,['karamelle city']),'karamelle city')
+        with patch('src.questing.travel_region_menu', new=AsyncMock(return_value=True)) as teleport:
             self.assertTrue(await self.quester.new_world_doors(self.client))
-        teleport.assert_awaited_once_with(self.client, 'karamelle city')
+        teleport.assert_awaited_once_with(self.client,read_objective=self.quester.read_quest_txt)
 
     async def test_missing_location_does_not_use_first_or_last_destination(self):
         self.quester.d_location = 'karamelle city'
         self.quester.read_spiral_door_title = AsyncMock(return_value='Nanavator')
         self.quester.read_quest_txt = AsyncMock(return_value='任务暂不可读')
-        with patch('src.questing.new_portals_cycle', new=AsyncMock()) as teleport:
+        self.quester._wait_internal_quest_failure = AsyncMock(return_value=False)
+        self.quester._defer_internal_quest_failure = AsyncMock()
+        self.client._quest_region_transfer_diagnostic={'reason':'任务显示地点不可读'}
+        with patch('src.questing.new_portals_cycle', new=AsyncMock()) as teleport,patch(
+                'src.questing.travel_region_menu',new=AsyncMock(return_value=False)):
             self.assertTrue(await self.quester.new_world_doors(self.client))
         teleport.assert_not_awaited()
         self.assertIsNone(self.quester.d_location)
@@ -122,28 +128,40 @@ class SpiralWindowResolutionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class HiddenStreamTitleTests(unittest.IsolatedAsyncioTestCase):
+    def frame(self,special):
+        client,button,control,panel,title,stream=[AsyncMock() for _ in range(6)]
+        button.parent.return_value=control
+        button.maybe_read_type_name.return_value='ControlButton'
+        control.name.return_value='ControlSprite'
+        control.children.return_value=[panel,title,stream]
+        panel.name.return_value='optionWindow';panel.is_visible.return_value=True
+        title.name.return_value='title';title.is_visible.return_value=not special
+        title.maybe_text.return_value='<string;GUI_00001017>'
+        stream.name.return_value='streamTitle';stream.is_visible.return_value=special
+        stream.maybe_text.return_value='<string;GUI2_00000399>'
+        return client,button,stream
+
     async def test_hidden_default_stream_title_does_not_trigger_special_portal(self):
-        client, title = AsyncMock(), AsyncMock()
-        title.is_visible.return_value = False
-        title.maybe_text.return_value = '<string;GUI2_00000399>'
+        client,button,title = self.frame(False)
         quester = Quester(client, [client], None)
+        quester._wait_internal_quest_failure=AsyncMock(return_value=False)
         quester.find_quest_zone_area_name = AsyncMock()
-        with patch('src.questing.get_window_from_path', new=AsyncMock(return_value=title)):
+        with patch('src.region_teleport.get_spiral_teleport_button',new=AsyncMock(return_value=button)),patch(
+                'src.region_teleport.read_control_text',lambda window:window.maybe_text()):
             self.assertFalse(await quester.new_world_doors(client))
         title.maybe_text.assert_not_awaited()
         quester.find_quest_zone_area_name.assert_not_awaited()
 
     async def test_visible_special_portal_title_still_selects_destination(self):
-        client, title = AsyncMock(), AsyncMock()
-        title.is_visible.return_value = True
-        title.maybe_text.return_value = '<string;GUI2_00000399>'
+        client,button,title = self.frame(True)
         quester = Quester(client, [client], None)
-        quester.find_quest_zone_area_name = AsyncMock(return_value='aeriel')
+        quester._wait_internal_quest_failure=AsyncMock(return_value=False)
         with (
-            patch('src.questing.get_window_from_path', new=AsyncMock(return_value=title)),
-            patch('src.questing.new_portals_cycle', new=AsyncMock()) as select,
+            patch('src.region_teleport.get_spiral_teleport_button',new=AsyncMock(return_value=button)),
+            patch('src.region_teleport.read_control_text',lambda window:window.maybe_text()),
+            patch('src.questing.travel_region_menu', new=AsyncMock(return_value=True)) as select,
         ):
             self.assertTrue(await quester.new_world_doors(client))
-        select.assert_awaited_once_with(client, 'aeriel')
+        select.assert_awaited_once_with(client,read_objective=quester.read_quest_txt)
 
 

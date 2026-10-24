@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 from wizwalker import MemoryInvalidated
-from src import utils
+from src import quest_party, utils
 from src.task_lifecycle import gather_owned
 
 
@@ -109,7 +109,7 @@ class PartyAreaProofTests(unittest.IsolatedAsyncioTestCase):
                         if isinstance(node, ast.AsyncFunctionDef) and node.name == 'xyz_sync')
         namespace = dict(Client=object, asyncio=SimpleNamespace(
             gather=asyncio.gather, sleep=AsyncMock()), logger=Mock(),
-            clients_share_live_area=utils.clients_share_live_area)
+            gather_owned=gather_owned, clients_share_live_area=utils.clients_share_live_area)
         exec(compile(ast.Module(body=[function], type_ignores=[]), 'XuanShu.py', 'exec'), namespace)
         await namespace['xyz_sync'](self.first, [self.second], turn_after=False)
         return namespace['logger']
@@ -200,19 +200,40 @@ class PartyAreaProofTests(unittest.IsolatedAsyncioTestCase):
         self.first.is_loading.side_effect = [False, True]
         self.assertFalse(await utils.clients_share_live_area(self.first, self.second))
 
-    async def prepare_return_proof(self):
+    async def prepare_recorded_dungeon(self):
         self.first.quest_party_hitters = [self.second]
+        for member in (self.first, self.second):
+            member.questing_status = True
+            member.zone_name.return_value = 'Outside'
+        session = await quest_party.begin_dungeon_entry(
+            self.first, [self.first, self.second], evidence=True)
+        self.assertIsNotNone(session)
+        for member in (self.first, self.second):
+            member.zone_name.return_value = 'Dungeon/Room'
         self.first.get_base_entity_list.return_value = [self.second.client_object]
-        with patch.object(utils, 'potion_quest_snapshot', AsyncMock(return_value=(42, 7, 'Talk'))):
-            self.assertTrue(await utils.prepare_potion_dungeon_return(self.first, 'Dungeon/Room'))
+        await quest_party.observe_dungeon_session(self.first)
+        self.assertTrue(session.confirmed)
+        return session
+
+    async def prepare_return_proof(self):
+        # Exercise the current producer; do not manufacture the legacy receipt
+        # still consumed by clients_share_live_area just to satisfy its callers.
+        session = await self.prepare_recorded_dungeon()
+        self.first.refilling_potions = True
+        await quest_party.pause_dungeon_for_potions(self.first)
+        self.assertEqual(session.potion_areas[id(self.first)], ('Dungeon/Room', 100))
         self.first.get_base_entity_list.return_value = []
         # A real refill leaves and returns; it invalidates ordinary live proof.
         self.first.zone_name.return_value = 'Shop'
         await utils.observe_party_area(self.first)
+        await quest_party.observe_dungeon_session(self.first)
+        self.assertNotIn(id(self.first), session.exited)
         self.first.zone_name.return_value = 'Dungeon/Room'
-        self.first.potion_return_context['returned_snapshot'] = (42, 7, 'Talk')
         await utils.observe_party_area(self.first)
-        self.first.potion_return_context['returned_area_token'] = await utils._party_area_token(self.first)
+        self.first.refilling_potions = False
+        await quest_party.finish_dungeon_potions(self.first, recalled=True)
+        self.assertNotIn(id(self.first), session.potion_areas)
+        self.assertTrue(self.first.quest_party_probe_pending)
 
     async def test_verified_red_return_and_uninterrupted_peer_restore_far_party(self):
         await self.prepare_return_proof()
@@ -220,6 +241,8 @@ class PartyAreaProofTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_peer_loading_invalidates_saved_proof_even_in_same_named_zone(self):
         await self.prepare_return_proof()
+        self.assertTrue(await utils.clients_share_live_area(self.first, self.second),
+                        'Return proof must exist before testing its invalidation')
         self.second.is_loading.return_value = True
         await utils.observe_party_area(self.second)
         self.second.is_loading.return_value = False
@@ -228,12 +251,16 @@ class PartyAreaProofTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_peer_area_object_replaced_rejects_old_proof(self):
         await self.prepare_return_proof()
+        self.assertTrue(await utils.clients_share_live_area(self.first, self.second),
+                        'Return proof must exist before testing its invalidation')
         area = await self.second.client_object.client_zone()
         area.read_base_address.return_value = 9999
         self.assertFalse(await utils.clients_share_live_area(self.first, self.second))
 
     async def test_returning_client_leaves_again_invalidates_old_return(self):
         await self.prepare_return_proof()
+        self.assertTrue(await utils.clients_share_live_area(self.first, self.second),
+                        'Return proof must exist before testing its invalidation')
         self.first.zone_name.return_value = 'Outside'
         await utils.observe_party_area(self.first)
         self.first.zone_name.return_value = 'Dungeon/Room'
@@ -242,21 +269,29 @@ class PartyAreaProofTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_no_predeparture_peer_evidence_does_not_authorize_sync(self):
         await self.prepare_return_proof()
-        self.first.potion_return_context['peer_areas'].clear()
+        context = getattr(self.first, 'potion_return_context', None)
+        self.assertIsInstance(context, dict, 'The return-proof consumer requires a produced receipt')
+        self.assertTrue(await utils.clients_share_live_area(self.first, self.second))
+        context['peer_areas'].clear()
         self.assertFalse(await utils.clients_share_live_area(self.first, self.second))
 
     async def test_hitter_departure_records_assigned_quester(self):
+        session = await self.prepare_recorded_dungeon()
         self.second.quest_party_quester = self.first
         self.second.get_base_entity_list.return_value = [self.first.client_object]
-        with patch.object(utils, 'potion_quest_snapshot', AsyncMock(return_value=(42, 7, 'Talk'))):
-            await utils.prepare_potion_dungeon_return(self.second, 'Dungeon/Room')
-        self.assertIn(id(self.first), self.second.potion_return_context['peer_areas'])
+        self.second.refilling_potions = True
+        await quest_party.pause_dungeon_for_potions(self.second)
+        self.assertEqual(session.potion_areas[id(self.second)], ('Dungeon/Room', 100))
+        context = getattr(self.second, 'potion_return_context', None)
+        self.assertIsInstance(context, dict, 'Departure must record the peer proof consumed on return')
+        self.assertIn(id(self.first), context['peer_areas'])
 
     async def test_manual_xyz_sync_does_not_require_live_area_proof(self):
         tree = ast.parse(Path('XuanShu.py').read_text(encoding='utf-8'))
         function = next(node for node in tree.body
                         if isinstance(node, ast.AsyncFunctionDef) and node.name == 'xyz_sync')
         namespace = dict(Client=object, asyncio=asyncio, logger=Mock(),
+                         gather_owned=gather_owned,
                          clients_share_live_area=AsyncMock(return_value=False))
         exec(compile(ast.Module(body=[function], type_ignores=[]), 'XuanShu.py', 'exec'), namespace)
         await namespace['xyz_sync'](self.first, [self.second], turn_after=False)
@@ -300,23 +335,25 @@ class PartyAreaProofTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call.kwargs['key'] for call in self.second.send_key.await_args_list], ['A', 'D'])
 
     async def test_automatic_battle_sync_checks_instance_before_coordinates(self):
-        tree = ast.parse(Path('XuanShu.py').read_text(encoding='utf-8'))
-        function = next(node for node in ast.walk(tree)
-                        if isinstance(node, ast.AsyncFunctionDef)
-                        and node.name == 'attempt_battle_coordinate_sync')
-        namespace = dict(asyncio=asyncio, hitter=self.second, quester=self.first,
-                         hitter_is_in_quester_area=AsyncMock(return_value=False),
-                         hitter_near_quester=AsyncMock(return_value=True))
-        exec(compile(ast.Module(body=[function], type_ignores=[]), 'XuanShu.py', 'exec'), namespace)
-        self.assertFalse(await namespace['attempt_battle_coordinate_sync']('Dungeon/Room'))
-        self.second.teleport.assert_not_awaited()
-        self.first.body.position.assert_not_awaited()
+        from tests import test_party_battle_rescue as fixtures
+        fixtures.BattleRescueTests.setUp(self)
+        self.h1.instance = 99  # Same zone, different instance.
+        proof = self.ns['clients_share_live_area'] = AsyncMock(
+            wraps=self.ns['clients_share_live_area'])
+        await self.rescue(self.q1)
+        proof.assert_awaited_once_with(self.q1, self.h1)
+        self.assertTrue(any('reason=instance-unconfirmed' in call.args[0]
+                            for call in self.log.info.call_args_list))
+        self.q1.body.position.assert_not_awaited()
+        self.h1.body.position.assert_not_awaited()
+        self.assertEqual(self.events, [])
 
     async def test_loading_after_xyz_read_prevents_manual_sync(self):
         tree = ast.parse(Path('XuanShu.py').read_text(encoding='utf-8'))
         function = next(node for node in tree.body
                         if isinstance(node, ast.AsyncFunctionDef) and node.name == 'xyz_sync')
         namespace = dict(Client=object, asyncio=asyncio, logger=Mock(),
+                         gather_owned=gather_owned,
                          clients_share_live_area=AsyncMock(return_value=True))
         exec(compile(ast.Module(body=[function], type_ignores=[]), 'XuanShu.py', 'exec'), namespace)
         async def position():
@@ -327,31 +364,36 @@ class PartyAreaProofTests(unittest.IsolatedAsyncioTestCase):
         self.second.teleport.assert_not_awaited()
 
     async def test_return_confirmation_timeout_keeps_follower_alive(self):
-        tree = ast.parse(Path('XuanShu.py').read_text(encoding='utf-8'))
-        block = next(node for node in ast.walk(tree)
-                     if isinstance(node, ast.If) and isinstance(node.test, ast.Name)
-                     and node.test.id == 'return_markers')
-        # Execute the actual return gate inside one iteration, so its continue
-        # path can be tested without replacing the full follower state machine.
-        loop = ast.For(target=ast.Name(id='_', ctx=ast.Store()),
-                       iter=ast.List(elts=[ast.Constant(1)], ctx=ast.Load()),
-                       body=[block], orelse=[])
-        function = ast.AsyncFunctionDef(name='gate', args=ast.arguments(
-            posonlyargs=[], args=[], kwonlyargs=[], kw_defaults=[], defaults=[]),
-            body=[loop], decorator_list=[])
-        module = ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[]))
-        self.second.questing_status = True
-        status = Mock()
-        namespace = dict(hitter=self.second, quester=self.first, logger=Mock(), now=31,
-                         quester_zone='Dungeon/Room', hitter_zone='Dungeon/Room',
-                         return_markers=[('Dungeon/Room', 0, {id(self.second)})],
-                         hitter_is_in_quester_area=AsyncMock(return_value=False),
-                         update_party_status=status)
-        exec(compile(module, 'XuanShu.py', 'exec'), namespace)
-        await namespace['gate']()
-        self.assertTrue(self.second.questing_status)
-        status.assert_called_once_with(self.second, self.first, '等待确认原副本，可手动归队')
-        self.second.teleport.assert_not_awaited()
+        from src.questing import Quester
+        from tests import test_dungeon_local_tp as fixtures
+        fixtures.DungeonFixture.setUp(self)
+        session = await fixtures.DungeonFixture.enter(self)
+        self.q.quest_party_observed_zone = self.q.zone
+        self.q.quest_party_probe_pending = True
+        self.h.refilling_potions = True
+        await quest_party.pause_dungeon_for_potions(self.h)
+        self.h.refilling_potions = False
+        self.proof.return_value = False
+        done = asyncio.Event()
+
+        def status(_h, _q, text):
+            if text.startswith('好友传送重试等待 ') and self.clock > 30:
+                done.set()
+
+        with patch.object(Quester, 'move_dungeon_member', AsyncMock()) as move:
+            await fixtures.FollowerTests.follow_until(self, done, primary=True, when_status=status)
+        self.assertGreater(self.clock, 30)
+        self.assertEqual(self.friend.await_count, 2)
+        self.assertEqual(self.h._quest_follower_probe['failures'], 2)
+        self.assertGreater(self.h._quest_follower_probe['retry_at'], self.clock)
+        self.assertTrue(self.h.questing_status)
+        self.assertTrue(self.q.quest_party_probe_pending)
+        self.assertFalse(self.h._quest_follower_probe.get('verified', False))
+        self.assertIn(id(self.h), session.potion_areas)
+        self.assertNotIn(id(self.h), session.exited)
+        move.assert_not_awaited()
+        self.h.teleport.assert_not_awaited()
+        self.h.send_key.assert_not_awaited()
 
     async def test_unreadable_first_entity_tree_still_checks_other_client(self):
         self.first.get_base_entity_list.side_effect = MemoryInvalidated('old tree')

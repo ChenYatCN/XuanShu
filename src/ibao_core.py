@@ -522,14 +522,8 @@ async def azothFarmer(p, listPosition):
                 if not keepWizard:
                     activeClients[listPosition].timeSinceBotAction = 0
                     print(f'[{activeClients[listPosition].title}] Removing Wizard From List: {wizard}')
-                    if len(activeClients[listPosition].wizLst) != 1:
-                        newFirst = activeClients[listPosition].wizLst[position:]
-                        newLast = activeClients[listPosition].wizLst[:position]
-                        activeClients[listPosition].wizLst = newFirst + newLast
-                        activeClients[listPosition].wizLst.pop(position)
-                    else:
-                        activeClients[listPosition].wizLst.pop(position)
-                        pass
+                    activeClients[listPosition].wizLst = remaining_wizards(
+                        activeClients[listPosition].wizLst, position)
                     break
             if keepWizard:
                 runthrough += 1
@@ -552,6 +546,11 @@ async def azothCheck(p):
         return True
     else:
         return False
+
+def remaining_wizards(wizards, position):
+    """Remove the current character and start the next pass at its successor."""
+    return wizards[position + 1:] + wizards[:position]
+
 
 async def logout_and_in(client, nextWizard, needSwitch, title):
     config = get_config()
@@ -638,7 +637,6 @@ async def logout_and_in(client, nextWizard, needSwitch, title):
                     # Fresh read immediately before Play; no stale match after
                     # a page turn or failed read, and no second Play call below.
                     if await selected_wizard() == nextWizard:
-                        await click_window_until_gone(client, playButton)
                         entered = True
                         break
                 if not needSwitch:
@@ -666,7 +664,19 @@ async def logout_and_in(client, nextWizard, needSwitch, title):
         await asyncio.sleep(character_switch_delay)
     if not entered:
         raise CharacterSelectionError(f'{title} 未确认目标角色 {nextWizard}；未点击进入，自动恢复')
-    await client.wait_for_zone_change()
+    # Selection is confirmed. Submit once, outside the read/rescan handler:
+    # a slow transition or uncertain click must never trigger another Play.
+    try:
+        async with asyncio.timeout(60):
+            window = await window_from_path(client.root_window, playButton)
+            if (not window or not await window.is_visible()
+                    or await selected_wizard() != nextWizard):
+                raise CharacterSelectionError(f'{title} 进入前角色状态改变；未点击进入')
+            await client.mouse_handler.click_window(window)
+            await client.wait_for_zone_change()
+    except TimeoutError as exc:
+        raise CharacterSelectionError(f'{title} 进入角色超时；未重复点击开始游戏') from exc
+    logger.info('ibao {} 已完成角色进入等待，目标={}', title, nextWizard)
     await asyncio.sleep(0.5)
     if await is_visible_by_path(client.root_window, quitButton):
         await client.send_key(Keycode.ESC, 0.1)
