@@ -6,11 +6,10 @@ from PyQt6.QtWidgets import QComboBox, QListView, QStyledItemDelegate, QStyle
 
 
 class _GroupMenuDelegate(QStyledItemDelegate):
-    # Keep a common text origin, with the existing menu text alignment.
+    # Use symmetric margins for centered labels and the separator.
     padding = 10
-    gutter = 20
     row_margin = 4
-    horizontal_padding = 2 * (padding + row_margin) + gutter
+    horizontal_padding = 2 * (padding + row_margin)
 
     def sizeHint(self, option, index):
         if index.data(Qt.ItemDataRole.AccessibleDescriptionRole) == 'separator':
@@ -22,7 +21,7 @@ class _GroupMenuDelegate(QStyledItemDelegate):
         painter.setClipRect(option.rect)
         palette = option.palette
         row_rect = option.rect.adjusted(self.row_margin, 0, -self.row_margin, 0)
-        text_rect = row_rect.adjusted(self.padding + self.gutter, 0, -self.padding, 0)
+        text_rect = row_rect.adjusted(self.padding, 0, -self.padding, 0)
         painter.fillRect(option.rect, palette.brush(QPalette.ColorRole.Base))
         if index.data(Qt.ItemDataRole.AccessibleDescriptionRole) == 'separator':
             painter.setPen(palette.color(QPalette.ColorRole.Mid))
@@ -39,7 +38,7 @@ class _GroupMenuDelegate(QStyledItemDelegate):
             if index.data(Qt.ItemDataRole.UserRole) not in ('@create', '@manage'):
                 text = option.fontMetrics.elidedText(text, Qt.TextElideMode.ElideRight,
                                                      text_rect.width())
-            painter.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
+            painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, text)
         painter.restore()
 
 

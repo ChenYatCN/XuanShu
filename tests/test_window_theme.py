@@ -16,6 +16,12 @@ class WindowThemeTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def test_numeric_fields_share_fishing_bottom_border(self):
+        styles = compute_styles(DEFAULT_THEME)['app_style']
+        self.assertIn('QSpinBox, QDoubleSpinBox { background-color:', styles)
+        self.assertIn('border: none; border-bottom: 1px solid', styles)
+        self.assertIn('QSpinBox:focus, QDoubleSpinBox:focus {', styles)
+
     def test_main_controls_retain_legacy_styles(self):
         styles = compute_styles(DEFAULT_THEME)
         for selector in ('QPushButton {', 'QLineEdit:focus', 'QComboBox:focus',

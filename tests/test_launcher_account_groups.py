@@ -340,7 +340,7 @@ class LauncherAccountGroupTests(unittest.TestCase):
         self.assertEqual(self.choice.itemData(index, Qt.ItemDataRole.ToolTipRole), name)
         self.assertLess(popup.width() - 40, self.choice.fontMetrics().horizontalAdvance(name))
 
-    def test_menu_paint_uses_shared_text_gutter_highlight_and_separator_edges(self):
+    def test_menu_paint_centers_text_and_balances_separator_edges(self):
         delegate = self.choice.view().itemDelegate()
         option = QStyleOptionViewItem()
         option.rect = QRect(3, 0, 220, 24)
@@ -357,7 +357,8 @@ class LauncherAccountGroupTests(unittest.TestCase):
             text_rects.append(rect)
             backgrounds.append(painter.fillRect.call_args.args[0])
             heights.append(delegate.sizeHint(option, index).height())
-            self.assertTrue(alignment & Qt.AlignmentFlag.AlignLeft)
+            self.assertTrue(alignment & Qt.AlignmentFlag.AlignHCenter)
+            self.assertEqual(rect.center().x(), option.rect.center().x())
             self.assertEqual(text, index.data())
             self.assertGreaterEqual(rect.width(), option.fontMetrics.horizontalAdvance(text))
             self.assertEqual(painter.drawLine.call_count, 0)

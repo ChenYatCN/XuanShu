@@ -159,6 +159,15 @@ def compute_styles(theme: dict, font: str = None, font_size: int = None) -> dict
         "}"
     )
 
+    # Match the fishing numeric fields without changing text inputs or combos.
+    app_style += (
+        f"QSpinBox, QDoubleSpinBox {{ background-color: {alt}; color: {tc};"
+        f" border: none; border-bottom: 1px solid {_rgba(tc, 100)};"
+        " border-radius: 3px; padding: 2px 4px; }"
+        "QSpinBox:focus, QDoubleSpinBox:focus {"
+        f" border-bottom-color: {_rgba(tc, 100)}; }}"
+    )
+
     # Keep the legacy main-control appearance; scope extra surfaces to menus/tables.
     app_style += (
         f"QAbstractItemView {{ selection-background-color: {selected}; selection-color: {tc}; }}"
