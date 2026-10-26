@@ -141,7 +141,7 @@ def snapshot_for_install(install):
                 logger.warning('语言快照读取失败：install={}；本次运行固定使用内置表后备，重启后重读；原因={}',install,exc)
             else:
                 missing=len(_FIXED.keys()-snapshot.records.keys())
-                logger.info('语言快照已建立：install={} records={} missing_fixed_ids={}；Root.wad < Locale_en-US-root.wad；缺失ID使用固定表，本次运行不刷新',
+                logger.info('语言快照已建立：install={} 记录数={} 固定表ID缺失数={}；优先使用 Locale_en-US-root.wad；若ID缺失则使用内置固定表；本次运行不刷新',
                             install,len(snapshot.records),missing)
             _SNAPSHOTS[key]=snapshot  # Publish only a complete profile or an explicit fallback.
         return _SNAPSHOTS[key]

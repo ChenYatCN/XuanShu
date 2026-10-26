@@ -96,7 +96,7 @@ class ChatTextSendIntegrationTests(unittest.IsolatedAsyncioTestCase):
             node.get_child_by_name = AsyncMock(side_effect=lambda name: nodes[name])
         first.root_window = SimpleNamespace(get_child_by_name=AsyncMock(side_effect=lambda name: nodes[name]))
         nodes['chatEditContainer'].is_visible.return_value = False
-        with self.assertRaisesRegex(RuntimeError, '展开聊天输入栏.*只显示聊天记录不够'):
+        with self.assertRaisesRegex(RuntimeError, '游戏聊天输入栏不可见.*展开输入栏.*只显示聊天记录不够'):
             await _chat_edit(first)
         first.mouse_handler.click_window.assert_not_awaited()
         first.send_hotkey.assert_not_awaited()

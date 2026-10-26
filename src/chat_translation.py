@@ -11,6 +11,7 @@ import time
 from loguru import logger
 from src.window_text import read_control_text
 from src.chat_translation_api import ChatTranslationAPI, TranslationError
+from src.chat_translation_rules import translation_rules_fingerprint
 from src.utils import clients_share_live_area
 from src.automation_ownership import automation_owner, get_client_automation_ownership
 
@@ -399,7 +400,8 @@ class ChatTranslationMonitor:
                     continue  # Keep this client's original, not another translation.
                 if generation != self.translation_generation or not self.enabled:
                     continue
-                cache_key = (event.get('handle', event.get('title')), message)
+                cache_key = (translation_rules_fingerprint(),
+                             event.get('handle', event.get('title')), event.get('channel'), message)
                 result = self.translation_cache.get(cache_key)
                 if result is None:
                     result = await asyncio.to_thread(api.translate, message)

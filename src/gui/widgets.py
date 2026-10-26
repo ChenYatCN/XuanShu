@@ -1421,6 +1421,15 @@ class ConsoleTextEdit(QPlainTextEdit):
         super().__init__(*args, **kwargs)
         self.setMaximumBlockCount(self.MAX_BLOCK_COUNT)
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Wait until the newly visible tab has updated its viewport layout.
+        QTimer.singleShot(0, self._scroll_to_bottom)
+
+    def _scroll_to_bottom(self):
+        scrollbar = self.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
     @pyqtSlot(str)
     def _append_log(self, text):
         self.appendPlainText(text.rstrip("\n"))
